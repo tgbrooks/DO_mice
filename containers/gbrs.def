@@ -1,0 +1,31 @@
+Bootstrap: docker
+From: quay.io/jaxcompsci/gbrs_py3:latest
+
+## GBRS (Churchill lab) plus the bowtie and samtools builds it ships with:
+## https://github.com/churchill-lab/gbrs
+##
+## This is the lab's own image, so the GBRS/EMASE versions match what the
+## commands expect. numpy comes with it, which is all
+## scripts/genoprobs_to_gbrs.py needs.
+##
+## Build:
+##   apptainer build --ignore-subuid --ignore-fakeroot-command \
+##       images/gbrs.sif containers/gbrs.def
+
+%post
+    # Snakemake runs every rule through bash, and needs curl/tar for the
+    # reference-bundle download rule.
+    apt-get update
+    apt-get install -y --no-install-recommends bash curl tar gzip
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    export PATH=/opt/venv/bin:/opt/samtools/bin:/opt/bowtie:$PATH
+    export LC_ALL=C.UTF-8
+
+%test
+    gbrs --help > /dev/null
+    emase --help > /dev/null
+    bowtie --version | head -1
+    samtools --version | head -1
+    python3 -c "import numpy; print('numpy', numpy.__version__)"

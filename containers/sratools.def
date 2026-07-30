@@ -1,0 +1,7 @@
+Bootstrap: docker
+From: ncbi/sra-tools:3.1.0
+
+%post
+    # Snakemake requires bash in order to run anything
+    # alpine doesnt include it by default
+    apk add --no-cache bash

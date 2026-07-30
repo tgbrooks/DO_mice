@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: r-base:4.4.1
+
+## Plain R, used only to read the genoprobs .RData file and write out per-mouse
+## founder probabilities (scripts/export_genoprobs.R). Base R is enough — no
+## qtl2 or other packages are needed — and curl is here for the download rule.
+##
+## Build:
+##   apptainer build --ignore-subuid --ignore-fakeroot-command \
+##       images/rgeno.sif containers/rgeno.def
+
+%post
+    apt-get update
+    apt-get install -y --no-install-recommends curl ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    export LC_ALL=C.UTF-8
+
+%test
+    Rscript -e 'cat(R.version.string, "\n")'
+    curl --version | head -1

@@ -1,0 +1,93 @@
+## Configuration for the Diversity Outbred (DO) mouse GBRS pipeline.
+## Run snakemake from within this directory (see README.md).
+
+## Maximum number of mice to process per tissue. Mice are taken in sorted order
+## from the tissue's sample table (intersected with the mice that have
+## genotypes, if geno/genotyped_mice.txt has been generated). Set to null to
+## process every mouse.
+max_samples: 10
+
+## Tissues to process. Each tissue is one GEO series from the same DO cohort,
+## so the same mouse can appear in several tissues and shares one genotype.
+run:
+  - Adipose
+
+tissues:
+  Adipose:
+    ## GEO series accession. scripts/setup_geo_samples.py turns this into
+    ## samples/Adipose.tsv (mouse ID <-> SRA run) before Snakemake runs.
+    geo: "GSE266549"
+    ## Optional: SRA study accession, if the GEO -> SRA lookup needs a hint.
+    # srp: "SRP..."
+
+  ## Additional tissues from the same mice go here, e.g.:
+  # Liver:
+  #   geo: "GSE......"
+
+## Regex used by scripts/setup_geo_samples.py to pull the mouse ID out of the
+## GEO sample title (e.g. "DO021" in "DO021 adipose").
+mouse_id_pattern: "DO[0-9]+"
+
+## Founder haplotype letters, in the order used by every GBRS reference file.
+## For DO mice these are A/J, C57BL/6J, 129S1/SvImJ, NOD/ShiLtJ, NZO/HlLtJ,
+## CAST/EiJ, PWK/PhJ, WSB/EiJ.
+haplotypes: "A,B,C,D,E,F,G,H"
+
+## Genotypes: an .RData file holding a `genoprobs` list (one 3-D array per
+## chromosome: mice x 8 founders x markers), with mice labelled like "DO021".
+genotypes:
+  url: "https://datadryad.org/downloads/file_stream/62694"
+  ## Name of the object inside the .RData file.
+  object: "genoprobs"
+  ## Founder-dosage (0-2) at or above which a marker is called homozygous.
+  ## Below this the top two founders are called as a heterozygous diplotype.
+  hom_dosage_threshold: 1.5
+  ## Warn if the called diplotype's probability is below this (0-1).
+  min_call_prob: 0.5
+  ## Units of the marker positions if they have to be taken from a map object
+  ## in the .RData file rather than matched to the GBRS genome grid:
+  ## "auto", "bp", or "Mbp". "auto" fails loudly when it cannot tell.
+  marker_units: "auto"
+
+## GBRS reference data (the "supporting files" bundle, Zenodo 10.5281/zenodo.8289936).
+gbrs:
+  ## Directory holding the unpacked bundle. If the files are already on disk
+  ## (e.g. a shared copy on the cluster), point this at them and leave `url`
+  ## null; nothing is downloaded.
+  data_dir: "gbrs_ref"
+  ## Optional URL of a .tar.gz bundle to download into data_dir. Check the
+  ## Zenodo record for the current file name before setting this.
+  url: null
+  ## Number of leading path components to strip when unpacking that tarball.
+  strip_components: 1
+
+  ## File names within data_dir.
+  bowtie_index: "bowtie.transcriptome"
+  ## Bowtie index extension: "ebwt" for a normal index, "ebwtl" for a large one.
+  bowtie_index_ext: "ebwt"
+  transcript_info: "emase.fullTranscripts.info"
+  gene2transcripts: "emase.gene2transcripts.tsv"
+  transcript_lengths: "emase.pooled.fullTranscripts.info"
+  gene_pos: "ref.gene_pos.ordered_ensBuild_105.npz"
+  genome_grid: "ref.genome_grid.GRCm39.tsv"
+  emissions: "gbrs_emissions_all_tissues.avecs.npz"
+  ## Transition probabilities are per DO generation and sex. {generation} and
+  ## {sex} are filled in from the sample table when it has `generation` / `sex`
+  ## columns, otherwise from the defaults below. Only used by `reconstruct`.
+  transition_prob: "transition_probabilities/tranprob.DO.G{generation}.{sex}.npz"
+  default_generation: 20
+  default_sex: "F"
+
+  ## EMASE multiread model (1-4).
+  multiread_model: 4
+  ## Threads for bowtie.
+  align_threads: 8
+
+  ## By default the pipeline quantifies against the downloaded (array-based)
+  ## genotypes. Set to true to also run GBRS's own RNA-seq genome
+  ## reconstruction (reconstruct / interpolate / plot / export), which is
+  ## useful as a QC comparison against the array genotypes.
+  run_reconstruct: false
+  ## Which genotypes to use for the diploid quantification:
+  ## "downloaded" (from the .RData above) or "reconstructed" (from GBRS).
+  genotype_source: "downloaded"

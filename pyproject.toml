@@ -1,0 +1,22 @@
+[project]
+name = "do-mice-pipeline"
+version = "0.1.0"
+description = "GBRS allele-specific expression pipeline for Diversity Outbred mouse RNA-seq"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "snakemake>=9.23.1",
+    "snakemake-executor-plugin-lsf",
+    # Used by scripts/combine_tpm.py, which runs as a Snakemake `script:` in the
+    # same environment as Snakemake itself.
+    "polars>=1.43.0",
+]
+
+[tool.uv.sources]
+snakemake-executor-plugin-lsf = { git = "ssh://git@github.com/tgbrooks/snakemake-executor-plugin-lsf.git", rev = "3f792d70fd01f2a7eb45f23625e398b7dc0321e5" }
+
+[dependency-groups]
+dev = [
+    "ipython>=9.15.0",
+    "numpy>=2.0",
+]

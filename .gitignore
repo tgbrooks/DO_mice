@@ -1,0 +1,17 @@
+__pycache__
+.snakemake
+.vscode
+.DS_Store
+.venv
+## Downloaded data and pipeline results
+fastq
+sra
+geno
+gbrs_ref
+samples
+results
+images
+logs
+slurm-*.out
+.ncbi
+fasterq.tmp*
