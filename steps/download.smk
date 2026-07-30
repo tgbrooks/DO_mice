@@ -129,10 +129,17 @@ rule download_gbrs_reference:
         gbrs_file("transcript_lengths"),
         gbrs_file("gene_pos"),
         gbrs_file("genome_grid"),
+        gbrs_file("emissions"),
     params:
         url = GBRS["url"],
         dir = GBRS_DIR,
-        strip = GBRS["strip_components"],
+        bowtie_index_tar = GBRS["bowtie_index_tar"],
+        trans_info = GBRS["transcript_info"],
+        gene2trans = GBRS["gene2transcripts"],
+        trans_length = GBRS["transcript_lengths"],
+        gene_pos = GBRS["gene_pos"],
+        genome_grid = GBRS["genome_grid"],
+        emissions = GBRS["emissions"],
     resources:
         runtime = '8h',
     container:
@@ -146,8 +153,13 @@ rule download_gbrs_reference:
             exit 1
         fi
         mkdir -p {params.dir}
-        curl -L --fail --retry 3 -o {params.dir}/bundle.tar.gz "{params.url}"
-        tar -xzf {params.dir}/bundle.tar.gz -C {params.dir} \
-            --strip-components {params.strip}
-        rm -f {params.dir}/bundle.tar.gz
+        curl -L --fail --retry 3 -o {params.dir}/{params.trans_info} "{params.url}/files/{params.trans_info}"
+        curl -L --fail --retry 3 -o {params.dir}/{params.gene2trans} "{params.url}/files/{params.gene2trans}"
+        curl -L --fail --retry 3 -o {params.dir}/{params.trans_length} "{params.url}/files/{params.trans_length}"
+        curl -L --fail --retry 3 -o {params.dir}/{params.gene_pos} "{params.url}/files/{params.gene_pos}"
+        curl -L --fail --retry 3 -o {params.dir}/{params.genome_grid} "{params.url}/files/{params.genome_grid}"
+        curl -L --fail --retry 3 -o {params.dir}/{params.emissions} "{params.url}/files/{params.emissions}"
+
+        curl -L --fail --retry 3 -o {params.dir}/{params.bowtie_index_tar} "{params.url}/files/{params.bowtie_index_tar}"
+        tar -xzf {params.dir}/{params.bowtie_index_tar} --strip-components 1 
         """

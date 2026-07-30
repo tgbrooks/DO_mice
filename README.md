@@ -37,12 +37,14 @@ Every rule runs inside an Apptainer image, so run Snakemake with
 
 ```shell
 mkdir -p images
+# Disable FIPS mode
+echo 0 > /tmp/fips_off
 # GBRS, EMASE, bowtie, samtools (the Churchill lab's own image)
-apptainer build --ignore-subuid --ignore-fakeroot-command images/gbrs.sif containers/gbrs.def
+apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/gbrs.sif containers/gbrs.def
 # R, for reading the genoprobs .RData file
-apptainer build --ignore-subuid --ignore-fakeroot-command images/rgeno.sif containers/rgeno.def
+apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/rgeno.sif containers/rgeno.def
 # SRA Toolkit, for downloading the FASTQs
-apptainer build --ignore-subuid --ignore-fakeroot-command images/sratools.sif containers/sratools.def
+apptainer build --ignore-subuid --ignore-fakeroot-command --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/sratools.sif containers/sratools.def
 ```
 
 Bind any paths the jobs need with `--singularity-args "-B /your/path"`.
@@ -83,7 +85,7 @@ Generate it with `scripts/setup_geo_samples.py`, which needs internet access
 (run it before Snakemake, since cluster nodes are often offline):
 
 ```shell
-python3 scripts/setup_geo_samples.py --tissue Adipose --geo GSE266549
+uv run scripts/setup_geo_samples.py --tissue Adipose --geo GSE266549 --srp SRP505574
 ```
 
 It downloads the GEO series' SOFT file, pulls the mouse ID (e.g. `DO021`) out of

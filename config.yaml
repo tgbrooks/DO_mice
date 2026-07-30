@@ -57,12 +57,11 @@ gbrs:
   data_dir: "gbrs_ref"
   ## Optional URL of a .tar.gz bundle to download into data_dir. Check the
   ## Zenodo record for the current file name before setting this.
-  url: null
-  ## Number of leading path components to strip when unpacking that tarball.
-  strip_components: 1
+  url: https://zenodo.org/records/8289936
 
   ## File names within data_dir.
-  bowtie_index: "bowtie.transcriptome"
+  bowtie_index: "bowtie_index"
+  bowtie_index_tar: "bowtie_index.tar.gz"
   ## Bowtie index extension: "ebwt" for a normal index, "ebwtl" for a large one.
   bowtie_index_ext: "ebwt"
   transcript_info: "emase.fullTranscripts.info"
