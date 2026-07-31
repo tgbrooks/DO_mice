@@ -161,5 +161,6 @@ rule download_gbrs_reference:
         curl -L --fail --retry 3 -o {params.dir}/{params.emissions} "{params.url}/files/{params.emissions}"
 
         curl -L --fail --retry 3 -o {params.dir}/{params.bowtie_index_tar} "{params.url}/files/{params.bowtie_index_tar}"
-        tar -xzf {params.dir}/{params.bowtie_index_tar} --strip-components 1 
+        cd {params.dir}
+        tar -xzf {params.bowtie_index_tar} --strip-components 1
         """

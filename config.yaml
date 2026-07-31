@@ -60,7 +60,7 @@ gbrs:
   url: https://zenodo.org/records/8289936
 
   ## File names within data_dir.
-  bowtie_index: "bowtie_index"
+  bowtie_index: "bowtie.transcripts"
   bowtie_index_tar: "bowtie_index.tar.gz"
   ## Bowtie index extension: "ebwt" for a normal index, "ebwtl" for a large one.
   bowtie_index_ext: "ebwt"
