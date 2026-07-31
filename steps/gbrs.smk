@@ -93,7 +93,7 @@ rule emase_common_alignments:
     output:
         h5 = temp("results/{tissue}/gbrs/{mouse}.merged.h5"),
     resources:
-        mem_mb = 32000,
+        mem_mb = 64000,
         runtime = '12h',
     container:
         "images/gbrs.sif"
