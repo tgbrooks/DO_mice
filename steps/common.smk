@@ -14,6 +14,7 @@ genotypes when `geno/genotyped_mice.txt` exists, and capped at
 import csv
 import os
 import sys
+import pathlib
 
 TISSUES = list(config["run"])
 HAPLOTYPES = config["haplotypes"]

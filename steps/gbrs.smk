@@ -322,8 +322,8 @@ rule combine_tpm:
             mode=w.mode,
         ),
     output:
-        total = "results/{tissue}/{tissue}.{mode}.genes.tpm.tsv",
-        by_founder = "results/{tissue}/{tissue}.{mode}.genes.founder_tpm.tsv",
+        total = "results/{tissue}/{tissue}.{mode}.genes.tpm.parquet",
+        by_founder = "results/{tissue}/{tissue}.{mode}.genes.founder_tpm.parquet",
     params:
         mice = lambda w: MICE[w.tissue],
         haplotypes = HAP_LIST,
@@ -331,3 +331,27 @@ rule combine_tpm:
         mem_mb = 8000,
     script:
         "../scripts/combine_tpm.py"
+
+rule combine_counts:
+    """Combine the per-mouse gene counts of a tissue into one gene x mouse table.
+
+    Total (both haplotypes) counts per gene, plus a per-founder table for
+    allele-specific analyses.
+    """
+    input:
+        counts = lambda w: expand(
+            "results/{tissue}/gbrs/{mouse}.{mode}.genes.expected_read_counts",
+            tissue=w.tissue,
+            mouse=MICE[w.tissue],
+            mode=w.mode,
+        ),
+    output:
+        total = "results/{tissue}/{tissue}.{mode}.genes.expected_read_counts.parquet",
+        by_founder = "results/{tissue}/{tissue}.{mode}.genes.founder_expected_read_counts.parquet",
+    params:
+        mice = lambda w: MICE[w.tissue],
+        haplotypes = HAP_LIST,
+    resources:
+        mem_mb = 8000,
+    script:
+        "../scripts/combine_counts.py"

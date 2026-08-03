@@ -140,3 +140,19 @@ rule genoprobs_to_gbrs:
             --sample {wildcards.mouse} \
             --out {output}
         """
+
+rule combine_genotypes:
+    """ Combine all mice genotypes into one file """
+    input:
+        geno = expand(
+            "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
+            mouse=ALL_MICE,
+        ),
+    output:
+        geno = "results/genotypes.parquet",
+    params:
+        mice = ALL_MICE,
+    resources:
+        mem_mb = 8000,
+    script:
+        "../scripts/combine_genotypes.py"

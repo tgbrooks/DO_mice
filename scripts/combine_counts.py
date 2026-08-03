@@ -1,4 +1,4 @@
-"""Combine per-mouse GBRS gene TPM files into tissue-level tables.
+"""Combine per-mouse GBRS gene counts files into tissue-level tables.
 
 Run as a Snakemake `script:` (see the `combine_tpm` rule), so it reads its
 inputs from the `snakemake` object. GBRS writes one file per mouse with a
@@ -7,14 +7,14 @@ diploid mode) a `notes` column holding the called diplotype.
 
 Two tables are written:
 
-- `{tissue}.{mode}.genes.tpm.parquet`: total TPM, one column per mouse.
-- `{tissue}.{mode}.genes.founder_tpm.parquet`: long form with the per-founder TPM
+- `{tissue}.{mode}.genes.tpm.parquet`: total counts, one column per mouse.
+- `{tissue}.{mode}.genes.founder_tpm.parquet`: long form with the per-founder counts
   of every gene in every mouse, for allele-specific analyses.
 """
 
 import polars as pl
 
-paths = list(snakemake.input.tpm)
+paths = list(snakemake.input.counts)
 mice = list(snakemake.params.mice)
 haplotypes = list(snakemake.params.haplotypes)
 

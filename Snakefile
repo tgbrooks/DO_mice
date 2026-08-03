@@ -39,8 +39,10 @@ def default_targets() -> list[str]:
             "results/{tissue}/gbrs/{mouse}.diploid.genes.tpm", tissue=tissue, mouse=mice
         )
         targets += [
-            f"results/{tissue}/{tissue}.diploid.genes.tpm.tsv",
-            f"results/{tissue}/{tissue}.multiway.genes.tpm.tsv",
+            f"results/{tissue}/{tissue}.diploid.genes.tpm.parquet",
+            f"results/{tissue}/{tissue}.multiway.genes.tpm.parquet",
+            f"results/{tissue}/{tissue}.diploid.genes.expected_read_counts.parquet",
+            f"results/{tissue}/{tissue}.multiway.genes.expected_read_counts.parquet",
         ]
         if GBRS["run_reconstruct"]:
             # GBRS's own genome reconstruction, to compare against the array
@@ -53,6 +55,9 @@ def default_targets() -> list[str]:
                 tissue=tissue,
                 mouse=mice,
             )
+    targets += [
+            "results/genotypes.parquet",
+    ]
     return targets
 
 
