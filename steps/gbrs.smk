@@ -355,3 +355,22 @@ rule combine_counts:
         mem_mb = 8000,
     script:
         "../scripts/combine_counts.py"
+
+rule gbrs_quantify_diploid_bootstrapped:
+    """Quantify variability of expression against the mouse's own diploid genome.
+    """
+    input:
+        h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
+        gene2transcripts = gbrs_file("gene2transcripts"),
+        lengths = gbrs_file("transcript_lengths"),
+        genotypes = lambda w: genotype_file(w.tissue, w.mouse),
+    output:
+        counts = "processed/{tissue}/gbrs/{mouse}.bootstrap_quants.parquet"
+    params:
+        model = GBRS["multiread_model"],
+        n_bootstraps = 30,
+    resources:
+        mem_mb = 4000,
+        runtime = '6h',
+    script:
+        "../scripts/bootstrap_gbrs_diploid.py"
