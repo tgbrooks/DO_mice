@@ -1,14 +1,10 @@
 import subprocess
 import pathlib
 import shutil
-import h5py
-import hashlib
-import math
-import pickle
-import io
 import numpy as np
 import polars as pl
-from scipy.sparse import csc_matrix, csr_matrix
+from util.random import stable_seed
+from util.compressed_emase import load_compressed_emase, write_compressed_emase
 
 tmp_dir = pathlib.Path(
     f"/tmp/gbrs_bootstrap_{snakemake.wildcards.tissue}_{snakemake.wildcards.mouse}"
@@ -20,61 +16,28 @@ bootstrapped_h5_file = tmp_dir / "bootstrapped.h5"
 # since most of the file stays the same (only count matrix needs to change)
 shutil.copy(snakemake.input.h5, bootstrapped_h5_file)
 
-
-def stable_seed(value):
-    """Turns a list, tuple, string, or integer into a usable seed value for numpy RNG"""
-    hasher = hashlib.blake2b()
-    if isinstance(value, tuple | list):
-        for v in value:
-            h = stable_seed(v)
-            nbytes = math.ceil(h.bit_length() / 8)
-            hasher.update(h.to_bytes(nbytes))
-    elif isinstance(value, str):
-        hasher.update(value.encode())
-    elif isinstance(value, int):
-        nbytes = math.ceil(value.bit_length() / 8)
-        hasher.update(value.to_bytes(nbytes))
-    else:
-        raise ValueError(f"Unrecognized type for: {value}")
-    x = int.from_bytes(hasher.digest()) % (2**64)
-    return x
-
-
 rng = np.random.default_rng(
     seed=stable_seed((100, snakemake.wildcards.tissue, snakemake.wildcards.mouse))
 )
 
+HAPLOTYPES = [f"h{i}" for i in range(8)]
+
 
 def bootstrap(outfile, rng):
-    f = h5py.File(snakemake.input.h5, "r")
-    count = np.asarray(f["count"])
-    n_reads = count.sum()
-    shape = pickle.load(io.BytesIO(f["/"].attrs["shape"]))
-    n_loci, n_hap, n_read_groups = shape
-    new_count = rng.multinomial(n_reads, count / n_reads)
+    data = load_compressed_emase(snakemake.input.h5, haplotypes=HAPLOTYPES)
+    n_reads = data.count.sum()
+    n_loci, n_hap, n_read_groups = data.shape
 
-    out = h5py.File(outfile, "r+")
+    # Perform bootstrapping
+    new_count = rng.multinomial(n_reads, data.count / n_reads)
+
+    # Drop regions where we now have 0 reads: these cause problems downstream
     nonzero = new_count != 0
-    del out["count"]
-    out["count"] = new_count[nonzero]
     new_n_readgroups = np.sum(nonzero)
-    out["/"].attrs["shape"] = pickle.dumps(
-        (n_loci, n_hap, new_n_readgroups), protocol=0
-    )
-    for hap in range(0, 8):
-        hap = f"h{hap}"
-        all_ones = np.ones(len(f[hap]["indices"]))
-        orig = csr_matrix(
-            (all_ones, f[hap]["indices"], f[hap]["indptr"]),
-            shape=(n_loci, n_read_groups),
-        )
-        new = orig[:, nonzero]
-
-        del out[hap]["indptr"]
-        del out[hap]["indices"]
-        out[hap]["indptr"] = new.indptr
-        out[hap]["indices"] = new.indices
-    out.close()
+    data.shape = (n_loci, n_hap, new_n_readgroups)
+    for hap in HAPLOTYPES:
+        data.haps[hap] = data.haps[hap][:, nonzero]
+    write_compressed_emase(data, outfile)
 
 
 results = []

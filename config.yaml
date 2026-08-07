@@ -1,6 +1,10 @@
 ## Configuration for the Diversity Outbred (DO) mouse GBRS pipeline.
 ## Run snakemake from within this directory (see README.md).
 
+
+# Annotation to use, compatible with the GBRS reference
+gtf: "/project/itmatlab/genomes/mouse/GRCm39/Ensembl.v105/Mus_musculus.GRCm39.105.gtf.gz"
+
 ## Maximum number of mice to process per tissue. Mice are taken in sorted order
 ## from the tissue's sample table (intersected with the mice that have
 ## genotypes, if geno/genotyped_mice.txt has been generated). Set to null to

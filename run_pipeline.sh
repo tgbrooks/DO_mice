@@ -3,8 +3,9 @@
 # below for your cluster. Extra arguments are passed to Snakemake, e.g.
 #   ./run_pipeline.sh -n
 #   ./run_pipeline.sh genotyped_mice
+module load apptainer/1.4.1
 mkdir -p logs
-bsub -e logs/snakemake.err \
+APPTAINER_TMPDIR=/scratch/tmp bsub -e logs/snakemake.err \
     -o logs/snakemake.out \
     uv run snakemake \
     -c 100 \
