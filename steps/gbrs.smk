@@ -379,7 +379,7 @@ rule gbrs_allele_unique_reads:
     """ Count how many reads distinguish allele-specificity in each gene """
     input:
         h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
-        genotypes = "geno/gbrs_genotypes/DO024.genotypes.tsv",
+        genotypes = "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
     output:
         gene_unique = "processed/{tissue}/gbrs_allele_unique_reads/{mouse}.allele_unique_reads.parquet",
     script:
