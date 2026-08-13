@@ -93,7 +93,7 @@ rule emase_common_alignments:
     output:
         h5 = temp("results/{tissue}/gbrs/{mouse}.merged.h5"),
     resources:
-        mem_mb = 64000,
+        mem_mb = lambda wildcards, attempt: 64000+(24000*attempt),
         runtime = '12h',
     container:
         "images/gbrs.sif"
@@ -120,7 +120,7 @@ rule gbrs_compress:
     output:
         h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
     resources:
-        mem_mb = 32000,
+        mem_mb = lambda wildcards, attempt: 20000 + 12000*attempt,
         runtime = '12h',
     container:
         "images/gbrs.sif"

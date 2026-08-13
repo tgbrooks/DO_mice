@@ -40,9 +40,10 @@ def default_targets() -> list[str]:
         )
         targets += [
             f"results/{tissue}/{tissue}.diploid.genes.tpm.parquet",
-            f"results/{tissue}/{tissue}.multiway.genes.tpm.parquet",
             f"results/{tissue}/{tissue}.diploid.genes.expected_read_counts.parquet",
-            f"results/{tissue}/{tissue}.multiway.genes.expected_read_counts.parquet",
+            # We don't currently use the multiway alignments unless 'run_reconstruct' is enabled
+            #f"results/{tissue}/{tissue}.multiway.genes.tpm.parquet",
+            #f"results/{tissue}/{tissue}.multiway.genes.expected_read_counts.parquet",
         ]
         targets += [f"processed/{tissue}/gbrs/{mouse}.bootstrap_quants.parquet" for mouse in mice]
         targets += [f"processed/{tissue}/gbrs_allele_unique_reads/{mouse}.allele_unique_reads.parquet" for mouse in mice]

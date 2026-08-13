@@ -171,8 +171,8 @@ def _(allele_unique, imbalance, is_homozygous, lp, mo, pl):
             )
         )
         return lp.gggrid([
-            lp.ggplot(df, lp.aes("mouse_id", "correlation_total")) + lp.geom_point() + lp.labs(y="corr(total reads)") + lp.ylim(-1,1),
-            lp.ggplot(df, lp.aes("mouse_id", "correlation")) + lp.geom_point() + lp.labs(y="corr(imbalance)") + lp.ylim(-1,1),
+            lp.ggplot(df, lp.aes(y="correlation_total")) + lp.geom_boxplot() + lp.geom_jitter(height=0) + lp.labs(y="corr(total reads)"),
+            lp.ggplot(df, lp.aes(y="correlation")) + lp.geom_boxplot() + lp.geom_jitter(height=0) + lp.labs(y="corr(imbalance)"),
         ])
     mo.vstack([
         "We expect GBRS quantified allele-specific imbalance and our own (non-EM) ASE quants to be close, at least when we have a large number of allele-specific reads",

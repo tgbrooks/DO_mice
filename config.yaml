@@ -9,7 +9,7 @@ gtf: "/project/itmatlab/genomes/mouse/GRCm39/Ensembl.v105/Mus_musculus.GRCm39.10
 ## from the tissue's sample table (intersected with the mice that have
 ## genotypes, if geno/genotyped_mice.txt has been generated). Set to null to
 ## process every mouse.
-max_samples: 10
+max_samples: 100
 
 ## Tissues to process. Each tissue is one GEO series from the same DO cohort,
 ## so the same mouse can appear in several tissues and shares one genotype.

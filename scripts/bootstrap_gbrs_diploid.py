@@ -45,7 +45,11 @@ for i in range(snakemake.params.n_bootstraps):
     # write a new bootstrapped count file
     bootstrap(bootstrapped_h5_file, rng)
 
-    cmd = f"apptainer exec images/gbrs.sif gbrs quantify \
+    fips_off = tmp_dir / "fips_off"
+    fips_off.write_text("0")
+    cmd = f"apptainer exec \
+            --bind {fips_off}:/proc/sys/crypto/fips_enabled \
+            images/gbrs.sif gbrs quantify \
                 -i {bootstrapped_h5_file} \
                 -g {snakemake.input.gene2transcripts} \
                 -L {snakemake.input.lengths} \
