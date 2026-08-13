@@ -171,8 +171,8 @@ def _(allele_unique, imbalance, is_homozygous, lp, mo, pl):
             )
         )
         return lp.gggrid([
-            lp.ggplot(df, lp.aes(y="correlation_total")) + lp.geom_boxplot() + lp.geom_jitter(height=0) + lp.labs(y="corr(total reads)"),
-            lp.ggplot(df, lp.aes(y="correlation")) + lp.geom_boxplot() + lp.geom_jitter(height=0) + lp.labs(y="corr(imbalance)"),
+            lp.ggplot(df, lp.aes(y="correlation_total")) + lp.geom_boxplot() + lp.geom_jitter(height=0, tooltips=lp.layer_tooltips(["mouse_id"])) + lp.labs(y="corr(total reads)"),
+            lp.ggplot(df, lp.aes(y="correlation")) + lp.geom_boxplot() + lp.geom_jitter(height=0, tooltips=lp.layer_tooltips(["mouse_id"])) + lp.labs(y="corr(imbalance)"),
         ])
     mo.vstack([
         "We expect GBRS quantified allele-specific imbalance and our own (non-EM) ASE quants to be close, at least when we have a large number of allele-specific reads",
@@ -181,7 +181,7 @@ def _(allele_unique, imbalance, is_homozygous, lp, mo, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(allele_unique, lp, mo, pl):
     # Check by genotype
     def _():
@@ -206,20 +206,51 @@ def _(allele_unique, lp, mo, pl):
             lp.ggplot(df.sample(n=10_000), lp.aes(hap, "incompat", fill=hap)) + lp.geom_violin() + lp.scale_y_log10(),
         ]) + lp.ggsize(width=900, height=400)
     def _grid():
-        df = (
-            allele_unique
-                .with_columns(
+        au = allele_unique.with_columns(
                     hap1 = pl.col("diplotype").str.slice(0,1),
                     hap2 = pl.col("diplotype").str.slice(1,1),
                 )
+        df = (
+                au
                 .group_by("hap1", "hap2")
                 .agg(N=pl.len())
         )
+        simple = (
+            au
+            .group_by("mouse_id")
+            .agg(
+                N_hom = pl.len().filter(pl.col("hap1") == pl.col("hap2")).sum(),
+                N_het = pl.len().filter(pl.col("hap1") != pl.col("hap2")).sum(),
+            )
+            .with_columns(hom_het_fraction = pl.col("N_hom") / (pl.col("N_hom") + pl.col("N_het")))
+        )
         hap1 = lp.as_discrete("hap1", levels=list("ABCDEFGH"), order=1)
         hap2 = lp.as_discrete("hap2", levels=list("ABCDEFGH"), order=-1)
-        return lp.ggplot(df, lp.aes(hap1, hap2, fill="N")) + lp.geom_bin2d(stat="identity") + lp.scale_fill_viridis(option="magma", limits=[0])
+        founder_rates = (
+            au['hap1']
+                .value_counts()
+                .join(au['hap2'].value_counts().rename({"count": "hap2_count"}), left_on="hap1", right_on="hap2")
+                .select(
+                    hap = "hap1",
+                    N = pl.col("count") + pl.col("hap2_count")
+                ).with_columns(
+                    rate = pl.col("N") / pl.col("N").sum()
+                )
+        )
+        # expect ~1/8th of diplotypes to be homozygous but this depends on the exact
+        # distribution of founder alleles in the population
+        expected_hom_fraction = founder_rates.select(
+            (pl.col("rate")*pl.col("rate")).sum()
+        )['rate'][0]
+        return lp.gggrid([
+            lp.ggplot(df, lp.aes(hap1, hap2, fill="N")) + lp.geom_bin2d(stat="identity") + lp.scale_fill_viridis(option="magma", limits=[0]),
+            #lp.ggplot(simple, lp.aes("type", "N")) + lp.geom_boxplot() + lp.geom_jitter(height=0, tooltips=lp.layer_tooltips(["mouse_id"])) + lp.ylim(0),
+            lp.ggplot(simple, lp.aes(y="hom_het_fraction")) + lp.geom_boxplot() + lp.geom_jitter(height=0, tooltips=lp.layer_tooltips(["mouse_id"])) + lp.ylim(0) + lp.labs(y="fraction homozygous")
+             + lp.geom_hline(yintercept=expected_hom_fraction, color="red")
+            ,
+        ])  + lp.ggsize(width=900, height=400)
     mo.vstack([
-        "Check if any genotypes have different unqiue alignment properties, and the distribution of all diplotypes",
+        "Check if any genotypes have different unqiue alignment properties, and the distribution of all diplotypes. Check heterozygous versus homozygous rates: false heterozygous calls can be particularly bad for ASE. We expect 1/8 of diplotypes to be homozygous since 8 founders. Note that diplotypes are sorted so AB contains AB and BA options and we expect double the count for AB as for AA. Expected fraction homozygous shown in red line.",
         _(),
         _grid(),
     ])
