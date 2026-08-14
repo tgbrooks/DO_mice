@@ -16,3 +16,4 @@ logs
 slurm-*.out
 .ncbi
 fasterq.tmp*
+__marimo__

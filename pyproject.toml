@@ -16,6 +16,8 @@ dependencies = [
     "h5py>=3.16.0",
     "scipy>=1.18.0",
     "polars-bio>=0.33.1",
+    "pydeseq2>=0.5.4",
+    "pandas>=3.0.5",
 ]
 
 [build-system]
@@ -29,4 +31,11 @@ packages = ["util"]
 snakemake-executor-plugin-lsf = { git = "ssh://git@github.com/tgbrooks/snakemake-executor-plugin-lsf.git", rev = "3f792d70fd01f2a7eb45f23625e398b7dc0321e5" }
 
 [dependency-groups]
-dev = ["h5py>=3.16.0", "ipython>=9.15.0", "numpy>=2.0"]
+dev = [
+    "h5py>=3.16.0",
+    "ipython>=9.15.0",
+    "numpy>=2.0",
+    "python-lsp-server>=1.15.0",
+    "ruff>=0.16.3",
+    "websockets>=17.0.1",
+]
