@@ -92,8 +92,8 @@ rule merge_fastq_paired:
         r1 = lambda w: mouse_run_fastqs(w, "R1"),
         r2 = lambda w: mouse_run_fastqs(w, "R2"),
     output:
-        r1 = "results/{tissue}/fastq/{mouse}_R1.fastq.gz",
-        r2 = "results/{tissue}/fastq/{mouse}_R2.fastq.gz",
+        r1 = temp("results/{tissue}/fastq/{mouse}_R1.fastq.gz"),
+        r2 = temp("results/{tissue}/fastq/{mouse}_R2.fastq.gz"),
     resources:
         runtime = '4h',
     shell:
@@ -108,7 +108,7 @@ rule merge_fastq_single:
     input:
         lambda w: mouse_run_fastqs(w, "SE"),
     output:
-        "results/{tissue}/fastq/{mouse}_SE.fastq.gz",
+        temp("results/{tissue}/fastq/{mouse}_SE.fastq.gz"),
     resources:
         runtime = '4h',
     shell:
