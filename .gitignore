@@ -17,3 +17,6 @@ slurm-*.out
 .ncbi
 fasterq.tmp*
 __marimo__
+fips_off
+temp*
+.cache
