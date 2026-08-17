@@ -10,16 +10,18 @@ def _():
     import lets_plot as lp
     import polars as pl
     import polars_bio as pb
+    import statsmodels.api as sm
     import numpy as np
     import yaml
 
-    return lp, mo, np, pb, pl, yaml
+    return lp, mo, np, pb, pl, sm, yaml
 
 
 @app.cell
 def _():
     MIN_MEDIAN_EXPR_THRESHOLD = 50
-    return (MIN_MEDIAN_EXPR_THRESHOLD,)
+    MIN_ASE_READS = 10
+    return MIN_ASE_READS, MIN_MEDIAN_EXPR_THRESHOLD
 
 
 @app.cell
@@ -57,8 +59,23 @@ def _(yaml):
 
 @app.cell
 def _(config, pb, pl):
-    gene_annot = pb.scan_gtf(config['gtf'], attr_fields=["gene_id", "gene_name", "gene_biotype"]).filter(pl.col("type") == "gene").collect()
+    gene_annot = (
+        pb.scan_gtf(
+            config["gtf"], attr_fields=["gene_id", "gene_name", "gene_biotype"]
+        )
+        .filter(pl.col("type") == "gene")
+        .collect()
+    )
     return (gene_annot,)
+
+
+@app.cell
+def _(pl):
+    # phenotypes were acquired from Dryad  and extracted from Rdata format:
+    # https://datadryad.org/dataset/doi:10.5061/dryad.pj105
+    pheno = pl.read_csv("phenotypes.csv.gz")
+    pheno
+    return
 
 
 @app.cell
@@ -425,7 +442,7 @@ def _(MIN_MEDIAN_EXPR_THRESHOLD, gene_expr_mat, mo, np, pl):
 
 
 @app.cell
-def _(dds, gene_annot, gene_expr_mat, genes_to_use, lp, pl):
+def _(dds, gene_annot, gene_expr_mat, genes_to_use, lp, mo, pl):
     gene_dispersions = pl.DataFrame(
         {
             "gene_id": gene_expr_mat.filter(genes_to_use)["gene_id"],
@@ -439,16 +456,19 @@ def _(dds, gene_annot, gene_expr_mat, genes_to_use, lp, pl):
             "size_factor": dds.obs["size_factors"],
         }
     )
-    (
+    mo.vstack([
+        "DESeq2 dispersion and mean estimates",
         lp.ggplot(
             gene_dispersions.join(gene_annot, "gene_id"),
-            lp.aes(x="normed_means", y="dispersion")
+            lp.aes(x="normed_means", y="dispersion"),
         )
-        + lp.geom_pointdensity(tooltips=lp.layer_tooltips(["gene_id", "gene_name"]))
+        + lp.geom_pointdensity(
+            tooltips=lp.layer_tooltips(["gene_id", "gene_name"])
+        )
         + lp.scale_x_log10()
         + lp.scale_y_log10()
-    )
-    return
+    ])
+    return gene_dispersions, size_factors
 
 
 @app.cell(hide_code=True)
@@ -460,9 +480,8 @@ def _(mo):
 
 
 @app.cell
-def _(allele_unique, is_homozygous, pl):
+def _(MIN_ASE_READS, allele_unique, is_homozygous, pl):
     # We need to discard samples that are sufficiently uninformative in terms of ASE
-    MIN_ASE_READS = 10
     to_use = allele_unique.with_columns(
         frac_AS=pl.col("allele_specific_reads") / pl.col("total_reads")
     ).filter(
@@ -470,6 +489,128 @@ def _(allele_unique, is_homozygous, pl):
         | is_homozygous("diplotype"),
     )
     to_use
+    return
+
+
+@app.cell
+def _(HAPLOTYPES, genotypes, pl):
+    haplotype_counts = genotypes.with_columns(**{
+        hap: pl.col("genotype").str.contains(hap).cast(int) + (pl.col("genotype") == f"{hap}{hap}").cast(int)
+        for hap in HAPLOTYPES
+    })
+    return (haplotype_counts,)
+
+
+@app.cell
+def _(
+    HAPLOTYPES,
+    gene_dispersions,
+    gene_expr_mat,
+    genes_to_use,
+    haplotype_counts,
+    np,
+    pl,
+    size_factors,
+    sm,
+):
+    gene_id = "ENSMUSG00000051747"
+    assert sorted(gene_expr_mat.columns[1:]) == gene_expr_mat.columns[1:] # samples are sorted
+    assert sorted(gene_expr_mat.columns[1:]) == size_factors['mouse_id'].to_list()
+    disp = gene_dispersions.filter(gene_id=gene_id)['dispersion'][0]
+
+    _selected_gene_ids = gene_expr_mat['gene_id'].filter(genes_to_use)
+    results = []
+    for gene_id in _selected_gene_ids:
+        # Fit a model where expression is linear with haplotype counts for each haplotype
+        endog = gene_expr_mat.filter(gene_id=gene_id).drop("gene_id").to_numpy().flatten()
+        exog = haplotype_counts.filter(gene_id=gene_id).sort("mouse_id")
+        hap_count = sm.GLM(
+            endog = endog,
+            exog = exog.select(HAPLOTYPES).to_numpy(),
+            family = sm.families.NegativeBinomial(alpha=disp),
+            offset = size_factors['size_factor'],
+        ).fit()
+        # Compare to model where all genotypes contribute equally
+        _rmatrix = np.hstack([np.ones((7,1)), -np.eye(7)]) # A-B=0, A-C=0, ..., A-H=0
+        diff_test = hap_count.f_test(_rmatrix)
+    
+        results.append({
+            "gene_id": gene_id,
+            "haplotype_effects": hap_count.params,
+            "haplotype_se": hap_count.bse,
+            "haplotype_effect_p": diff_test.pvalue,
+        })
+    results = pl.DataFrame(results)
+    return (results,)
+
+
+@app.cell
+def _(results):
+    results
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Gene plots
+    Interactive plots to visualize individual genes
+    """)
+    return
+
+
+@app.cell
+def _(gene_expr_mat, mo):
+    gene_ids = sorted(gene_expr_mat['gene_id'])
+    gene_selector = mo.ui.dropdown(gene_ids, searchable=True)
+    gene_selector
+    return (gene_selector,)
+
+
+@app.cell
+def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
+    def _():
+        HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette(len(HAPLOTYPES))
+        au = (
+            allele_unique.filter(gene_id = gene_selector.value)
+                    .join(size_factors, "mouse_id")
+        )
+        max_expr = au.select(max=(pl.col("total_reads") / pl.col("size_factor")).max())['max'][0]
+        plot_grid = []
+        for hap1 in HAPLOTYPES:
+            for hap2 in HAPLOTYPES:
+                h1, h2 = sorted([hap1, hap2])
+                hap_data = (
+                    au
+                    .filter(pl.col("diplotype") == f"{h1}{h2}")
+                    .with_columns(
+                        **{
+                            h1: pl.col("haplotype_1_unique") / pl.col("size_factor"),
+                             h2: pl.col("haplotype_2_unique") / pl.col("size_factor"),
+                        },
+                        unspecific = (pl.col("total_reads") - pl.col("allele_specific_reads")) / pl.col("size_factor"),
+                    )
+                    .unpivot(
+                        on=[hap1, hap2, "unspecific"],
+                        index="mouse_id",
+                        variable_name="class",
+                        value_name="expr",
+                    )
+                )
+                _class = lp.as_discrete("class", levels=HAPLOTYPES+["unspecific"], order=1)
+                plt = (
+                    lp.ggplot(hap_data, lp.aes(x="mouse_id", y="expr", color=_class, fill=_class))
+                    + lp.geom_bar(stat="identity")
+                    + lp.theme_void()
+                    + lp.ylim(0, max_expr)
+                    + lp.theme(legend_position="none")
+                    + lp.ggtitle(f"{hap1}{hap2}")
+                    + lp.scale_color_manual(values=HAPLOTYPE_COLORS+["black"], breaks=HAPLOTYPES+["unspecific"])
+                    + lp.scale_fill_manual(values=HAPLOTYPE_COLORS+["black"], breaks=HAPLOTYPES+["unspecific"])
+                )
+                plot_grid.append(plt)
+        return lp.gggrid(plot_grid, ncol=len(HAPLOTYPES)) + lp.ggsize(900, 900)
+    _()
     return
 
 

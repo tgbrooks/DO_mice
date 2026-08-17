@@ -18,6 +18,7 @@ dependencies = [
     "polars-bio>=0.33.1",
     "pydeseq2>=0.5.4",
     "pandas>=3.0.5",
+    "statsmodels>=0.14.6",
 ]
 
 [build-system]
