@@ -111,6 +111,12 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         family = binomial,
         data = au2,
     )
+    res_binom_restricted <- glmmTMB(
+        cbind(haplotype_1_unique, haplotype_2_unique) ~ 1,
+        family = binomial,
+        data = au2,
+    )
+    anova_binom <- anova(res_binom_restricted, res_binom)
 
     effect_A = fixef(res_binom)$cond['effect_A']
     effect_B = fixef(res_binom)$cond['effect_B']
@@ -150,8 +156,8 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         downsample_factor = downsample_factor,
         n_samples_binom = nrow(au2),
         n_samples_buffering = nrow(buffering_data),
-        converged_binom = res_binom$fit$converged,
-        converged_buffering = res_buffering$fit$converged,
+        converged_binom = res_binom$fit$converge,
+        converged_buffering = res_buffering$fit$converge,
         effect_A = effect_A,
         effect_B = effect_B,
         effect_C = effect_C,
@@ -160,6 +166,8 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         effect_F = effect_F,
         effect_G = effect_G,
         effect_H = 0, # Reference, 0 by definition
+        anova_binom_p = anova_binom$`Pr(>Chisq)`[2],
+        anova_binom_chisq = anova_binom$Chisq[2],
     )
     return(results)
 }
