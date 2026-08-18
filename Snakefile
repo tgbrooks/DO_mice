@@ -22,6 +22,8 @@ include: "steps/download.smk"
 include: "steps/genotypes.smk"
 # GBRS: alignment, EMASE, quantification, (optional) genome reconstruction:
 include: "steps/gbrs.smk"
+# Our actual analysis and models
+include: "steps/analyze.smk"
 
 # These are quick bookkeeping steps, not worth submitting as cluster jobs:
 localrules: genotyped_mice, combine_tpm
@@ -39,6 +41,7 @@ def default_targets() -> list[str]:
             "results/{tissue}/gbrs/{mouse}.diploid.genes.tpm", tissue=tissue, mouse=mice
         )
         targets += [
+            f"results/{tissue}/buffering.txt",
             f"results/{tissue}/{tissue}.diploid.genes.tpm.parquet",
             f"results/{tissue}/{tissue}.diploid.genes.expected_read_counts.parquet",
             # We don't currently use the multiway alignments unless 'run_reconstruct' is enabled
@@ -60,6 +63,7 @@ def default_targets() -> list[str]:
             )
     targets += [
             "results/genotypes.parquet",
+            "geno/kinship/1.txt",
     ]
     return targets
 

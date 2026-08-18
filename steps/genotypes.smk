@@ -13,6 +13,7 @@ genome of each mouse instead of one reconstructed from the RNA-seq itself.
 """
 
 GENO = config["genotypes"]
+CHROMOSOMES = config['chromosomes']
 
 
 rule download_genoprobs:
@@ -156,3 +157,16 @@ rule combine_genotypes:
         mem_mb = 8000,
     script:
         "../scripts/combine_genotypes.py"
+
+rule compute_kinship:
+    """ Compute leave one chromosome out (LOCO) kinship matrices for all the mice """
+    input:
+        geno = "geno/genoprobs.RData"
+    output:
+        kinship = expand("geno/kinship/{chr}.txt", chr=CHROMOSOMES)
+    resources:
+        mem_mb = 16_000,
+    container:
+        "images/rgeneral.sif"
+    script:
+        "../scripts/compute_kinship.R"

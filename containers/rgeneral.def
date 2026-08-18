@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: rocker/tidyverse:4.6.1
+
+%post
+    install2.r --error --skipinstalled --ncpus -1 \
+        glmmTMB \
+        qtl2 \
+        arrow \
+        broom \
+        broom.mixed \
+        emmeans \
+        DHARMa \
+        BiocManager
+    Rscript -e 'BiocManager::install(c("DESeq2"))'
+
+    rm -rf /tmp/downloaded_packages
+
+%environment
+    export LC_ALL=C.UTF-8
+
+%test
+    Rscript -e 'cat(R.version.string, "\n")'

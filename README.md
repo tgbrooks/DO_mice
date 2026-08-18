@@ -45,6 +45,8 @@ apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/gbrs.s
 apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/rgeno.sif containers/rgeno.def
 # SRA Toolkit, for downloading the FASTQs
 apptainer build --ignore-subuid --ignore-fakeroot-command --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/sratools.sif containers/sratools.def
+# For R in more general contexts with more libraries installed
+apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/rgeneral.sif containers/rgeneral.def
 ```
 
 Bind any paths the jobs need with `--singularity-args "-B /your/path"`.

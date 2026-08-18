@@ -183,12 +183,12 @@ def summarize_count_types(data, annot, genotypes):
 
 # Perform a test of the summarize function
 test_data = Emase(
-    shape=(1, 3, 6),
-    count=np.array([1, 2, 3, 4, 5, 6]),
+    shape=(1, 3, 7),
+    count=np.array([1, 2, 3, 4, 5, 6, 7]),
     haps=dict(
-        h0=scipy.sparse.csr_matrix(np.array([[1, 0, 0, 1, 1, 0]])),
-        h1=scipy.sparse.csr_matrix(np.array([[0, 1, 0, 1, 1, 0]])),
-        h2=scipy.sparse.csr_matrix(np.array([[0, 0, 1, 1, 0, 0]])),
+        h0=scipy.sparse.csr_matrix(np.array([[1, 0, 0, 1, 1, 0, 1]])),
+        h1=scipy.sparse.csr_matrix(np.array([[0, 1, 0, 1, 1, 0, 0]])),
+        h2=scipy.sparse.csr_matrix(np.array([[0, 0, 1, 1, 0, 0, 1]])),
     ),
     lname=np.array(["transcript1"]),
     hname=["A", "B", "C"],
@@ -199,10 +199,10 @@ out = summarize_count_types(test_data, test_annot, test_genotypes)
 assert out.to_dicts() == [
     {
         "gene_id": "gene1",
-        "total_reads": 15,
-        "allele_specific_reads": 3,
+        "total_reads": 22,
+        "allele_specific_reads": 10,
         "diplotype": "AB",
-        "haplotype_1_unique": 1,
+        "haplotype_1_unique": 8,
         "haplotype_2_unique": 2,
         "diplotype_incompat_reads": 3,
     }
