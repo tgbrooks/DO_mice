@@ -1,5 +1,6 @@
 library(DESeq2)
 library(tidyverse)
+library(arrow)
 
 count_file <- "results/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
 outfile <- "results/Adipose/size_factors.txt"
