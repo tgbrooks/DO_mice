@@ -5,19 +5,32 @@ library(arrow)
 
 count_file <- "results/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
 chromosome <- "5"
-tissue <- "Adipose"
 MIN_MEDIAN_COUNTS <- 50
 size_factors_file <- "results/Adipose/size_factors.txt"
 annot_file <- "processed/gene_annot.txt"
 outfile <- "temp.txt"
 kinship_file <- paste0("geno/kinship/", chromosome, ".txt")
+phenotypes_file <- "phenotypes.csv.gz"
+allele_unique_reads <- Sys.glob("processed/Adipose/gbrs_allele_unique_reads/*.allele_unique_reads.parquet")
+
+count_file <- "processed/simulated_counts/simulated_counts.diploid.genes.founder_expected_read_counts.parquet"
+chromosome <- "1"
+MIN_MEDIAN_COUNTS <- 50
+size_factors_file <- "processed/simulated_counts/size_factors.txt"
+annot_file <- "processed/simulated_counts/gene_annot.txt"
+kinship_file <- "processed/simulated_counts/kinship.txt"
+phenotypes_file <- "processed/simulated_counts/phenotypes.csv"
+allele_unique_reads <- Sys.glob("processed/simulated_counts/gbrs_allele_unique_reads/*.allele_unique_reads.parquet")
+outfile <- "temp.txt"
+
 
 count_file <- snakemake@input$counts
 size_factors_file <- snakemake@input$size_factors
 annot_file <- snakemake@input$annot
 kinship_file <- snakemake@input$kinship
+phenotypes_file <- snakemake@input$phenotypes
+allele_unique_reads <- snakemake@input$allele_unique_reads
 chromosome <- snakemake@wildcards$chromosome
-tissue <- snakemake@wildcards$tissue
 MIN_MEDIAN_COUNTS <- snakemake@params$min_median_counts
 outfile <- snakemake@output$outfile
 
@@ -35,28 +48,30 @@ K2 <- K2[mouse_ids, mouse_ids]
 
 # Allele-specific counts
 temp <- list()
-for (mouse_id in mouse_ids) {
+for (au_file in allele_unique_reads) {
+    mouse_id <- str_extract(au_file, "(DO|SIM)[0-9]+")
     temp[[length(temp)+1]] <- (
-        read_parquet(
-            paste0("processed/", tissue, "/gbrs_allele_unique_reads/", mouse_id, ".allele_unique_reads.parquet")
-        ) |> mutate(mouse_id=mouse_id)
+        read_parquet(au_file) |> mutate(mouse_id=mouse_id)
     )
 }
-allele_unique <- bind_rows(temp)
+print(bind_rows(temp))
+allele_unique <- bind_rows(temp) |>
+        mutate(
+            hap1 = str_sub(diplotype, 1, 1),
+            hap2 = str_sub(diplotype, 2, 2),
+            is_homozygous = hap1 == hap2,
+            A = str_count(diplotype, "A") ,
+            B = str_count(diplotype, "B") ,
+            C = str_count(diplotype, "C") ,
+            D = str_count(diplotype, "D") ,
+            E = str_count(diplotype, "E") ,
+            F = str_count(diplotype, "F") ,
+            G = str_count(diplotype, "G") ,
+            H = str_count(diplotype, "H") ,
+        )
 
 size_factors <- read_tsv(size_factors_file)
-phenotypes <- read_csv("phenotypes.csv.gz")
-genotypes <- read_parquet("results/genotypes.parquet") |>
-    mutate(
-        A = str_count(genotype, "A") ,
-        B = str_count(genotype, "B") ,
-        C = str_count(genotype, "C") ,
-        D = str_count(genotype, "D") ,
-        E = str_count(genotype, "E") ,
-        F = str_count(genotype, "F") ,
-        G = str_count(genotype, "G") ,
-        H = str_count(genotype, "H") ,
-    )
+phenotypes <- read_csv(phenotypes_file)
 
 fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     # Fit our full buffering model
@@ -135,7 +150,7 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     ## and we know the total cis effect from the binomial model above.
     ## To compute the cis effect, we model log(total)] = log(y1 + y2) the sum of the two alleles counts (not just unique)
     ## From our binomial model, we have E[y1] = exp(effect_i) and where i is the first haplotype
-    ## So log(total) = log(exp(effect_i) + exp(effect_j))
+    ## So log(total) ≈  log(exp(effect_i) + exp(effect_j))
     buffering_data <- au |>
         mutate(
             cis_effect = log(
@@ -162,7 +177,7 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         data = buffering_data,
     )
     res_buffering_restricted <- glmmTMB(
-        total ~ offset(log(size_factor)) + sex + DOwave +
+        total ~ offset(log(size_factor) + cis_effect) + sex + DOwave +
                 propto(0 + mouse_id | dummy, K2),
         family = nbinom2,
         data = buffering_data,
@@ -213,53 +228,20 @@ for (gene in gene_ids) {
 
     message("Running ", gene)
 
-    # Data for the buffering model
-    basic_data <- data |>
-        select(gene_id, mouse_id, total) |>
-        left_join(
-            phenotypes,
-            join_by(mouse_id == mouse.id)
-        ) |>
-        left_join(
-            genotypes |>
-                filter(gene_id == gene),
-            join_by(
-                mouse_id == mouse_id,
-                gene_id == gene_id,
-            )
-        ) |>
-        left_join(size_factors, "mouse_id") |>
-        mutate(
-            total = as.integer(total), 
-            mouse_id = factor(mouse_id, levels=rownames(K2)), # levels must match, in order, for propto()
-            dummy = factor(1),
-            DOwave = as.factor(DOwave),
-        )
-
     # For the binomial model: needs allele-specific counts
     au <- allele_unique |>
         filter(
             gene_id == gene,
         ) |>
         mutate(
-            hap1 = str_sub(diplotype, 1, 1),
-            hap2 = str_sub(diplotype, 2, 2),
-            is_homozygous = hap1 == hap2,
-        ) |>
-        left_join(
-            genotypes |>
-                filter(gene_id == gene),
-            "mouse_id",
-        ) |>
-        mutate(
-            effect_A = (hap1 == "A") * A - (hap2 == "A") * A,
-            effect_B = (hap1 == "B") * B - (hap2 == "B") * B,
-            effect_C = (hap1 == "C") * C - (hap2 == "C") * C,
-            effect_D = (hap1 == "D") * D - (hap2 == "D") * D,
-            effect_E = (hap1 == "E") * E - (hap2 == "E") * E,
-            effect_F = (hap1 == "F") * F - (hap2 == "F") * F,
-            effect_G = (hap1 == "G") * G - (hap2 == "G") * G,
-            effect_H = (hap1 == "H") * H - (hap2 == "H") * H,
+            effect_A = (hap1 == "A") - (hap2 == "A"),
+            effect_B = (hap1 == "B") - (hap2 == "B"),
+            effect_C = (hap1 == "C") - (hap2 == "C"),
+            effect_D = (hap1 == "D") - (hap2 == "D"),
+            effect_E = (hap1 == "E") - (hap2 == "E"),
+            effect_F = (hap1 == "F") - (hap2 == "F"),
+            effect_G = (hap1 == "G") - (hap2 == "G"),
+            effect_H = (hap1 == "H") - (hap2 == "H"),
         ) |>
         left_join(
             phenotypes,
@@ -273,8 +255,8 @@ for (gene in gene_ids) {
             DOwave = as.factor(DOwave),
         )
 
+        res <- fit_model(au) |>
 
-    res <- fit_model(au) |>
         mutate(
             gene_id = gene,
             .before=1,

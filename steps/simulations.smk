@@ -1,0 +1,46 @@
+rule simulate_counts:
+    """ Simulate count-level data for our buffering model """
+    output:
+        "processed/simulated_counts/kinship.txt",
+        "processed/simulated_counts/genotypes.parquet",
+        "processed/simulated_counts/phenotypes.csv",
+        "processed/simulated_counts/gene_annot.txt",
+        "processed/simulated_counts/size_factors.txt",
+        "processed/simulated_counts/simulated_counts.diploid.genes.founder_expected_read_counts.parquet",
+        expand(
+            "processed/simulated_counts/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
+            mouse_id = [f"SIM{i:03}" for i in range(200)]
+        ),
+        "processed/simulated_counts/true_params.txt",
+    params:
+        N_SAMPLES = 200,
+        N_NO_CIS_GENES = 100,
+        N_NO_BUFFERING_GENES = 100,
+        N_BUFFERING_GENES = 100,
+        SEED = 100,
+    script:
+        "../scripts/simulate_counts.py"
+
+rule model_buffering_simulated_counts:
+    input:
+        counts = "processed/simulated_counts/simulated_counts.diploid.genes.founder_expected_read_counts.parquet",
+        size_factors = "processed/simulated_counts/size_factors.txt",
+        annot = "processed/simulated_counts/gene_annot.txt",
+        phenotypes = "processed/simulated_counts/phenotypes.csv",
+        genotypes = "processed/simulated_counts/genotypes.parquet",
+        kinship = "processed/simulated_counts/kinship.txt",
+        allele_unique_reads = expand(
+            "processed/simulated_counts/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
+            mouse_id = [f"SIM{i:03}" for i in range(200)]
+        ),
+    output:
+        outfile = "processed/simulated_counts/buffering/{chromosome}.txt" # only chromsome 1 is actually present
+    params:
+        min_median_counts = config['MIN_MEDIAN_COUNTS'],
+    resources:
+        mem_mb = 18_000,
+    container:
+        "images/rgeneral.sif"
+    script:
+        "../scripts/model_buffering.R"
+

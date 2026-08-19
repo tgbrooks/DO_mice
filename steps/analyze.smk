@@ -37,8 +37,14 @@ rule model_buffering:
     """ Compute buffering factors for each gene of a chromosome """
     input:
         counts = "results/{tissue}/{tissue}.diploid.genes.founder_expected_read_counts.parquet",
+        allele_unique = lambda wildcards: expand(
+            f"processed/{{tissue}}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
+            mouse_id = MICE[wildcards.tissue]
+        ),
         size_factors = "results/{tissue}/size_factors.txt",
         annot = "processed/gene_annot.txt",
+        phenotypes = "phenotypes.csv.gz",
+        genotypes = "results/genotypes.parquet",
         kinship = "geno/kinship/{chromosome}.txt",
     output:
         outfile = "processed/{tissue}/buffering/{chromosome}.txt"

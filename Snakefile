@@ -24,6 +24,8 @@ include: "steps/genotypes.smk"
 include: "steps/gbrs.smk"
 # Our actual analysis and models
 include: "steps/analyze.smk"
+# Simulations to test our models
+include: "steps/simulations.smk"
 
 # These are quick bookkeeping steps, not worth submitting as cluster jobs:
 localrules: genotyped_mice, combine_tpm
