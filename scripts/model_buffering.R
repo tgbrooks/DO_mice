@@ -108,12 +108,12 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     # since buffering affects both haplotypes
     res_binom <- glmmTMB(
         cbind(haplotype_1_unique, haplotype_2_unique) ~ effect_A + effect_B + effect_C + effect_D + effect_E + effect_F + effect_G,  # H is reference
-        family = binomial,
+        family = betabinomial,
         data = au2,
     )
     res_binom_restricted <- glmmTMB(
         cbind(haplotype_1_unique, haplotype_2_unique) ~ 1,
-        family = binomial,
+        family = betabinomial,
         data = au2,
     )
     anova_binom <- anova(res_binom_restricted, res_binom)
@@ -133,13 +133,26 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     ## where k = 1/(1-b)
     ## and b gives the extent of buffering
     ## and we know the total cis effect from the binomial model above.
-    ## NOTE: one limitation of this estimate is that there is noise in the exogenous variable
-    ## cis_effect, which can dilute the slope and therefore make it look like buffering.
+    ## To compute the cis effect, we model log(total)] = log(y1 + y2) the sum of the two alleles counts (not just unique)
+    ## From our binomial model, we have E[y1] = exp(effect_i) and where i is the first haplotype
+    ## So log(total) = log(exp(effect_i) + exp(effect_j))
     buffering_data <- au |>
         mutate(
-            cis_effect = effect_A*A + effect_B*B + effect_C*C + effect_D*D + effect_E*E + effect_F*F + effect_G*G # H is reference
+            cis_effect = log(
+                   exp(effect_A)*A
+                 + exp(effect_B)*B
+                 + exp(effect_C)*C
+                 + exp(effect_D)*D
+                 + exp(effect_E)*E
+                 + exp(effect_F)*F
+                 + exp(effect_G)*G
+                 + H
+                 # H is reference, effect_H = 0
+            )
         )
 
+    ## NOTE: one limitation of this estimate is that there is noise in the exogenous variable
+    ## cis_effect, which can dilute the slope and therefore make it look like buffering.
     # NOTE: we don't include generation since it's not in the available phenotypes
     res_buffering <- glmmTMB(
         total ~ offset(log(size_factor)) + sex + DOwave +
@@ -148,8 +161,15 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         family = nbinom2,
         data = buffering_data,
     )
+    res_buffering_restricted <- glmmTMB(
+        total ~ offset(log(size_factor)) + sex + DOwave +
+                propto(0 + mouse_id | dummy, K2),
+        family = nbinom2,
+        data = buffering_data,
+    )
+    anova_buffering = anova(res_buffering_restricted, res_buffering)
 
-    buffering_factor <- 1 - 1/fixef(res_buffering)$cond['cis_effect']
+    buffering_factor <- fixef(res_buffering)$cond['cis_effect']
     results <- tibble(
         buffering_factor = buffering_factor,
         dilution_factor = dilution_factor,
@@ -168,6 +188,8 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         effect_H = 0, # Reference, 0 by definition
         anova_binom_p = anova_binom$`Pr(>Chisq)`[2],
         anova_binom_chisq = anova_binom$Chisq[2],
+        anova_buffering_p = anova_buffering$`Pr(>Chisq)`[2],
+        anova_buffering_chisq = anova_buffering$Chisq[2],
     )
     return(results)
 }
