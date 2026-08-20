@@ -121,25 +121,37 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     # Fit a logit binomial model for the two haplotype unique counts
     # this estimates the cis effects in a manner that is independent of buffering
     # since buffering affects both haplotypes
+    family = betabinomial
     res_binom <- glmmTMB(
         cbind(haplotype_1_unique, haplotype_2_unique) ~ effect_A + effect_B + effect_C + effect_D + effect_E + effect_F + effect_G,  # H is reference
-        family = betabinomial,
+        family = family,
         data = au2,
     )
+    binom_disp <- exp(res_binom$fit$par['betadisp'])
+    if ((res_binom$fit$converge > 0) && (binom_disp > 100)) {
+        # High 'dispersion' parameter in the betabinomial parameterization used by glmmTMB
+        # means that it converges to a standard binomial. Use that instead.
+        family <- binomial
+        res_binom <- glmmTMB(
+            cbind(haplotype_1_unique, haplotype_2_unique) ~ effect_A + effect_B + effect_C + effect_D + effect_E + effect_F + effect_G,  # H is reference
+            family = family,
+            data = au2,
+        )
+    }
     res_binom_restricted <- glmmTMB(
         cbind(haplotype_1_unique, haplotype_2_unique) ~ 1,
-        family = betabinomial,
+        family = family,
         data = au2,
     )
     anova_binom <- anova(res_binom_restricted, res_binom)
 
-    effect_A = fixef(res_binom)$cond['effect_A']
-    effect_B = fixef(res_binom)$cond['effect_B']
-    effect_C = fixef(res_binom)$cond['effect_C']
-    effect_D = fixef(res_binom)$cond['effect_D']
-    effect_E = fixef(res_binom)$cond['effect_E']
-    effect_F = fixef(res_binom)$cond['effect_F']
-    effect_G = fixef(res_binom)$cond['effect_G']
+    cis_A = fixef(res_binom)$cond['effect_A']
+    cis_B = fixef(res_binom)$cond['effect_B']
+    cis_C = fixef(res_binom)$cond['effect_C']
+    cis_D = fixef(res_binom)$cond['effect_D']
+    cis_E = fixef(res_binom)$cond['effect_E']
+    cis_F = fixef(res_binom)$cond['effect_F']
+    cis_G = fixef(res_binom)$cond['effect_G']
 
     ## Now we fit the buffering model, using the binomial-fit parameters
     ## We assume that tot = y_1  + y_2 is buffered by some function of itself
@@ -153,14 +165,14 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     ## So log(total) ≈  log(exp(effect_i) + exp(effect_j))
     buffering_data <- au |>
         mutate(
-            cis_effect = log(
-                   exp(effect_A)*A
-                 + exp(effect_B)*B
-                 + exp(effect_C)*C
-                 + exp(effect_D)*D
-                 + exp(effect_E)*E
-                 + exp(effect_F)*F
-                 + exp(effect_G)*G
+            cis_effect = (
+                   exp(cis_A)*A
+                 + exp(cis_B)*B
+                 + exp(cis_C)*C
+                 + exp(cis_D)*D
+                 + exp(cis_E)*E
+                 + exp(cis_F)*F
+                 + exp(cis_G)*G
                  + H
                  # H is reference, effect_H = 0
             )
@@ -193,13 +205,13 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         n_samples_buffering = nrow(buffering_data),
         converged_binom = res_binom$fit$converge,
         converged_buffering = res_buffering$fit$converge,
-        effect_A = effect_A,
-        effect_B = effect_B,
-        effect_C = effect_C,
-        effect_D = effect_D,
-        effect_E = effect_E,
-        effect_F = effect_F,
-        effect_G = effect_G,
+        effect_A = cis_A,
+        effect_B = cis_B,
+        effect_C = cis_C,
+        effect_D = cis_D,
+        effect_E = cis_E,
+        effect_F = cis_F,
+        effect_G = cis_G,
         effect_H = 0, # Reference, 0 by definition
         anova_binom_p = anova_binom$`Pr(>Chisq)`[2],
         anova_binom_chisq = anova_binom$Chisq[2],
@@ -255,8 +267,7 @@ for (gene in gene_ids) {
             DOwave = as.factor(DOwave),
         )
 
-        res <- fit_model(au) |>
-
+    res <- fit_model(au) |>
         mutate(
             gene_id = gene,
             .before=1,

@@ -37,8 +37,8 @@ rule model_buffering:
     """ Compute buffering factors for each gene of a chromosome """
     input:
         counts = "results/{tissue}/{tissue}.diploid.genes.founder_expected_read_counts.parquet",
-        allele_unique = lambda wildcards: expand(
-            f"processed/{{tissue}}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
+        allele_unique_reads = lambda wildcards: expand(
+            "processed/{{tissue}}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
             mouse_id = MICE[wildcards.tissue]
         ),
         size_factors = "results/{tissue}/size_factors.txt",
@@ -66,5 +66,5 @@ rule collect_buffering_results:
         mem_mb = 6_000
     run:
         import polars as pl
-        temp = [pl.read_csv(r, separator="\t") for r in input.results]
+        temp = [pl.read_csv(r, separator="\t", null_values="NA") for r in input.results]
         pl.concat(temp).write_csv(output.results, separator="\t")

@@ -5,6 +5,7 @@ Simulate count-level data that follows our buffering model to see how well it wo
 import pathlib
 import polars as pl
 import numpy as np
+import scipy.stats
 
 tissue = "simulated_counts"
 try:
@@ -14,14 +15,16 @@ try:
     N_NO_BUFFERING_GENES = snakemake.params.N_NO_BUFFERING_GENES
     N_BUFFERING_GENES = snakemake.params.N_BUFFERING_GENES
 except NameError:
+    # for testing
     SEED = 100
     N_SAMPLES = 200
-    N_NO_CIS_GENES = 100
-    N_NO_BUFFERING_GENES = 100
-    N_BUFFERING_GENES = 100
+    N_NO_CIS_GENES = 20
+    N_NO_BUFFERING_GENES = 20
+    N_BUFFERING_GENES = 20
 N_GENES = N_NO_CIS_GENES + N_NO_BUFFERING_GENES + N_BUFFERING_GENES
 HAPLOTYPES = np.array(list("ABCDEFGH"))
 N_HAPLOTYPES = len(HAPLOTYPES)
+MODEL = "NEGATIVE_BINOMIAL"  # POISSON / NEGATIVE_BINOMIAL
 
 rng = np.random.default_rng(seed=SEED)
 
@@ -35,6 +38,10 @@ haplotype_effects = np.concatenate(
             0, 0.5, size=((N_BUFFERING_GENES + N_NO_BUFFERING_GENES), N_HAPLOTYPES)
         ),
     ]
+)
+# Mean of exp(hap_effect) has to be 1 so that 'mean_expr' is the true mean expr per allele
+haplotype_effects = (
+    haplotype_effects - np.log(np.exp(haplotype_effects).mean(axis=1))[:, None]
 )
 buffering_effects = np.concatenate(
     [
@@ -52,27 +59,37 @@ idx = np.meshgrid(np.arange(N_SAMPLES), np.arange(N_GENES))
 genotypes[*idx, diplotypes[:, :, 0].T] += 1
 genotypes[*idx, diplotypes[:, :, 1].T] += 1
 
-haplotype_means = np.exp(haplotype_effects) * mean_expr[:, None] * genotypes
+base_haplotype_means = np.exp(haplotype_effects) * mean_expr[:, None]
+haplotype_means = base_haplotype_means * genotypes
 
-# Apply buffering: an effect that moves us towards the original mean_expr of the gene
+# Apply buffering: an effect that moves us towards the original 2*mean_expr of the gene
 # buffering_effect = -1 gives perfect buffering counteracting any change in the mean
 # buffering_effect = 0 gives no buffering
 total_means = haplotype_means.sum(axis=-1)
-buffered_haplotype_means = (
-    haplotype_means
-    * (total_means / mean_expr)[:, :, None] ** (buffering_effects[:, None])
+buffering_factor = (total_means / (2 * mean_expr))[:, :, None] ** (
+    buffering_effects[:, None]
 )
+buffered_haplotype_means = haplotype_means * buffering_factor
 
 # Generate the actual read counts
 # negative binomial: mu = r(1-p)/p, dispersion = 1/r
 # so p = 1/(mu dispersion + 1)
 p = 1 / (buffered_haplotype_means * dispersion[:, None] + 1)
 r = 1 / dispersion[:, None]
-allele_counts = rng.negative_binomial(
-    r,
-    p,
-    size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
-)
+if MODEL == "POISSON":
+    allele_counts = rng.poisson(
+        buffered_haplotype_means,
+        size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
+    )
+elif MODEL == "NEGATIVE_BINOMIAL":
+    allele_counts = rng.negative_binomial(
+        r,
+        p,
+        size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
+    )
+else:
+    raise ValueError(f"Unrecognized {MODEL=}")
+# Binomial thinning to get the *unique* counts
 allele_unique_counts = rng.binomial(
     allele_counts,
     fraction_unique[None, :, None],
@@ -80,7 +97,52 @@ allele_unique_counts = rng.binomial(
 )
 total_counts = allele_counts.sum(axis=-1)
 
+
+##################################################
+# Check that counts follow the expected ratios:
+##################################################
+def extract_by_diplotypes(arr, diplotypes):
+    # for arr and n_samples x n_genes x n_haplotypes
+    # extract the part that is n_samples x n_genes x 2
+    # corresponding to its two diplotypes
+    # For hets, returns the same value twice
+    samples, genes = np.meshgrid(np.arange(N_SAMPLES), np.arange(N_GENES))
+    hap1 = arr[
+        samples.T,
+        genes.T,
+        diplotypes[:, :, 0],
+    ]
+    hap2 = arr[
+        samples.T,
+        genes.T,
+        diplotypes[:, :, 1],
+    ]
+    return np.moveaxis(np.array([hap1, hap2]), [0, 1, 2], [2, 0, 1])
+
+
+diplotype_ac = extract_by_diplotypes(allele_counts, diplotypes)
+ac_ratios = diplotype_ac[:, :, 0] / diplotype_ac[:, :, 1]
+diplotype_au = extract_by_diplotypes(allele_unique_counts, diplotypes)
+au_ratios = diplotype_au[:, :, 0] / diplotype_au[:, :, 1]
+diplotype_hap_effects = extract_by_diplotypes(haplotype_means, diplotypes)
+expected_ratios = diplotype_hap_effects[:, :, 0] / diplotype_hap_effects[:, :, 1]
+high_expr = mean_expr > 100
+
+
+def associate(x, y):
+    x = x.flatten()
+    y = y.flatten()
+    nonnan = np.isfinite(y)
+    return scipy.stats.linregress(x[nonnan], y[nonnan])
+
+
+r_ac = associate(expected_ratios[:, high_expr], ac_ratios[:, high_expr])
+r_au = associate(expected_ratios[:, high_expr], au_ratios[:, high_expr])
+
+##################################################
 # Output files in the required manner
+##################################################
+
 outdir = pathlib.Path(f"processed/{tissue}")
 outdir.mkdir(exist_ok=True)
 

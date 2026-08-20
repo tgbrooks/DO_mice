@@ -44,3 +44,13 @@ rule model_buffering_simulated_counts:
     script:
         "../scripts/model_buffering.R"
 
+
+rule check_model_on_simulations:
+    input:
+        results = "processed/simulated_counts/buffering/1.txt",
+        truth = "processed/simulated_counts/true_params.txt",
+    output:
+        report = "procesed/simulation_counts/report.txt"
+    script:
+        "../scripts/check_model_on_simulations.py"
+
