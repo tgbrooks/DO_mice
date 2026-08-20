@@ -20,3 +20,5 @@ __marimo__
 fips_off
 temp*
 .cache
+.RData
+.Rhistory
