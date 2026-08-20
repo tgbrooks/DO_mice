@@ -1,6 +1,7 @@
 import numpy as np
 import polars as pl
 import scipy.stats
+import scipy.integrate
 
 pl.Config(
     tbl_hide_dataframe_shape=True,
@@ -43,6 +44,22 @@ for hap in haplotypes:
         }
     )
 binom_test = pl.DataFrame(temp)
+
+
+print("""
+---------------------------------------------------------------------
+CONVERGENCE
+---------------------------------------------------------------------
+First, we check how many models converged and discard any that didn't
+""")
+# NOTE: 0 denotes successful convergence from glmmTMB
+print(
+    data.group_by("type").agg(
+        fraction_failed_binom=pl.col("converged_binom").mean(),
+        fraction_failed_buffering=pl.col("converged_buffering").mean(),
+    )
+)
+data = data.filter(pl.col("converged_binom") == 0, pl.col("converged_buffering") == 0)
 
 print("""
 ---------------------------------------------------------------------
@@ -94,3 +111,38 @@ print(
     )
     .sort("type")
 )
+
+print(
+    "Check if the estimated buffering factor corresponds with the actual buffering effect"
+)
+print("  (Only for the buffering genes) ")
+buff = data.filter(type="buffering")
+res = scipy.stats.linregress(buff["buffering_effects"], buff["buffering_factor"])
+print(
+    pl.DataFrame(
+        {
+            "slope": res.slope,
+            "intercept": res.intercept,
+            "pvalue": res.pvalue,
+        }
+    )
+)
+
+## AUC for identifying buffering
+roc = (
+    data.drop_nulls("anova_buffering_p")
+    .sort("anova_buffering_p")
+    .select(
+        p_value="anova_buffering_p",
+        n_below=pl.row_index() + 1,
+        n_true_positives=(pl.col("type") == "buffering").cum_sum(),
+        n_positives=(pl.col("type") == "buffering").sum(),
+    )
+    .with_columns(
+        fpr=(pl.col("n_below") - pl.col("n_true_positives"))
+        / (pl.len() - pl.col("n_positives")),
+        tpr=pl.col("n_true_positives") / pl.col("n_positives"),
+    )
+)
+auc_roc = scipy.integrate.trapezoid(roc["tpr"], roc["fpr"])
+print(f"AUC of ROC curve: {auc_roc:0.3}")

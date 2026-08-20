@@ -50,7 +50,7 @@ rule check_model_on_simulations:
         results = "processed/simulated_counts/buffering/1.txt",
         truth = "processed/simulated_counts/true_params.txt",
     output:
-        report = "procesed/simulation_counts/report.txt"
-    script:
-        "../scripts/check_model_on_simulations.py"
+        report = "procesed/simulated_counts/report.txt"
+    shell:
+        "python ../scripts/check_model_on_simulations.py > {output}"
 

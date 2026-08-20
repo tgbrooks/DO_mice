@@ -66,6 +66,7 @@ def default_targets() -> list[str]:
     targets += [
             "results/genotypes.parquet",
             "geno/kinship/1.txt",
+            "procesed/simulated_counts/report.txt",
     ]
     return targets
 
