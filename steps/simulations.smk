@@ -14,9 +14,9 @@ rule simulate_counts:
         "processed/simulated_counts/true_params.txt",
     params:
         N_SAMPLES = 200,
-        N_NO_CIS_GENES = 100,
-        N_NO_BUFFERING_GENES = 100,
-        N_BUFFERING_GENES = 100,
+        N_NO_CIS_GENES = 200,
+        N_NO_BUFFERING_GENES = 200,
+        N_BUFFERING_GENES = 200,
         SEED = 100,
     script:
         "../scripts/simulate_counts.py"

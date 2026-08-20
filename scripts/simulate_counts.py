@@ -18,16 +18,21 @@ except NameError:
     # for testing
     SEED = 100
     N_SAMPLES = 200
-    N_NO_CIS_GENES = 20
-    N_NO_BUFFERING_GENES = 20
-    N_BUFFERING_GENES = 20
+    N_NO_CIS_GENES = 50
+    N_NO_BUFFERING_GENES = 50
+    N_BUFFERING_GENES = 50
 N_GENES = N_NO_CIS_GENES + N_NO_BUFFERING_GENES + N_BUFFERING_GENES
 HAPLOTYPES = np.array(list("ABCDEFGH"))
 N_HAPLOTYPES = len(HAPLOTYPES)
-MODEL = "NEGATIVE_BINOMIAL"  # POISSON / NEGATIVE_BINOMIAL
+MODELS = ["POISSON", "NEGATIVE_BINOMIAL", "SHARED_DISPERSION"]
 
 rng = np.random.default_rng(seed=SEED)
 
+##################################################
+# Generate the true parameters for each gene
+##################################################
+
+models = rng.choice(MODELS, size=N_GENES)
 mean_expr = 10 ** rng.normal(2, 1, size=N_GENES)  # per allele, so total is 2x this
 dispersion = 10 ** rng.normal(-1, 0.5, size=N_GENES)
 fraction_unique = rng.uniform(0.05, 0.3, size=N_GENES)
@@ -50,6 +55,10 @@ buffering_effects = np.concatenate(
     ]
 )
 
+##################################################
+# Generate genotypes and compute sample-level parameters
+##################################################
+
 # Sample genotype effect
 diplotypes = rng.choice(N_HAPLOTYPES, size=(N_SAMPLES, N_GENES, 2))
 diplotype_strs = HAPLOTYPES[diplotypes[:, :, 0]] + HAPLOTYPES[diplotypes[:, :, 1]]
@@ -71,25 +80,39 @@ buffering_factor = (total_means / (2 * mean_expr))[:, :, None] ** (
 )
 buffered_haplotype_means = haplotype_means * buffering_factor
 
+##################################################
 # Generate the actual read counts
-# negative binomial: mu = r(1-p)/p, dispersion = 1/r
+# using one of three models
+##################################################
+allele_counts = np.zeros((N_SAMPLES, N_GENES, N_HAPLOTYPES), dtype=int)
+# Poisson model:
+allele_counts[:, models == "POISSON"] = rng.poisson(
+    buffered_haplotype_means,
+    size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
+)[:, models == "POISSON"]
+# Negative binomial: mu = r(1-p)/p, dispersion = 1/r
 # so p = 1/(mu dispersion + 1)
 p = 1 / (buffered_haplotype_means * dispersion[:, None] + 1)
 r = 1 / dispersion[:, None]
-if MODEL == "POISSON":
-    allele_counts = rng.poisson(
-        buffered_haplotype_means,
-        size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
-    )
-elif MODEL == "NEGATIVE_BINOMIAL":
-    allele_counts = rng.negative_binomial(
-        r,
-        p,
-        size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
-    )
-else:
-    raise ValueError(f"Unrecognized {MODEL=}")
+allele_counts[:, models == "NEGATIVE_BINOMIAL"] = rng.negative_binomial(
+    r,
+    p,
+    size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
+)[:, models == "NEGATIVE_BINOMIAL"]
+# Shared dispersion model: poisson-gamma where the gamma variance
+# is shared between the two alleles
+scale_factor = rng.gamma(  # a mean 1 gamma with varying variance
+    1 / dispersion,
+    dispersion,
+)
+allele_counts[:, models == "SHARED_DISPERSION"] = rng.poisson(
+    buffered_haplotype_means * scale_factor[None, :, None],
+    size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
+)[:, models == "SHARED_DISPERSION"]
+
+##################################################
 # Binomial thinning to get the *unique* counts
+##################################################
 allele_unique_counts = rng.binomial(
     allele_counts,
     fraction_unique[None, :, None],
@@ -233,9 +256,10 @@ phenotypes.write_csv(outdir / "phenotypes.csv")
 true_params = pl.DataFrame(
     {
         "gene_id": gene_ids,
+        "model": models,
         "mean_expr": mean_expr,
         "dispersion": dispersion,
-        "buffering_effects": buffering_effects,
+        "buffering_effect": buffering_effects,
         "faction_unique": fraction_unique,
         **{
             f"effect_{hap}": haplotype_effects[:, i] for i, hap in enumerate(HAPLOTYPES)
