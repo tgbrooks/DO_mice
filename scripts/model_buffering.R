@@ -145,13 +145,22 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     )
     anova_binom <- anova(res_binom_restricted, res_binom)
 
-    cis_A = fixef(res_binom)$cond['effect_A']
-    cis_B = fixef(res_binom)$cond['effect_B']
-    cis_C = fixef(res_binom)$cond['effect_C']
-    cis_D = fixef(res_binom)$cond['effect_D']
-    cis_E = fixef(res_binom)$cond['effect_E']
-    cis_F = fixef(res_binom)$cond['effect_F']
-    cis_G = fixef(res_binom)$cond['effect_G']
+    cis_A <- fixef(res_binom)$cond['effect_A']
+    cis_B <- fixef(res_binom)$cond['effect_B']
+    cis_C <- fixef(res_binom)$cond['effect_C']
+    cis_D <- fixef(res_binom)$cond['effect_D']
+    cis_E <- fixef(res_binom)$cond['effect_E']
+    cis_F <- fixef(res_binom)$cond['effect_F']
+    cis_G <- fixef(res_binom)$cond['effect_G']
+
+    v <- vcov(res_binom)$cond
+    cis_A_se <- sqrt(v['effect_A', 'effect_A'])
+    cis_B_se <- sqrt(v['effect_B', 'effect_B'])
+    cis_C_se <- sqrt(v['effect_C', 'effect_C'])
+    cis_D_se <- sqrt(v['effect_D', 'effect_D'])
+    cis_E_se <- sqrt(v['effect_E', 'effect_E'])
+    cis_F_se <- sqrt(v['effect_F', 'effect_F'])
+    cis_G_se <- sqrt(v['effect_G', 'effect_G'])
 
     ## Now we fit the buffering model, using the binomial-fit parameters
     ## We assume that tot = y_1  + y_2 is buffered by some function of itself
@@ -165,7 +174,7 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     ## So log(total) ≈  log(exp(effect_i) + exp(effect_j))
     buffering_data <- au |>
         mutate(
-            cis_effect = (
+            cis_effect = log(
                    exp(cis_A)*A
                  + exp(cis_B)*B
                  + exp(cis_C)*C
@@ -188,6 +197,7 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         family = nbinom2,
         data = buffering_data,
     )
+    # Including `cis_effect` in offset() fixes its coefficient at 1, our null
     res_buffering_restricted <- glmmTMB(
         total ~ offset(log(size_factor) + cis_effect) + sex + DOwave +
                 propto(0 + mouse_id | dummy, K2),
@@ -197,8 +207,10 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
     anova_buffering = anova(res_buffering_restricted, res_buffering)
 
     buffering_factor <- fixef(res_buffering)$cond['cis_effect']
+    buffering_factor_se <- sqrt(vcov(res_buffering)$cond['cis_effect', 'cis_effect'])
     results <- tibble(
         buffering_factor = buffering_factor,
+        bufferring_factor_se = buffering_factor_se,
         dilution_factor = dilution_factor,
         downsample_factor = downsample_factor,
         n_samples_binom = nrow(au2),
@@ -213,11 +225,20 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         effect_F = cis_F,
         effect_G = cis_G,
         effect_H = 0, # Reference, 0 by definition
+        effect_A_se = cis_A_se,
+        effect_B_se = cis_B_se,
+        effect_C_se = cis_C_se,
+        effect_D_se = cis_D_se,
+        effect_E_se = cis_E_se,
+        effect_F_se = cis_F_se,
+        effect_G_se = cis_G_se,
+        effect_H_se = 0, # Reference, 0 by definition
         anova_binom_p = anova_binom$`Pr(>Chisq)`[2],
         anova_binom_chisq = anova_binom$Chisq[2],
         anova_buffering_p = anova_buffering$`Pr(>Chisq)`[2],
         anova_buffering_chisq = anova_buffering$Chisq[2],
     )
+
     return(results)
 }
 
