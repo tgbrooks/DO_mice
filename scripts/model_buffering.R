@@ -11,7 +11,7 @@ annot_file <- "processed/gene_annot.txt"
 outfile <- "temp.txt"
 kinship_file <- paste0("geno/kinship/", chromosome, ".txt")
 phenotypes_file <- "phenotypes.csv.gz"
-allele_unique_reads <- Sys.glob("processed/Adipose/gbrs_allele_unique_reads/*.allele_unique_reads.parquet")
+allele_unique_reads <- "processed/Adipose/allele_unique_reads.parquet"
 
 count_file <- "processed/simulated_counts/simulated_counts.diploid.genes.founder_expected_read_counts.parquet"
 chromosome <- "1"
@@ -20,7 +20,7 @@ size_factors_file <- "processed/simulated_counts/size_factors.txt"
 annot_file <- "processed/simulated_counts/gene_annot.txt"
 kinship_file <- "processed/simulated_counts/kinship.txt"
 phenotypes_file <- "processed/simulated_counts/phenotypes.csv"
-allele_unique_reads <- Sys.glob("processed/simulated_counts/gbrs_allele_unique_reads/*.allele_unique_reads.parquet")
+allele_unique_reads <- "processed/simulated_counts/allele_unique_reads.parquet"
 outfile <- "temp.txt"
 
 
@@ -47,15 +47,7 @@ K2  <- 2 * as.matrix(column_to_rownames(K, "mouse_id"))
 K2 <- K2[mouse_ids, mouse_ids]
 
 # Allele-specific counts
-temp <- list()
-for (au_file in allele_unique_reads) {
-    mouse_id <- str_extract(au_file, "(DO|SIM)[0-9]+")
-    temp[[length(temp)+1]] <- (
-        read_parquet(au_file) |> mutate(mouse_id=mouse_id)
-    )
-}
-print(bind_rows(temp))
-allele_unique <- bind_rows(temp) |>
+allele_unique <- read_parquet(allele_unique_reads) |>
         mutate(
             hap1 = str_sub(diplotype, 1, 1),
             hap2 = str_sub(diplotype, 2, 2),
@@ -128,7 +120,7 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         data = au2,
     )
     binom_disp <- exp(res_binom$fit$par['betadisp'])
-    if ((res_binom$fit$converge > 0) && (binom_disp > 100)) {
+    if ((res_binom$fit$convergence > 0) && (is.na(binom_disp) || (binom_disp > 100))) {
         # High 'dispersion' parameter in the betabinomial parameterization used by glmmTMB
         # means that it converges to a standard binomial. Use that instead.
         family <- binomial
@@ -187,6 +179,13 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
             )
         )
 
+    if (all(is.na(buffering_data$cis_effect))) {
+        message("Skipping ", gene, " : estimated cis effects were NA")
+        message("Diplotype distribution in allele-uniques:")
+        print(au2$diplotype |> table())
+        return("SKIP")
+    }
+
     ## NOTE: one limitation of this estimate is that there is noise in the exogenous variable
     ## cis_effect, which can dilute the slope and therefore make it look like buffering.
     # NOTE: we don't include generation since it's not in the available phenotypes
@@ -215,8 +214,8 @@ fit_model <- function(au, dilution_factor = 1, downsample_factor = 1) {
         downsample_factor = downsample_factor,
         n_samples_binom = nrow(au2),
         n_samples_buffering = nrow(buffering_data),
-        converged_binom = res_binom$fit$converge,
-        converged_buffering = res_buffering$fit$converge,
+        convergence_code_binom = res_binom$fit$convergence,
+        convergence_code_buffering = res_buffering$fit$convergence,
         effect_A = cis_A,
         effect_B = cis_B,
         effect_C = cis_C,
@@ -288,7 +287,12 @@ for (gene in gene_ids) {
             DOwave = as.factor(DOwave),
         )
 
-    res <- fit_model(au) |>
+    res <- fit_model(au)
+    if (identical(res, "SKIP")) {
+        next
+    }
+
+    res <- res |>
         mutate(
             gene_id = gene,
             .before=1,

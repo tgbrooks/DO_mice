@@ -384,3 +384,14 @@ rule gbrs_allele_unique_reads:
         gene_unique = "processed/{tissue}/gbrs_allele_unique_reads/{mouse}.allele_unique_reads.parquet",
     script:
         "../scripts/get_allele_unique_reads.py"
+
+rule combine_allele_unique_reads:
+    input:
+        allele_unique = lambda w: expand("processed/{tissue}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
+            mouse_id = MICE[w.tissue],
+            tissue = w.tissue,
+        ),
+    output:
+        allele_unique = "processed/{tissue}/allele_unique_reads.parquet"
+    script:
+        "../scripts/combine_allele_unique_reads.py"

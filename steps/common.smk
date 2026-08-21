@@ -174,7 +174,8 @@ wildcard_constraints:
     run = r"[SED]RR[0-9]+",
     # Mouse IDs, e.g. DO021. No underscores, so `{mouse}_R1` is unambiguous.
     mouse = r"[A-Za-z0-9]+",
-    tissue = r"[A-Za-z0-9]+",
+    tissue = '|'.join(TISSUES), # only real, biological tissues
+    tissue_general = r"[A-Za-z0-9_]+",  # for when we want to include simulated data
     end = r"R1|R2|SE",
     # GBRS quantification modes (multi-way across founders, or diploid).
     mode = r"multiway|diploid",

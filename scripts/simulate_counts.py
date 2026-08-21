@@ -184,12 +184,11 @@ counts.write_parquet(
     f"processed/{tissue}/{tissue}.diploid.genes.founder_expected_read_counts.parquet"
 )
 
-au_dir = outdir / "gbrs_allele_unique_reads"
-au_dir.mkdir(exist_ok=True)
+temp = []
 for i, mouse_id in enumerate(mouse_ids):
-    au_file = f"processed/{tissue}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet"
     au = pl.DataFrame(
         {
+            "mouse_id": mouse_id,
             "gene_id": gene_ids,
             "total_reads": total_counts[i],
             "allele_specific_reads": allele_unique_counts[i].sum(axis=-1),
@@ -207,7 +206,8 @@ for i, mouse_id in enumerate(mouse_ids):
             "diplotype_incompat_reads": np.zeros(N_GENES),
         }
     )
-    au.write_parquet(au_file)
+    temp.append(au)
+pl.concat(temp).write_parquet(outdir / "allele_unique_reads.parquet")
 
 annot = pl.DataFrame(
     {

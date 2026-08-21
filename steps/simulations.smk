@@ -7,10 +7,7 @@ rule simulate_counts:
         "processed/simulated_counts/gene_annot.txt",
         "processed/simulated_counts/size_factors.txt",
         "processed/simulated_counts/simulated_counts.diploid.genes.founder_expected_read_counts.parquet",
-        expand(
-            "processed/simulated_counts/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
-            mouse_id = [f"SIM{i:03}" for i in range(200)]
-        ),
+        "processed/simulated_counts/allele_unique_reads.parquet",
         "processed/simulated_counts/true_params.txt",
     params:
         N_SAMPLES = 200,
@@ -29,10 +26,7 @@ rule model_buffering_simulated_counts:
         phenotypes = "processed/simulated_counts/phenotypes.csv",
         genotypes = "processed/simulated_counts/genotypes.parquet",
         kinship = "processed/simulated_counts/kinship.txt",
-        allele_unique_reads = expand(
-            "processed/simulated_counts/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
-            mouse_id = [f"SIM{i:03}" for i in range(200)]
-        ),
+        allele_unique_reads = "processed/simulated_counts/allele_unique_reads.parquet",
     output:
         outfile = "processed/simulated_counts/buffering/{chromosome}.txt" # only chromsome 1 is actually present
     params:
