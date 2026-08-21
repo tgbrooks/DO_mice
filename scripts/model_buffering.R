@@ -7,36 +7,33 @@ count_file <- "results/Adipose/Adipose.diploid.genes.founder_expected_read_count
 chromosome <- "5"
 MIN_MEDIAN_COUNTS <- 50
 size_factors_file <- "results/Adipose/size_factors.txt"
-annot_file <- "processed/gene_annot.txt"
 outfile <- "temp.txt"
 kinship_file <- paste0("geno/kinship/", chromosome, ".txt")
 phenotypes_file <- "phenotypes.csv.gz"
+gene_ids <- c("ENSMUSG00000097287", "ENSMUSG00000104708", "ENSMUSG00000029208", "ENSMUSG00000029613", "ENSMUSG00000000600")
 allele_unique_reads <- "processed/Adipose/allele_unique_reads.parquet"
 
 count_file <- "processed/simulated_counts/simulated_counts.diploid.genes.founder_expected_read_counts.parquet"
 chromosome <- "1"
 MIN_MEDIAN_COUNTS <- 50
 size_factors_file <- "processed/simulated_counts/size_factors.txt"
-annot_file <- "processed/simulated_counts/gene_annot.txt"
 kinship_file <- "processed/simulated_counts/kinship.txt"
 phenotypes_file <- "processed/simulated_counts/phenotypes.csv"
 allele_unique_reads <- "processed/simulated_counts/allele_unique_reads.parquet"
+gene_ids <- c("GENE0000", "GENE0001", "GENE00002")
 outfile <- "temp.txt"
 
 
 count_file <- snakemake@input$counts
 size_factors_file <- snakemake@input$size_factors
-annot_file <- snakemake@input$annot
 kinship_file <- snakemake@input$kinship
 phenotypes_file <- snakemake@input$phenotypes
 allele_unique_reads <- snakemake@input$allele_unique_reads
 chromosome <- snakemake@wildcards$chromosome
 MIN_MEDIAN_COUNTS <- snakemake@params$min_median_counts
+gene_ids <- snakemake@params$genes
 outfile <- snakemake@output$outfile
 
-
-annot <- read_tsv(annot_file)
-gene_ids <- (annot |> filter(chrom == chromosome))$gene_id
 
 counts <- read_parquet(count_file)
 mouse_ids <- unique(counts$mouse_id)

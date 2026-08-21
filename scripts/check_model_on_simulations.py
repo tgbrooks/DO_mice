@@ -1,3 +1,4 @@
+import pathlib
 import numpy as np
 import polars as pl
 import scipy.stats
@@ -10,9 +11,16 @@ pl.Config(
     tbl_hide_column_data_types=True,
 )
 
-results = pl.read_csv(
-    "processed/simulated_counts/buffering/1.txt", separator="\t", null_values="NA"
-)
+temp = []
+for file in pathlib.Path("processed/simulated_counts/buffering").glob("*.txt"):
+    temp.append(
+        pl.read_csv(
+            "processed/simulated_counts/buffering/1.txt",
+            separator="\t",
+            null_values="NA",
+        )
+    )
+results = pl.concat(temp)
 truth = pl.read_csv("processed/simulated_counts/true_params.txt", separator="\t")
 
 data = results.join(truth, "gene_id", suffix="_true").with_columns(
@@ -62,12 +70,14 @@ First, we check how many models converged and discard any that didn't
 print(
     data.group_by("type", "model")
     .agg(
-        fraction_failed_binom=pl.col("converged_binom").mean(),
-        fraction_failed_buffering=pl.col("converged_buffering").mean(),
+        fraction_failed_binom=(pl.col("convergence_code_binom") != 0).mean(),
+        fraction_failed_buffering=(pl.col("convergence_code_buffering") != 0).mean(),
     )
     .sort("type", "model")
 )
-data = data.filter(pl.col("converged_binom") == 0, pl.col("converged_buffering") == 0)
+data = data.filter(
+    pl.col("convergence_code_binom") == 0, pl.col("convergence_code_buffering") == 0
+)
 
 print("""
 ---------------------------------------------------------------------

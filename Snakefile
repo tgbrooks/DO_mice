@@ -51,7 +51,6 @@ def default_targets() -> list[str]:
             #f"results/{tissue}/{tissue}.multiway.genes.expected_read_counts.parquet",
         ]
         targets += [f"processed/{tissue}/gbrs/{mouse}.bootstrap_quants.parquet" for mouse in mice]
-        targets += [f"processed/{tissue}/gbrs_allele_unique_reads/{mouse}.allele_unique_reads.parquet" for mouse in mice]
         if GBRS["run_reconstruct"]:
             # GBRS's own genome reconstruction, to compare against the array
             # genotypes:
@@ -66,7 +65,7 @@ def default_targets() -> list[str]:
     targets += [
             "results/genotypes.parquet",
             "geno/kinship/1.txt",
-            "procesed/simulated_counts/report.txt",
+            "processed/simulated_counts/report.txt",
     ]
     return targets
 
