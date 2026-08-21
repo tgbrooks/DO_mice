@@ -53,5 +53,5 @@ rule check_model_on_simulations:
     output:
         report = "processed/simulated_counts/report.txt"
     shell:
-        "python ../scripts/check_model_on_simulations.py > {output}"
+        "python scripts/check_model_on_simulations.py > {output}"
 

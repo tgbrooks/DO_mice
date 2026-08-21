@@ -102,5 +102,12 @@ rule collect_buffering_results:
         mem_mb = 6_000
     run:
         import polars as pl
-        temp = [pl.read_csv(r, separator="\t", null_values="NA") for r in input.results]
+        temp =[]
+        for r in input.results:
+            try:
+                data = pl.read_csv(r, separator="\t", null_values="NA")
+            except pl.exceptions.NoDataError:
+                print(f"No results in {r} - skipping")
+                continue
+            temp.append(data)
         pl.concat(temp).write_csv(output.results, separator="\t")
