@@ -101,7 +101,7 @@ def _(HAPLOTYPES, counts, genotypes, is_homozygous, lp, pl):
             imbalance.filter(
                 pl.col("total") > 100,
                 ~is_homozygous("genotype"),
-            ),
+            ).sample(n=10000),
             lp.aes(x="imbalance"),
         )
         + lp.geom_histogram()
@@ -456,25 +456,27 @@ def _(dds, gene_annot, gene_expr_mat, genes_to_use, lp, mo, pl):
             "size_factor": dds.obs["size_factors"],
         }
     )
-    mo.vstack([
-        "DESeq2 dispersion and mean estimates",
-        lp.ggplot(
-            gene_dispersions.join(gene_annot, "gene_id"),
-            lp.aes(x="normed_means", y="dispersion"),
-        )
-        + lp.geom_pointdensity(
-            tooltips=lp.layer_tooltips(["gene_id", "gene_name"])
-        )
-        + lp.scale_x_log10()
-        + lp.scale_y_log10()
-    ])
+    mo.vstack(
+        [
+            "DESeq2 dispersion and mean estimates",
+            lp.ggplot(
+                gene_dispersions.join(gene_annot, "gene_id"),
+                lp.aes(x="normed_means", y="dispersion"),
+            )
+            + lp.geom_pointdensity(
+                tooltips=lp.layer_tooltips(["gene_id", "gene_name"])
+            )
+            + lp.scale_x_log10()
+            + lp.scale_y_log10(),
+        ]
+    )
     return gene_dispersions, size_factors
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Modelling buffering from ASE
+    # Modelling genotype effects from ASE
     """)
     return
 
@@ -494,14 +496,17 @@ def _(MIN_ASE_READS, allele_unique, is_homozygous, pl):
 
 @app.cell
 def _(HAPLOTYPES, genotypes, pl):
-    haplotype_counts = genotypes.with_columns(**{
-        hap: pl.col("genotype").str.contains(hap).cast(int) + (pl.col("genotype") == f"{hap}{hap}").cast(int)
-        for hap in HAPLOTYPES
-    })
+    haplotype_counts = genotypes.with_columns(
+        **{
+            hap: pl.col("genotype").str.contains(hap).cast(int)
+            + (pl.col("genotype") == f"{hap}{hap}").cast(int)
+            for hap in HAPLOTYPES
+        }
+    )
     return (haplotype_counts,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     HAPLOTYPES,
     gene_dispersions,
@@ -514,32 +519,45 @@ def _(
     sm,
 ):
     gene_id = "ENSMUSG00000051747"
-    assert sorted(gene_expr_mat.columns[1:]) == gene_expr_mat.columns[1:] # samples are sorted
-    assert sorted(gene_expr_mat.columns[1:]) == size_factors['mouse_id'].to_list()
-    disp = gene_dispersions.filter(gene_id=gene_id)['dispersion'][0]
+    assert (
+        sorted(gene_expr_mat.columns[1:]) == gene_expr_mat.columns[1:]
+    )  # samples are sorted
+    assert (
+        sorted(gene_expr_mat.columns[1:]) == size_factors["mouse_id"].to_list()
+    )
+    disp = gene_dispersions.filter(gene_id=gene_id)["dispersion"][0]
 
-    _selected_gene_ids = gene_expr_mat['gene_id'].filter(genes_to_use)
+    _selected_gene_ids = gene_expr_mat["gene_id"].filter(genes_to_use)
     results = []
     for gene_id in _selected_gene_ids:
         # Fit a model where expression is linear with haplotype counts for each haplotype
-        endog = gene_expr_mat.filter(gene_id=gene_id).drop("gene_id").to_numpy().flatten()
+        endog = (
+            gene_expr_mat.filter(gene_id=gene_id)
+            .drop("gene_id")
+            .to_numpy()
+            .flatten()
+        )
         exog = haplotype_counts.filter(gene_id=gene_id).sort("mouse_id")
         hap_count = sm.GLM(
-            endog = endog,
-            exog = exog.select(HAPLOTYPES).to_numpy(),
-            family = sm.families.NegativeBinomial(alpha=disp),
-            offset = size_factors['size_factor'],
+            endog=endog,
+            exog=exog.select(HAPLOTYPES).to_numpy(),
+            family=sm.families.NegativeBinomial(alpha=disp),
+            offset=size_factors["size_factor"],
         ).fit()
         # Compare to model where all genotypes contribute equally
-        _rmatrix = np.hstack([np.ones((7,1)), -np.eye(7)]) # A-B=0, A-C=0, ..., A-H=0
+        _rmatrix = np.hstack(
+            [np.ones((7, 1)), -np.eye(7)]
+        )  # A-B=0, A-C=0, ..., A-H=0
         diff_test = hap_count.f_test(_rmatrix)
-    
-        results.append({
-            "gene_id": gene_id,
-            "haplotype_effects": hap_count.params,
-            "haplotype_se": hap_count.bse,
-            "haplotype_effect_p": diff_test.pvalue,
-        })
+
+        results.append(
+            {
+                "gene_id": gene_id,
+                "haplotype_effects": hap_count.params,
+                "haplotype_se": hap_count.bse,
+                "haplotype_effect_p": diff_test.pvalue,
+            }
+        )
     results = pl.DataFrame(results)
     return (results,)
 
@@ -553,6 +571,75 @@ def _(results):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    # Buffering results
+    """)
+    return
+
+
+@app.cell
+def _(pl):
+    buffering_all = pl.read_csv(
+        "results/Adipose/buffering.txt", separator="\t"
+    )
+    buffering_all
+    return (buffering_all,)
+
+
+@app.cell
+def _(buffering_all, gene_annot, mo, pl):
+    mo.vstack([
+        "Check how many failed convergence. After this step, we exclude those from our analysis.",
+        buffering_all.select(
+            frac_binom_failed = (pl.col("convergence_code_binom") != 0).mean(),
+            frac_buffering_failed = (pl.col("convergence_code_buffering") != 0).mean(),
+        )
+        ])
+    buffering = buffering_all.filter(
+        pl.col("convergence_code_binom") == 0,
+        pl.col("convergence_code_buffering") == 0,
+    ).join(
+        gene_annot.select("gene_id", "gene_name", "gene_biotype"),
+        "gene_id",
+    )
+    return (buffering,)
+
+
+@app.cell
+def _(HAPLOTYPES, buffering, lp, mo, pl):
+    genotype_effects = buffering.unpivot(
+        [f"effect_{hap}" for hap in HAPLOTYPES],
+        index=["gene_id", "anova_binom_p"],
+        variable_name="haplotype",
+        value_name="effect",
+    ).with_columns(
+        haplotype = pl.col("haplotype").str.strip_prefix("effect_"),
+        abs_effect = pl.col("effect").abs(),
+    )
+    _hap = lp.as_discrete("haplotype", levels=HAPLOTYPES, order=1)
+    mo.vstack([
+        "Plot genotype effects from the binomial model",
+        lp.gggrid([
+            lp.ggplot(genotype_effects.sample(n=10_000), lp.aes(x = _hap, y = "abs_effect")) + lp.geom_violin() + lp.scale_y_log10() + lp.ggtitle("All genes"),
+            lp.ggplot(genotype_effects.filter(pl.col("anova_binom_p") < 1e-3).sample(n=10_000), lp.aes(x = _hap, y = "abs_effect")) + lp.geom_violin() + lp.scale_y_log10() + lp.ggtitle("Significant genes"),
+        ]) + lp.ggsize(900, 500)
+    ])
+    return
+
+
+@app.cell
+def _(buffering, lp):
+    (
+        lp.ggplot(buffering, lp.aes("anova_binom_p", "anova_buffering_p"))
+        + lp.scale_x_log10()
+        + lp.scale_y_log10()
+        + lp.geom_pointdensity(tooltips=lp.layer_tooltips(["gene_id", "gene_name", "gene_biotype"]))
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     # Gene plots
     Interactive plots to visualize individual genes
     """)
@@ -560,35 +647,112 @@ def _(mo):
 
 
 @app.cell
-def _(gene_expr_mat, mo):
-    gene_ids = sorted(gene_expr_mat['gene_id'])
-    gene_selector = mo.ui.dropdown(gene_ids, searchable=True)
+def _(gene_annot, gene_expr_mat, mo, pl):
+    _vals = gene_expr_mat.select('gene_id').unique().join(gene_annot.select('gene_id', 'gene_name'), "gene_id").sort('gene_id').drop_nulls()
+    _names = list(_vals.select(name = pl.col("gene_id") + " | " + pl.col('gene_name')).drop_nulls()['name'])
+    gene_ids = list(_vals['gene_id'])
+    _options = {_name: _id for _name, _id in zip(_names, gene_ids)}
+    len(gene_ids)
+    gene_selector = mo.ui.dropdown(_options, searchable=True)
     gene_selector
     return (gene_selector,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
     def _():
-        HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette(len(HAPLOTYPES))
         au = (
-            allele_unique.filter(gene_id = gene_selector.value)
-                    .join(size_factors, "mouse_id")
+            allele_unique.filter(gene_id=gene_selector.value)
+            .join(size_factors, "mouse_id")
+            .with_columns(
+                hap1=pl.col("diplotype").str.slice(0, 1),
+                hap2=pl.col("diplotype").str.slice(1, 2),
+                norm_expr=pl.col("total_reads") / pl.col("size_factor"),
+                norm_hap1=pl.col("haplotype_1_unique") / pl.col("size_factor"),
+                norm_hap2=pl.col("haplotype_2_unique") / pl.col("size_factor"),
+            )
         )
-        max_expr = au.select(max=(pl.col("total_reads") / pl.col("size_factor")).max())['max'][0]
+        by_hap_counts = pl.concat([
+            au.with_columns(
+                hap_count = pl.col("diplotype").str.count_matches(hap),
+                hap = pl.lit(hap),
+                hap_unique = pl.when(pl.col("hap1") == hap)
+                    .then("norm_hap1")
+                    .otherwise("norm_hap2"),
+            )
+            .with_columns(
+                hap_str = pl.when(pl.col("hap_count") == 2)
+                    .then(pl.lit(f"{hap}{hap}"))
+                    .otherwise(pl.lit(hap))
+            )
+            .filter(pl.col("hap_count") > 0)
+            for hap in HAPLOTYPES
+        ])
+        _hap = lp.as_discrete("hap", levels=HAPLOTYPES, order=1)
+        median_expr = au['norm_expr'].median()
+        plt_totals = (
+            lp.ggplot(by_hap_counts, lp.aes(x="hap_str", y="norm_expr", color=_hap))
+            + lp.geom_boxplot(outlier_size=False)
+            + lp.geom_jitter(
+                height=0, tooltips=lp.layer_tooltips(["mouse_id"])
+            )
+            + lp.geom_hline(
+                yintercept = median_expr,
+                color="black",
+            )
+            + lp.labs(y="total counts (normalized)",x='',)
+            + lp.ylim(0)
+        )
+        plt_uniques = (
+            lp.ggplot(by_hap_counts.filter(pl.col("hap_count") == 1), lp.aes(x="hap_str", y="hap_unique", color=_hap))
+            + lp.geom_boxplot(outlier_size=False)
+            + lp.geom_jitter(
+                height=0, tooltips=lp.layer_tooltips(["mouse_id"])
+            )
+            #+ lp.geom_hline(
+            #    yintercept = median_expr,
+            #    color="black",
+            #)
+            + lp.labs(y="unique counts (normalized)",x='',)
+            + lp.ylim(0)
+        )
+        return lp.gggrid([plt_totals, plt_uniques], guides="collect") + lp.ggsize(900, 500) + lp.ggtitle(gene_selector.value)
+
+    _()
+    return
+
+
+@app.cell(hide_code=True)
+def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
+    def _():
+        HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette(
+            len(HAPLOTYPES)
+        )
+        au = allele_unique.filter(gene_id=gene_selector.value).join(
+            size_factors, "mouse_id"
+        )
+        max_expr = au.select(
+            max=(pl.col("total_reads") / pl.col("size_factor")).max()
+        )["max"][0]
         plot_grid = []
         for hap1 in HAPLOTYPES:
             for hap2 in HAPLOTYPES:
                 h1, h2 = sorted([hap1, hap2])
                 hap_data = (
-                    au
-                    .filter(pl.col("diplotype") == f"{h1}{h2}")
+                    au.filter(pl.col("diplotype") == f"{h1}{h2}")
                     .with_columns(
                         **{
-                            h1: pl.col("haplotype_1_unique") / pl.col("size_factor"),
-                             h2: pl.col("haplotype_2_unique") / pl.col("size_factor"),
+                            h1: pl.col("haplotype_1_unique")
+                            / pl.col("size_factor"),
+                            h2: pl.col("haplotype_2_unique")
+                            / pl.col("size_factor"),
                         },
-                        unspecific = (pl.col("total_reads") - pl.col("allele_specific_reads")) / pl.col("size_factor"),
+                        unspecific=(
+                            pl.col("total_reads")
+                            - pl.col("haplotype_1_unique")
+                            - pl.col("haplotype_2_unique")
+                        )
+                        / pl.col("size_factor"),
                     )
                     .unpivot(
                         on=[hap1, hap2, "unspecific"],
@@ -597,20 +761,90 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
                         value_name="expr",
                     )
                 )
-                _class = lp.as_discrete("class", levels=HAPLOTYPES+["unspecific"], order=1)
+                _class = lp.as_discrete(
+                    "class", levels=HAPLOTYPES + ["unspecific"], order=1
+                )
                 plt = (
-                    lp.ggplot(hap_data, lp.aes(x="mouse_id", y="expr", color=_class, fill=_class))
+                    lp.ggplot(
+                        hap_data,
+                        lp.aes(
+                            x="mouse_id", y="expr", color=_class, fill=_class
+                        ),
+                    )
                     + lp.geom_bar(stat="identity")
                     + lp.theme_void()
                     + lp.ylim(0, max_expr)
                     + lp.theme(legend_position="none")
                     + lp.ggtitle(f"{hap1}{hap2}")
-                    + lp.scale_color_manual(values=HAPLOTYPE_COLORS+["black"], breaks=HAPLOTYPES+["unspecific"])
-                    + lp.scale_fill_manual(values=HAPLOTYPE_COLORS+["black"], breaks=HAPLOTYPES+["unspecific"])
+                    + lp.scale_color_manual(
+                        values=HAPLOTYPE_COLORS + ["black"],
+                        breaks=HAPLOTYPES + ["unspecific"],
+                    )
+                    + lp.scale_fill_manual(
+                        values=HAPLOTYPE_COLORS + ["black"],
+                        breaks=HAPLOTYPES + ["unspecific"],
+                    )
                 )
                 plot_grid.append(plt)
-        return lp.gggrid(plot_grid, ncol=len(HAPLOTYPES)) + lp.ggsize(900, 900)
+        return lp.gggrid(plot_grid, ncol=len(HAPLOTYPES)) + lp.ggsize(
+            1800, 1800
+        )
+
     _()
+    return
+
+
+@app.cell
+def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
+    def _():
+        au = (
+            allele_unique.filter(gene_id=gene_selector.value)
+            .join(size_factors, "mouse_id")
+            .with_columns(
+                hap1=pl.col("diplotype").str.slice(0, 1),
+                hap2=pl.col("diplotype").str.slice(1, 2),
+                norm_expr=pl.col("total_reads") / pl.col("size_factor"),
+            )
+        )
+        au = pl.concat(
+            [
+                au.select("hap1", "hap2", "norm_expr", "mouse_id"),
+                au.select(
+                    hap1="hap2",
+                    hap2="hap1",
+                    norm_expr="norm_expr",
+                    mouse_id="mouse_id",
+                ).filter(pl.col("hap1") != pl.col("hap2")),
+            ]
+        )
+        _hap2 = lp.as_discrete("hap2", levels=HAPLOTYPES, order=1)
+        plt = (
+            lp.ggplot(au, lp.aes(x=_hap2, y="norm_expr"))
+            + lp.facet_wrap("hap1")
+            + lp.geom_boxplot(outlier_size=0)
+            + lp.geom_jitter(
+                height=0, tooltips=lp.layer_tooltips(["mouse_id"])
+            )
+            + lp.ylim(0)
+        )
+        return plt
+
+    _()
+    return
+
+
+@app.cell
+def _(allele_unique, gene_annot, gene_selector, pl):
+    #gene_expr_mat.filter(pl.col("gene_id").str.ends_with("51747"))
+    #allele_unique.filter(pl.col("gene_id").str.ends_with("51747"))
+    #gene_selector.value
+    _vals = allele_unique.select('gene_id').unique().join(gene_annot.select('gene_id', 'gene_name'), "gene_id").sort('gene_id')
+    _gene_ids = list(_vals['gene_id'])
+    _names = _vals.select(name = pl.col("gene_id") + " | " + pl.col('gene_name')).drop_nulls()['name']
+    _options = {_name: _id for _name, _id in zip(_names, _gene_ids)}
+    _options
+    dir(gene_selector)
+    gene_selector.options
     return
 
 
