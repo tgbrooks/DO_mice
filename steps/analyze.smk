@@ -56,7 +56,7 @@ checkpoint chunk_chromosomes:
                 chunk.select('gene_id').write_csv(outdir / f"{chrom}.{i}.genes.txt")
 
 def get_chunk_genes(wildcards):
-    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue).output.outdir)
+    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir)
     import polars as pl
     genes = pl.read_csv(chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt", separator="\t")
     return list(genes['gene_id'])
@@ -64,15 +64,15 @@ def get_chunk_genes(wildcards):
 rule model_buffering:
     """ Compute buffering factors for each gene of a chromosome """
     input:
-        counts = "results/{tissue}/{tissue}.diploid.genes.founder_expected_read_counts.parquet",
-        allele_unique_reads = "processed/{tissue}/allele_unique_reads.parquet",
-        size_factors = "results/{tissue}/size_factors.txt",
+        counts = "results/{tissue_real}/{tissue_real}.diploid.genes.founder_expected_read_counts.parquet",
+        allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
+        size_factors = "results/{tissue_real}/size_factors.txt",
         phenotypes = "phenotypes.csv.gz",
         genotypes = "results/genotypes.parquet",
         kinship = "geno/kinship/{chromosome}.txt",
-        chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue).output.outdir # indicates we need the checkpoint for params.genes
+        chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
     output:
-        outfile = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.txt"
+        outfile = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.txt"
     params:
         min_median_counts = config['MIN_MEDIAN_COUNTS'],
         genes = get_chunk_genes,

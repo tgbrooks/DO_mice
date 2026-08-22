@@ -26,6 +26,8 @@ include: "steps/gbrs.smk"
 include: "steps/analyze.smk"
 # Simulations to test our models
 include: "steps/simulations.smk"
+# Read-level simulations to test our pipeline
+include: "steps/simulate_reads.smk"
 
 # These are quick bookkeeping steps, not worth submitting as cluster jobs:
 localrules: genotyped_mice, combine_tpm
@@ -67,6 +69,8 @@ def default_targets() -> list[str]:
             "geno/kinship/1.txt",
             "processed/simulated_counts/report.txt",
     ]
+    targets += [f"results/simulated_reads/gbrs/{haplotype}.compressed.h5"
+                    for haplotype in HAP_LIST]
     return targets
 
 

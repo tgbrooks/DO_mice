@@ -77,7 +77,7 @@ rule fasterq_dump_single:
 
 def mouse_run_fastqs(wildcards, end: str) -> list[str]:
     """Per-run FASTQ files that make up one mouse's reads for a given end."""
-    runs = MOUSE_RUNS[(wildcards.tissue, wildcards.mouse)]
+    runs = MOUSE_RUNS[(wildcards.tissue_real, wildcards.mouse)]
     suffix = {"R1": "_1", "R2": "_2", "SE": ""}[end]
     return [f"fastq/{run}{suffix}.fastq.gz" for run in runs]
 
@@ -92,8 +92,8 @@ rule merge_fastq_paired:
         r1 = lambda w: mouse_run_fastqs(w, "R1"),
         r2 = lambda w: mouse_run_fastqs(w, "R2"),
     output:
-        r1 = temp("results/{tissue}/fastq/{mouse}_R1.fastq.gz"),
-        r2 = temp("results/{tissue}/fastq/{mouse}_R2.fastq.gz"),
+        r1 = temp("results/{tissue_real}/fastq/{mouse}_R1.fastq.gz"),
+        r2 = temp("results/{tissue_real}/fastq/{mouse}_R2.fastq.gz"),
     resources:
         runtime = '4h',
     shell:

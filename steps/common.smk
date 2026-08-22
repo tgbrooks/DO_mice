@@ -123,10 +123,14 @@ def selected_mice(tissue: str) -> list[str]:
 MICE = {t: selected_mice(t) for t in TISSUES}
 # Genotypes are per mouse and shared by every tissue that mouse appears in.
 ALL_MICE = sorted({m for mice in MICE.values() for m in mice})
+MICE['simulated_reads'] = HAP_LIST # Add in the simulated 'mice'
 
 
 def is_paired(tissue: str, mouse: str) -> bool:
     """True if a mouse's runs are paired-end. Errors on a mix of layouts."""
+    if tissue not in TISSUES:
+        # Simulated tissue: always paired
+        return True
     layouts = {RUN_PAIRED[run] for run in MOUSE_RUNS[(tissue, mouse)]}
     if len(layouts) > 1:
         raise ValueError(
@@ -174,8 +178,9 @@ wildcard_constraints:
     run = r"[SED]RR[0-9]+",
     # Mouse IDs, e.g. DO021. No underscores, so `{mouse}_R1` is unambiguous.
     mouse = r"[A-Za-z0-9]+",
-    tissue = '|'.join(TISSUES), # only real, biological tissues
-    tissue_general = r"[A-Za-z0-9_]+",  # for when we want to include simulated data
+    tissue = r"[A-Za-z0-9_]+",  # tissues, including simulated
+    tissue_real = '|'.join(TISSUES), # only real, biological tissues
     end = r"R1|R2|SE",
     # GBRS quantification modes (multi-way across founders, or diploid).
     mode = r"multiway|diploid",
+    haplotype = '|'.join(HAP_LIST)
