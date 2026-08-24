@@ -70,6 +70,18 @@ def _(config, pb, pl):
 
 
 @app.cell
+def _(config, pb, pl):
+    tx_annot = (
+        pb.scan_gtf(
+            config["gtf"], attr_fields=["gene_id", "transcript_id"]
+        )
+        .filter(pl.col("type") == "transcript")
+        .collect()
+    )
+    return (tx_annot,)
+
+
+@app.cell
 def _(pl):
     # phenotypes were acquired from Dryad  and extracted from Rdata format:
     # https://datadryad.org/dataset/doi:10.5061/dryad.pj105
@@ -587,13 +599,19 @@ def _(pl):
 
 @app.cell
 def _(buffering_all, gene_annot, mo, pl):
-    mo.vstack([
-        "Check how many failed convergence. After this step, we exclude those from our analysis.",
-        buffering_all.select(
-            frac_binom_failed = (pl.col("convergence_code_binom") != 0).mean(),
-            frac_buffering_failed = (pl.col("convergence_code_buffering") != 0).mean(),
-        )
-        ])
+    mo.vstack(
+        [
+            "Check how many failed convergence. After this step, we exclude those from our analysis.",
+            buffering_all.select(
+                frac_binom_failed=(
+                    pl.col("convergence_code_binom") != 0
+                ).mean(),
+                frac_buffering_failed=(
+                    pl.col("convergence_code_buffering") != 0
+                ).mean(),
+            ),
+        ]
+    )
     buffering = buffering_all.filter(
         pl.col("convergence_code_binom") == 0,
         pl.col("convergence_code_buffering") == 0,
@@ -612,27 +630,50 @@ def _(HAPLOTYPES, buffering, lp, mo, pl):
         variable_name="haplotype",
         value_name="effect",
     ).with_columns(
-        haplotype = pl.col("haplotype").str.strip_prefix("effect_"),
-        abs_effect = pl.col("effect").abs(),
+        haplotype=pl.col("haplotype").str.strip_prefix("effect_"),
+        abs_effect=pl.col("effect").abs(),
     )
     _hap = lp.as_discrete("haplotype", levels=HAPLOTYPES, order=1)
-    mo.vstack([
-        "Plot genotype effects from the binomial model",
-        lp.gggrid([
-            lp.ggplot(genotype_effects.sample(n=10_000), lp.aes(x = _hap, y = "abs_effect")) + lp.geom_violin() + lp.scale_y_log10() + lp.ggtitle("All genes"),
-            lp.ggplot(genotype_effects.filter(pl.col("anova_binom_p") < 1e-3).sample(n=10_000), lp.aes(x = _hap, y = "abs_effect")) + lp.geom_violin() + lp.scale_y_log10() + lp.ggtitle("Significant genes"),
-        ]) + lp.ggsize(900, 500)
-    ])
+    mo.vstack(
+        [
+            "Plot genotype effects from the binomial model",
+            lp.gggrid(
+                [
+                    lp.ggplot(
+                        genotype_effects.sample(n=10_000),
+                        lp.aes(x=_hap, y="abs_effect"),
+                    )
+                    + lp.geom_violin()
+                    + lp.scale_y_log10()
+                    + lp.ggtitle("All genes"),
+                    lp.ggplot(
+                        genotype_effects.filter(
+                            pl.col("anova_binom_p") < 1e-3
+                        ).sample(n=10_000),
+                        lp.aes(x=_hap, y="abs_effect"),
+                    )
+                    + lp.geom_violin()
+                    + lp.scale_y_log10()
+                    + lp.ggtitle("Significant genes"),
+                ]
+            )
+            + lp.ggsize(900, 500),
+        ]
+    )
     return
 
 
 @app.cell
-def _(buffering, lp):
+def _(buffering, good_genes3, lp, pl):
     (
-        lp.ggplot(buffering, lp.aes("anova_binom_p", "anova_buffering_p"))
+        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes3)), lp.aes("anova_binom_p", "anova_buffering_p"))
         + lp.scale_x_log10()
         + lp.scale_y_log10()
-        + lp.geom_pointdensity(tooltips=lp.layer_tooltips(["gene_id", "gene_name", "gene_biotype"]))
+        + lp.geom_pointdensity(
+            tooltips=lp.layer_tooltips(
+                ["gene_id", "gene_name", "gene_biotype"]
+            )
+        )
     )
     return
 
@@ -648,9 +689,19 @@ def _(mo):
 
 @app.cell
 def _(gene_annot, gene_expr_mat, mo, pl):
-    _vals = gene_expr_mat.select('gene_id').unique().join(gene_annot.select('gene_id', 'gene_name'), "gene_id").sort('gene_id').drop_nulls()
-    _names = list(_vals.select(name = pl.col("gene_id") + " | " + pl.col('gene_name')).drop_nulls()['name'])
-    gene_ids = list(_vals['gene_id'])
+    _vals = (
+        gene_expr_mat.select("gene_id")
+        .unique()
+        .join(gene_annot.select("gene_id", "gene_name"), "gene_id")
+        .sort("gene_id")
+        .drop_nulls()
+    )
+    _names = list(
+        _vals.select(
+            name=pl.col("gene_id") + " | " + pl.col("gene_name")
+        ).drop_nulls()["name"]
+    )
+    gene_ids = list(_vals["gene_id"])
     _options = {_name: _id for _name, _id in zip(_names, gene_ids)}
     len(gene_ids)
     gene_selector = mo.ui.dropdown(_options, searchable=True)
@@ -672,51 +723,87 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
                 norm_hap2=pl.col("haplotype_2_unique") / pl.col("size_factor"),
             )
         )
-        by_hap_counts = pl.concat([
-            au.with_columns(
-                hap_count = pl.col("diplotype").str.count_matches(hap),
-                hap = pl.lit(hap),
-                hap_unique = pl.when(pl.col("hap1") == hap)
+        by_hap_counts = pl.concat(
+            [
+                au.with_columns(
+                    hap_count=pl.col("diplotype").str.count_matches(hap),
+                    hap=pl.lit(hap),
+                    hap_unique=pl.when(pl.col("hap1") == hap)
                     .then("norm_hap1")
                     .otherwise("norm_hap2"),
-            )
-            .with_columns(
-                hap_str = pl.when(pl.col("hap_count") == 2)
+                )
+                .with_columns(
+                    hap_str=pl.when(pl.col("hap_count") == 2)
                     .then(pl.lit(f"{hap}{hap}"))
                     .otherwise(pl.lit(hap))
-            )
-            .filter(pl.col("hap_count") > 0)
-            for hap in HAPLOTYPES
-        ])
+                )
+                .filter(pl.col("hap_count") > 0)
+                for hap in HAPLOTYPES
+            ]
+        )
         _hap = lp.as_discrete("hap", levels=HAPLOTYPES, order=1)
-        median_expr = au['norm_expr'].median()
+        median_expr = au["norm_expr"].median()
         plt_totals = (
-            lp.ggplot(by_hap_counts, lp.aes(x="hap_str", y="norm_expr", color=_hap))
-            + lp.geom_boxplot(outlier_size=False)
+            lp.ggplot(
+                by_hap_counts, lp.aes(x="hap_str", y="norm_expr", color=_hap)
+            )
+            + lp.geom_boxplot(outlier_size=0, show_legend=False)
             + lp.geom_jitter(
-                height=0, tooltips=lp.layer_tooltips(["mouse_id"])
+                height=0, tooltips=lp.layer_tooltips(["mouse_id", "hap"])
             )
             + lp.geom_hline(
-                yintercept = median_expr,
+                yintercept=median_expr,
                 color="black",
             )
-            + lp.labs(y="total counts (normalized)",x='',)
+            + lp.labs(
+                y="total counts (normalized)",
+                x="",
+            )
             + lp.ylim(0)
         )
+        _hap1 = lp.as_discrete("hap1", levels=HAPLOTYPES, order=1)
+        _hap2 = lp.as_discrete("hap2", levels=HAPLOTYPES, order=1)
+        df2 = pl.concat([
+                au.select(
+                    "mouse_id",
+                    "hap1",
+                    "hap2",
+                    hap = "hap1",
+                    norm_hap = "norm_hap1",
+                ),
+                au.select(
+                    "mouse_id",
+                    "hap1",
+                    "hap2",
+                    hap = "hap2",
+                    norm_hap = "norm_hap2",
+                ),
+            ]).filter(pl.col("hap1") != pl.col("hap2"))
+        df2 = pl.concat([df2, df2.with_columns(hap1="hap2", hap2="hap1")])
         plt_uniques = (
-            lp.ggplot(by_hap_counts.filter(pl.col("hap_count") == 1), lp.aes(x="hap_str", y="hap_unique", color=_hap))
-            + lp.geom_boxplot(outlier_size=False)
+            lp.ggplot(df2,
+                lp.aes(x=_hap2, y="norm_hap", color=_hap),
+            )
+            + lp.facet_wrap("hap1", scales="free_x", nrow=3)
+            #+ lp.geom_boxplot(outlier_size=False)
             + lp.geom_jitter(
                 height=0, tooltips=lp.layer_tooltips(["mouse_id"])
             )
-            #+ lp.geom_hline(
+            # + lp.geom_hline(
             #    yintercept = median_expr,
             #    color="black",
-            #)
-            + lp.labs(y="unique counts (normalized)",x='',)
+            # )
+            + lp.labs(
+                y="unique counts (normalized)",
+                x="",
+            )
             + lp.ylim(0)
         )
-        return lp.gggrid([plt_totals, plt_uniques], guides="collect") + lp.ggsize(900, 500) + lp.ggtitle(gene_selector.value)
+        return (
+            lp.gggrid([plt_totals, plt_uniques], guides="collect")
+            + lp.ggsize(900, 600)
+            + lp.ggtitle(gene_selector.value)
+        )
 
     _()
     return
@@ -794,58 +881,226 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Founder haplotype differences
+    Investigate the differences between the transcriptomes of the different founders
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(pb, pl):
+    # Assess the differences in transcriptomes
+    transcript_lengths = (
+        pb.scan_fasta("gbrs_ref/transcripts.fasta")
+        .select(
+            transcript_id=pl.col("name").str.split("_").list.get(0),
+            haplotype=pl.col("name").str.split("_").list.get(1),
+            seq_len=pl.col("sequence").str.len_bytes(),
+        )
+        .collect()
+    )
+
+    return (transcript_lengths,)
+
+
+@app.cell(hide_code=True)
+def _(lp, mo, pl, transcript_lengths):
+    founder_length_differences = transcript_lengths.group_by(
+        "transcript_id"
+    ).agg(
+        length_diff=pl.col("seq_len").max() - pl.col("seq_len").min(),
+        length_ratio=pl.col("seq_len").max() / pl.col("seq_len").min(),
+    )
+    mo.vstack(
+        [
+            "Haplotypes can differ by indels and hence in their lengths. Here, we tally the number of transcripts by the difference in the longest and shortest haplotypes.",
+            lp.ggplot(
+                founder_length_differences.with_columns(
+                    pl.col("length_diff").cut(
+                        [0, 1, 5, 10, 25, 100, 250, 500]
+                    ),
+                )
+                .group_by("length_diff")
+                .agg(num_transcripts=pl.len()),
+                lp.aes("length_diff", "num_transcripts"),
+            )
+            + lp.geom_bar(stat="identity"),
+        ]
+    )
+    return (founder_length_differences,)
+
+
 @app.cell
-def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
+def _(founder_length_differences, pl, tx_annot):
+    gene_founder_length_differences = founder_length_differences.join(
+        tx_annot,
+        "transcript_id",
+    ).group_by("gene_id").agg(
+        pl.col("length_diff").max(),
+        pl.col("length_ratio").max()
+    )
+    return (gene_founder_length_differences,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Simulated reads
+    We generated simulated, perfet reads from every gene in order to test what the 'ideal' ratios of allele-unique reads would be.
+    Reads were generated from each founder haplotype and then were considered as if having come from each possible diplotype containing that founder haplotype.
+
+    This is used to select a set of 'good' genes for further use based off their behavior in simulated reads.
+    """)
+    return
+
+
+@app.cell
+def _(pl):
+    sim_reads = pl.read_parquet(
+        "processed/simulated_reads/allele_unique_reads.parquet"
+    ).filter(
+        pl.col("source_haplotype") != pl.col("other_haplotype")
+    )  # homozygous diplotypes provide no information
+    return (sim_reads,)
+
+
+@app.cell
+def _(mo, pl, sim_reads):
+    problematic_genes = (
+        sim_reads
+            .filter(pl.col("total_reads") > 0)
+            .group_by("gene_id")
+            .agg(
+                any_problems = (pl.col("haplotype_2_unique") > 0).any() | (pl.col("diplotype_incompat_reads").any() > 0),
+            )
+    )
+    good_genes = sorted(list(problematic_genes.filter(~pl.col("any_problems"))['gene_id']))
+    mo.vstack([
+        "We consider genes 'problematic' if expression from one haplotype gets assigned as unique expression of another haplotype. This probably happens due to gene-level multimapping. Fortunately, this is a minority of genes. And we'll exclude them from here.",
+        problematic_genes['any_problems'].value_counts(name="num genes")
+    ])
+    return (good_genes,)
+
+
+@app.cell(hide_code=True)
+def _(gene_founder_length_differences, good_genes, lp, mo, pl, sim_reads):
+    sim_totals = sim_reads.pivot(
+        "diplotype", index="gene_id", values="total_reads"
+    )
+    sim_total_diffs = (
+        sim_reads.group_by("gene_id")
+        .agg(
+            pl.col("total_reads").min().alias("min_total"),
+            pl.col("total_reads").max().alias("max_total"),
+        )
+        .filter(pl.col("max_total") > 0)
+        .filter(pl.col('gene_id').is_in(good_genes))
+        .with_columns(
+            total_ratio = pl.col('max_total') / pl.col("min_total"),
+        )
+        .join(
+           gene_founder_length_differences,
+            "gene_id",
+        )
+    )
+    mo.vstack(
+        [
+            """First, check whether all the *total* reads are the same.
+        This could vary slightly if founders differ by indels or if multimapping to other genes is affected""",
+            (
+                lp.ggplot(sim_total_diffs, lp.aes("min_total", "max_total"))
+                + lp.geom_pointdensity(
+                    tooltips=lp.layer_tooltips(["gene_id"])
+                )
+                + lp.geom_abline(intercept=0, slope=1)
+                + lp.scale_x_log10()
+                + lp.scale_y_log10()
+            ),
+            (
+                lp.ggplot(sim_total_diffs, lp.aes("length_ratio", "total_ratio"))
+                + lp.geom_pointdensity(
+                    tooltips=lp.layer_tooltips(["gene_id"])
+                )
+                + lp.geom_abline(intercept=0, slope=1)
+                + lp.scale_x_log10()
+                + lp.scale_y_log10()
+            ),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(good_genes, mo, pl, sim_reads):
+    MAX_TOTAL_READ_DISCREPANCY = 20
+    problematic_genes2 = (
+        sim_reads
+            .filter(pl.col("total_reads") > 0)
+            .filter(pl.col("gene_id").is_in(good_genes))
+            .group_by("gene_id")
+            .agg(
+                any_total_problems = (pl.col("total_reads").max() - pl.col('total_reads').min() > MAX_TOTAL_READ_DISCREPANCY).any()
+            )
+    )
+    good_genes2 = sorted(list(problematic_genes2.filter(~pl.col("any_total_problems"))['gene_id']))
+    mo.vstack([
+        f"Since it looks like gene lengths aren't the major difference in totals, these likely come down to multimapping from other loci. Therefore, we further exclude genes that have problems with their total counts. Specifically, check that they never differ by more than {MAX_TOTAL_READ_DISCREPANCY} counts between haplotypes.",
+        problematic_genes2['any_total_problems'].value_counts(name="num genes"),
+    ])
+    return (good_genes2,)
+
+
+@app.cell
+def _(HAPLOTYPES, good_genes2, lp, mo, np, pl, sim_reads):
+    # Also check whether good genes have good allelic ratios
+    MAX_UNIQUE_READS_RATIO = 1.05
     def _():
-        au = (
-            allele_unique.filter(gene_id=gene_selector.value)
-            .join(size_factors, "mouse_id")
-            .with_columns(
-                hap1=pl.col("diplotype").str.slice(0, 1),
-                hap2=pl.col("diplotype").str.slice(1, 2),
-                norm_expr=pl.col("total_reads") / pl.col("size_factor"),
-            )
-        )
-        au = pl.concat(
-            [
-                au.select("hap1", "hap2", "norm_expr", "mouse_id"),
-                au.select(
-                    hap1="hap2",
-                    hap2="hap1",
-                    norm_expr="norm_expr",
-                    mouse_id="mouse_id",
-                ).filter(pl.col("hap1") != pl.col("hap2")),
-            ]
-        )
-        _hap2 = lp.as_discrete("hap2", levels=HAPLOTYPES, order=1)
-        plt = (
-            lp.ggplot(au, lp.aes(x=_hap2, y="norm_expr"))
-            + lp.facet_wrap("hap1")
-            + lp.geom_boxplot(outlier_size=0)
-            + lp.geom_jitter(
-                height=0, tooltips=lp.layer_tooltips(["mouse_id"])
-            )
-            + lp.ylim(0)
-        )
-        return plt
-
-    _()
-    return
+        good = sim_reads.filter(pl.col('gene_id').is_in(good_genes2))
+        temp = []
+        for hap1 in HAPLOTYPES:
+            for hap2 in HAPLOTYPES:
+                if hap1 >= hap2:
+                    continue
+                AB = good.filter(source_haplotype = hap1, other_haplotype = hap2)
+                BA = good.filter(source_haplotype = hap2, other_haplotype = hap1)
+                au_ratio = (
+                    AB.join(BA, "gene_id")
+                    .select(
+                        "gene_id",
+                        hap1 = pl.lit(hap1),
+                        hap2 = pl.lit(hap2),
+                        A = pl.col("haplotype_1_unique"),
+                        B = pl.col("haplotype_1_unique_right"),
+                        au_ratio = pl.when((pl.col("haplotype_1_unique") == 0) & (pl.col("haplotype_2_unique") == 0))
+                            .then(pl.lit(1))
+                            .otherwise(
+                                pl.col("haplotype_1_unique") / pl.col("haplotype_1_unique_right")
+                            ),
+                    )
+                )
+                temp.append(au_ratio)
+        return pl.concat(temp)
+    sim_au_ratios = _().group_by("gene_id").agg(pl.col("au_ratio").log().abs().max().exp())
+    _cutoffs = np.linspace(1, 1.20, 101)
+    _by_cutoff = sim_au_ratios.join(
+        pl.DataFrame({"ratio_cutoff": _cutoffs}),
+        how="cross",
+    ).filter(pl.col("ratio_cutoff") > pl.col("au_ratio")).group_by("ratio_cutoff").agg(num_genes_below=pl.len())
+    mo.vstack([
+        f"Different source haplotypes and diplotypes can create different ratios of unique reads. Here, we filter again to just those with at most {MAX_UNIQUE_READS_RATIO} ratio between highest and lowest number of unique reads across the different haplotypes.",
+        lp.ggplot(_by_cutoff, lp.aes(x="ratio_cutoff", y="num_genes_below")) + lp.geom_line() + lp.geom_vline(xintercept=MAX_UNIQUE_READS_RATIO, linetype=3) + lp.ylim(0)
+    ])
+    return MAX_UNIQUE_READS_RATIO, sim_au_ratios
 
 
 @app.cell
-def _(allele_unique, gene_annot, gene_selector, pl):
-    #gene_expr_mat.filter(pl.col("gene_id").str.ends_with("51747"))
-    #allele_unique.filter(pl.col("gene_id").str.ends_with("51747"))
-    #gene_selector.value
-    _vals = allele_unique.select('gene_id').unique().join(gene_annot.select('gene_id', 'gene_name'), "gene_id").sort('gene_id')
-    _gene_ids = list(_vals['gene_id'])
-    _names = _vals.select(name = pl.col("gene_id") + " | " + pl.col('gene_name')).drop_nulls()['name']
-    _options = {_name: _id for _name, _id in zip(_names, _gene_ids)}
-    _options
-    dir(gene_selector)
-    gene_selector.options
-    return
+def _(MAX_UNIQUE_READS_RATIO, mo, pl, sim_au_ratios):
+    good_genes3 = sorted(sim_au_ratios.filter(pl.col("au_ratio") < MAX_UNIQUE_READS_RATIO)['gene_id'])
+    mo.vstack([f"Final total of genes selected for use: {len(good_genes3)}"])
+    return (good_genes3,)
 
 
 if __name__ == "__main__":

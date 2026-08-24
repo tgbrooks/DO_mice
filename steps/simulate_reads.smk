@@ -20,3 +20,14 @@ rule simulate_reads:
         mem_mb = 6_000,
     script:
         "../scripts/simulate_reads.py"
+
+rule get_allele_unique_reads_simulated:
+    """ Summarize uniques and totals of genes for simulated reads under all genotypes """
+    input:
+        h5 = expand("results/simulated_reads/gbrs/{haplotype}.compressed.h5", haplotype=HAP_LIST),
+    output:
+        gene_unique = "processed/simulated_reads/allele_unique_reads.parquet"
+    resources:
+        mem_mb = 12_000
+    script:
+        "../scripts/get_allele_unique_reads_simulated.py"

@@ -387,11 +387,11 @@ rule gbrs_allele_unique_reads:
 
 rule combine_allele_unique_reads:
     input:
-        allele_unique = lambda w: expand("processed/{tissue}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
+        allele_unique = lambda w: expand("processed/{tissue_real}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
             mouse_id = MICE[w.tissue],
             tissue = w.tissue,
         ),
     output:
-        allele_unique = "processed/{tissue}/allele_unique_reads.parquet"
+        allele_unique = "processed/{tissue_real}/allele_unique_reads.parquet"
     script:
         "../scripts/combine_allele_unique_reads.py"

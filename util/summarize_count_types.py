@@ -19,6 +19,7 @@ def group_by(compat, transcript_ids, annot, genotypes):
             ],
         }
     )
+
     # Perform the groupby "any" column
     # which is just taking any indices that occur in any of the transcripts:
     # that column (read group) is compatible with the gene
@@ -29,7 +30,11 @@ def group_by(compat, transcript_ids, annot, genotypes):
         .select("gene_id", indices=pl.col("indices").list.unique())
     )
     # force the ordering to be consistent
-    grouped = genotypes.select("gene_id").join(grouped, "gene_id", "left")
+    grouped = (
+        genotypes.select("gene_id")
+        .join(grouped, "gene_id", "left")
+        .with_columns(indices=pl.col("indices").fill_null([]))
+    )
 
     # convert back to sparse
     indices = grouped.select(pl.col("indices").explode(empty_as_null=False))["indices"]
@@ -48,7 +53,6 @@ def group_by(compat, transcript_ids, annot, genotypes):
 
 def summarize_count_types(data, annot, genotypes):
     """compute total, allele-specific, and diplotype incompatible reads"""
-    print("Grouping compatibility matrices by gene")
     haplotypes = data.haps.keys()
     haplotype_names = data.hname
     gene_haps = {
@@ -62,7 +66,7 @@ def summarize_count_types(data, annot, genotypes):
         for hap, hap_name in zip(haplotypes, haplotype_names)
     }
 
-    # we only care about compatibility with measured diploitype of each gene
+    # we only care about compatibility with measured diplotype of each gene
     compatible = {
         hap: gene_haps[hap].multiply(diploid_mask[hap][:, None]) for hap in haplotypes
     }
