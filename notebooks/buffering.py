@@ -622,7 +622,7 @@ def _(buffering_all, gene_annot, mo, pl):
     return (buffering,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(HAPLOTYPES, buffering, lp, mo, pl):
     genotype_effects = buffering.unpivot(
         [f"effect_{hap}" for hap in HAPLOTYPES],
@@ -834,22 +834,25 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
                             h2: pl.col("haplotype_2_unique")
                             / pl.col("size_factor"),
                         },
+                        incompatible = pl.col("diplotype_incompat_reads") / pl.col("size_factor"),
                         unspecific=(
                             pl.col("total_reads")
                             - pl.col("haplotype_1_unique")
                             - pl.col("haplotype_2_unique")
+                            - pl.col("diplotype_incompat_reads")
                         )
                         / pl.col("size_factor"),
+                        total = pl.col("total_reads") / pl.col("size_factor"),
                     )
                     .unpivot(
-                        on=[hap1, hap2, "unspecific"],
-                        index="mouse_id",
+                        on=[hap1, hap2, "unspecific", "incompatible"],
+                        index=["mouse_id", "total", "unspecific", "incompatible"],
                         variable_name="class",
                         value_name="expr",
                     )
                 )
                 _class = lp.as_discrete(
-                    "class", levels=HAPLOTYPES + ["unspecific"], order=1
+                    "class", levels=HAPLOTYPES + ["unspecific", "incompatible"], order=1
                 )
                 plt = (
                     lp.ggplot(
@@ -858,18 +861,21 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
                             x="mouse_id", y="expr", color=_class, fill=_class
                         ),
                     )
-                    + lp.geom_bar(stat="identity")
+                    + lp.geom_bar(
+                        stat="identity",
+                        tooltips=lp.layer_tooltips(["mouse_id", "total", "unspecific", "incompatible"]).line("@class: @expr")
+                    )
                     + lp.theme_void()
                     + lp.ylim(0, max_expr)
                     + lp.theme(legend_position="none")
                     + lp.ggtitle(f"{hap1}{hap2}")
                     + lp.scale_color_manual(
-                        values=HAPLOTYPE_COLORS + ["black"],
-                        breaks=HAPLOTYPES + ["unspecific"],
+                        values=HAPLOTYPE_COLORS + ["black", "red"],
+                        breaks=HAPLOTYPES + ["unspecific", "incompatible"],
                     )
                     + lp.scale_fill_manual(
-                        values=HAPLOTYPE_COLORS + ["black"],
-                        breaks=HAPLOTYPES + ["unspecific"],
+                        values=HAPLOTYPE_COLORS + ["black", "red"],
+                        breaks=HAPLOTYPES + ["unspecific", "incompatible"],
                     )
                 )
                 plot_grid.append(plt)
@@ -902,7 +908,6 @@ def _(pb, pl):
         )
         .collect()
     )
-
     return (transcript_lengths,)
 
 

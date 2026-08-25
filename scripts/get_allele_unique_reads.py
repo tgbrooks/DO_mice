@@ -4,6 +4,7 @@ import numpy as np
 import polars as pl
 import polars_bio as pb
 from util.compressed_emase import load_compressed_emase
+from util.summarize_count_types import summarize_count_types
 
 cfg = yaml.load(pathlib.Path("config.yaml").open(), yaml.Loader)
 haplotype_names = cfg["haplotypes"].split(",")
@@ -21,7 +22,6 @@ data = load_compressed_emase(H5, haplotypes)
 genotypes = pl.read_csv(genotype_file, separator="\t").rename(
     {"#Gene_ID": "gene_id", "Diplotype": "diplotype"}
 )
-gene_ids = genotypes["gene_id"]
 
 annot = (
     pb.scan_gtf(
