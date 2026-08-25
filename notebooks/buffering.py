@@ -51,10 +51,11 @@ def _(genotypes):
 
 
 @app.cell
-def _(yaml):
+def _(lp, yaml):
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     HAPLOTYPES = config["haplotypes"].split(",")
-    return HAPLOTYPES, config
+    HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette( len(HAPLOTYPES) )
+    return HAPLOTYPES, HAPLOTYPE_COLORS, config
 
 
 @app.cell
@@ -254,7 +255,7 @@ def _(allele_unique, imbalance, is_homozygous, lp, mo, pl):
 
 
 @app.cell(hide_code=True)
-def _(allele_unique, lp, mo, pl):
+def _(HAPLOTYPES, HAPLOTYPE_COLORS, allele_unique, lp, mo, pl):
     # Check by genotype
     def _():
         df = allele_unique.with_columns(
@@ -284,11 +285,19 @@ def _(allele_unique, lp, mo, pl):
             [
                 lp.ggplot(df.sample(n=10_000), lp.aes(hap, "unique", fill=hap))
                 + lp.geom_violin()
+                + lp.scale_fill_manual(
+                    values=HAPLOTYPE_COLORS,
+                    breaks=HAPLOTYPES,
+                )
                 + lp.scale_y_log10(),
                 lp.ggplot(
                     df.sample(n=10_000), lp.aes(hap, "incompat", fill=hap)
                 )
                 + lp.geom_violin()
+                + lp.scale_fill_manual(
+                    values=HAPLOTYPE_COLORS,
+                    breaks=HAPLOTYPES,
+                )
                 + lp.scale_y_log10(),
             ]
         ) + lp.ggsize(width=900, height=400)
@@ -710,7 +719,15 @@ def _(gene_annot, gene_expr_mat, mo, pl):
 
 
 @app.cell(hide_code=True)
-def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
+def _(
+    HAPLOTYPES,
+    HAPLOTYPE_COLORS,
+    allele_unique,
+    gene_selector,
+    lp,
+    pl,
+    size_factors,
+):
     def _():
         au = (
             allele_unique.filter(gene_id=gene_selector.value)
@@ -759,6 +776,10 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
                 y="total counts (normalized)",
                 x="",
             )
+            + lp.scale_color_manual(
+                values=HAPLOTYPE_COLORS,
+                breaks=HAPLOTYPES,
+            )
             + lp.ylim(0)
         )
         _hap1 = lp.as_discrete("hap1", levels=HAPLOTYPES, order=1)
@@ -793,6 +814,10 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
             #    yintercept = median_expr,
             #    color="black",
             # )
+            + lp.scale_color_manual(
+                values=HAPLOTYPE_COLORS,
+                breaks=HAPLOTYPES,
+            )
             + lp.labs(
                 y="unique counts (normalized)",
                 x="",
@@ -810,18 +835,23 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
 
 
 @app.cell(hide_code=True)
-def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
+def _(
+    HAPLOTYPES,
+    HAPLOTYPE_COLORS,
+    allele_unique,
+    gene_selector,
+    lp,
+    pl,
+    size_factors,
+):
     def _():
-        HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette(
-            len(HAPLOTYPES)
-        )
         au = allele_unique.filter(gene_id=gene_selector.value).join(
             size_factors, "mouse_id"
         )
         max_expr = au.select(
             max=(pl.col("total_reads") / pl.col("size_factor")).max()
         )["max"][0]
-        plot_grid = []
+        plot_data = []
         for hap1 in HAPLOTYPES:
             for hap2 in HAPLOTYPES:
                 h1, h2 = sorted([hap1, hap2])
@@ -850,38 +880,43 @@ def _(HAPLOTYPES, allele_unique, gene_selector, lp, pl, size_factors):
                         variable_name="class",
                         value_name="expr",
                     )
-                )
-                _class = lp.as_discrete(
-                    "class", levels=HAPLOTYPES + ["unspecific", "incompatible"], order=1
-                )
-                plt = (
-                    lp.ggplot(
-                        hap_data,
-                        lp.aes(
-                            x="mouse_id", y="expr", color=_class, fill=_class
-                        ),
-                    )
-                    + lp.geom_bar(
-                        stat="identity",
-                        tooltips=lp.layer_tooltips(["mouse_id", "total", "unspecific", "incompatible"]).line("@class: @expr")
-                    )
-                    + lp.theme_void()
-                    + lp.ylim(0, max_expr)
-                    + lp.theme(legend_position="none")
-                    + lp.ggtitle(f"{hap1}{hap2}")
-                    + lp.scale_color_manual(
-                        values=HAPLOTYPE_COLORS + ["black", "red"],
-                        breaks=HAPLOTYPES + ["unspecific", "incompatible"],
-                    )
-                    + lp.scale_fill_manual(
-                        values=HAPLOTYPE_COLORS + ["black", "red"],
-                        breaks=HAPLOTYPES + ["unspecific", "incompatible"],
+                    .sort("mouse_id")
+                    .with_columns(
+                        mouse_idx = pl.col("mouse_id").is_first_distinct().cast(int).cum_sum(),
                     )
                 )
-                plot_grid.append(plt)
-        return lp.gggrid(plot_grid, ncol=len(HAPLOTYPES)) + lp.ggsize(
-            1800, 1800
+                plot_data.append(hap_data.with_columns(hap1=pl.lit(hap1), hap2=pl.lit(hap2)))
+
+        _class = lp.as_discrete(
+            "class", levels=HAPLOTYPES + ["unspecific", "incompatible"], order=1
         )
+        plt = (
+            lp.ggplot(
+                pl.concat(plot_data),
+                lp.aes(
+                    x="mouse_idx", y="expr", color=_class, fill=_class
+                ),
+            )
+            + lp.facet_grid(x="hap1", y="hap2")
+            + lp.geom_bar(
+                stat="identity",
+                tooltips=lp.layer_tooltips(["mouse_id"]).line("@class: @expr")
+            )
+            #+ lp.theme_void()
+            + lp.theme_grey()
+            + lp.ylim(0, max_expr)
+            + lp.theme(tooltip_merge=True)
+            + lp.scale_color_manual(
+                values=HAPLOTYPE_COLORS + ["black", "red"],
+                breaks=HAPLOTYPES + ["unspecific", "incompatible"],
+            )
+            + lp.scale_fill_manual(
+                values=HAPLOTYPE_COLORS + ["black", "red"],
+                breaks=HAPLOTYPES + ["unspecific", "incompatible"],
+            )
+        )
+        return plt + lp.ggsize(1200,1200)
+        #return lp.gggrid(plot_grid, ncol=len(HAPLOTYPES)) + lp.ggsize( 1800, 1800 )
 
     _()
     return
