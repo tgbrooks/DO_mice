@@ -55,7 +55,8 @@ def _(lp, yaml):
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     HAPLOTYPES = config["haplotypes"].split(",")
     HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette( len(HAPLOTYPES) )
-    return HAPLOTYPES, HAPLOTYPE_COLORS, config
+    OUTLIER_MOUSE_IDS = config['outlier_ids']
+    return HAPLOTYPES, HAPLOTYPE_COLORS, OUTLIER_MOUSE_IDS, config
 
 
 @app.cell
@@ -389,8 +390,17 @@ def _(allele_unique, lp, mo, pl):
     return
 
 
-@app.cell
-def _(MIN_MEDIAN_EXPR_THRESHOLD, counts, lp, mo, np, pl):
+@app.cell(hide_code=True)
+def _(
+    MIN_MEDIAN_EXPR_THRESHOLD,
+    OUTLIER_MOUSE_IDS,
+    counts,
+    lp,
+    mo,
+    mouse_ids,
+    np,
+    pl,
+):
     gene_expr_mat = counts.pivot("mouse_id", index="gene_id", values="total")
     _expr_mat = gene_expr_mat.drop("gene_id").to_numpy()
     _variance = (_expr_mat.std(axis=1) / (_expr_mat.mean(axis=1) + 1)) * (
@@ -401,19 +411,40 @@ def _(MIN_MEDIAN_EXPR_THRESHOLD, counts, lp, mo, np, pl):
     ]  # use top 500 most variable genes
 
     def _():
-        X = _expr_mat[high_variance_genes,]
-        X = (X - np.mean(X, axis=1)[:, None]) / np.std(X, axis=1)[:, None]
-        U, V, DT = np.linalg.svd(X, full_matrices=False)
-        pca = pl.DataFrame(
-            {
-                "mouse_id": gene_expr_mat.columns[1:],
-                "pca1": (U[:, [0]].T @ X).flatten(),
-                "pca2": (U[:, [1]].T @ X).flatten(),
-            }
-        )
-        return lp.ggplot(pca, lp.aes("pca1", "pca2")) + lp.geom_point(
-            tooltips=lp.layer_tooltips(["mouse_id"])
-        )
+        def run_pca(expr_mat, ids):
+            X = expr_mat[high_variance_genes,]
+            X = (X - np.mean(X, axis=1)[:, None]) / np.std(X, axis=1)[:, None]
+            U, V, DT = np.linalg.svd(X, full_matrices=False)
+            pca = pl.DataFrame(
+                {
+                    "mouse_id": ids,
+                    "pca1": (U[:, [0]].T @ X).flatten(),
+                    "pca2": (U[:, [1]].T @ X).flatten(),
+                }
+            )
+            return pca
+        pca = run_pca(_expr_mat, gene_expr_mat.columns[1:])
+        ids_cleaned = [m for m in mouse_ids if m not in OUTLIER_MOUSE_IDS]
+        _expr_mat_cleaned = gene_expr_mat.select(*ids_cleaned).to_numpy()
+        pca_cleaned = run_pca(_expr_mat_cleaned, ids_cleaned)
+        return lp.gggrid([
+            lp.ggplot(
+                pca.with_columns(outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)),
+                lp.aes("pca1", "pca2", color="outlier")
+            )
+                + lp.geom_point(
+                    tooltips=lp.layer_tooltips(["mouse_id"])
+                )
+                + lp.scale_color_manual(
+                    breaks = [False, True],
+                    values = ["black", "red"],
+                )
+                + lp.ggtitle("All samples")
+            ,
+            lp.ggplot(pca_cleaned, lp.aes("pca1", "pca2"))
+                + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id"]))
+                + lp.ggtitle("Outliers removed")
+        ]) + lp.ggsize(900,500)
 
     mo.vstack(
         [
@@ -435,7 +466,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(MIN_MEDIAN_EXPR_THRESHOLD, gene_expr_mat, mo, np, pl):
     import pydeseq2.dds
 
@@ -684,6 +715,31 @@ def _(buffering, good_genes3, lp, pl):
             )
         )
     )
+    return
+
+
+@app.cell
+def _(buffering, good_genes3, lp, mo, np, pl):
+    _data = buffering.filter(
+        pl.col("gene_id").is_in(good_genes3),
+        pl.col("anova_binom_p") < 1e-25, # highly significant
+    ).with_columns(
+        pl.col("buffering_factor").cut(np.linspace(-0.25,1.25,31), include_breaks=True),
+    ).with_columns(
+        buffering_factor = pl.col("buffering_factor").struct.field("breakpoint"),
+        is_significant = pl.col("anova_buffering_p") < 1e-25, #highly significant
+    ).group_by(
+        ["buffering_factor", "is_significant"]
+    ).agg(
+        num_genes = pl.len(),
+    )
+    mo.vstack([
+        "Buffering factors in genes that are *highly* significant for having a genotype effect on allele-specific expression.",
+        lp.ggplot(
+            _data,
+            lp.aes("buffering_factor", "num_genes", fill="is_significant")
+        ) + lp.geom_bar(stat="identity")
+    ])
     return
 
 

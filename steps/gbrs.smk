@@ -387,9 +387,9 @@ rule gbrs_allele_unique_reads:
 
 rule combine_allele_unique_reads:
     input:
-        allele_unique = lambda w: expand("processed/{tissue_real}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
-            mouse_id = MICE[w.tissue],
-            tissue = w.tissue,
+        allele_unique = lambda w: expand("processed/{tissue}/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
+            mouse_id = MICE[w.tissue_real],
+            tissue = w.tissue_real,
         ),
     output:
         allele_unique = "processed/{tissue_real}/allele_unique_reads.parquet"

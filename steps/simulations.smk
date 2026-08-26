@@ -37,7 +37,8 @@ rule model_buffering_simulated_counts:
         outfile = "processed/simulated_counts/buffering/{chromosome}.{chunk_num}.txt", # only chromsome 1 is actually present
     params:
         min_median_counts = config['MIN_MEDIAN_COUNTS'],
-        genes = lambda wildcards: [f'GENE{i:04}' for i  in range(int(wildcards.chunk_num)*CHUNK_SIZE, (int(wildcards.chunk_num)+1)*CHUNK_SIZE)]
+        genes = lambda wildcards: [f'GENE{i:04}' for i  in range(int(wildcards.chunk_num)*CHUNK_SIZE, (int(wildcards.chunk_num)+1)*CHUNK_SIZE)],
+        outlier_ids = [],
     resources:
         mem_mb = 18_000,
     container:

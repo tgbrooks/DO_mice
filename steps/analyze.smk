@@ -76,6 +76,7 @@ rule model_buffering:
     params:
         min_median_counts = config['MIN_MEDIAN_COUNTS'],
         genes = get_chunk_genes,
+        outlier_ids = config['outlier_ids'], # Remove these mice
     resources:
         mem_mb = 18_000,
     container:

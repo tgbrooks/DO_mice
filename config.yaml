@@ -16,6 +16,9 @@ chromosomes: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13
 # Threshold of genes to exclude from our buffering analysis
 MIN_MEDIAN_COUNTS: 50
 
+# Mouse IDs of outlier / problematic mice (e.g., likely sample swap)
+outlier_ids: ["DO122", "DO024", "DO267", "DO100", "DO191", "DO158"]
+
 ## Tissues to process. Each tissue is one GEO series from the same DO cohort,
 ## so the same mouse can appear in several tissues and shares one genotype.
 run:

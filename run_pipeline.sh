@@ -15,6 +15,5 @@ APPTAINER_TMPDIR=/scratch/tmp bsub -e logs/snakemake.err \
     --default-resources lsf_project=DO_mice lsf_queue=rhel9 mem_mb=4000 \
     --resources sra_downloads=5 \
     --use-apptainer \
-    --rerun-triggers mtime \
     --apptainer-args "--bind \"$PWD/fips_off\":/proc/sys/crypto/fips_enabled" \
     "$@"
