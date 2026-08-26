@@ -15,7 +15,7 @@ temp = []
 for file in pathlib.Path("processed/simulated_counts/buffering").glob("*.txt"):
     temp.append(
         pl.read_csv(
-            "processed/simulated_counts/buffering/1.txt",
+            file,
             separator="\t",
             null_values="NA",
         )
@@ -71,12 +71,12 @@ print(
     data.group_by("type", "model")
     .agg(
         fraction_failed_binom=(pl.col("convergence_code_binom") != 0).mean(),
-        fraction_failed_buffering=(pl.col("convergence_code_buffering") != 0).mean(),
+        fraction_failed_total=(pl.col("convergence_code_total") != 0).mean(),
     )
     .sort("type", "model")
 )
 data = data.filter(
-    pl.col("convergence_code_binom") == 0, pl.col("convergence_code_buffering") == 0
+    pl.col("convergence_code_binom") == 0, pl.col("convergence_code_total") == 0
 )
 
 print("""
@@ -116,14 +116,6 @@ BUFFERING MODEL:
 ---------------------------------------------------------------------
 Here we check if the buffering model performs as expected.
 """)
-print(
-    data.group_by("type", "model")
-    .agg(
-        median_p=pl.col("anova_buffering_p").median(),
-        median_chisq=pl.col("anova_buffering_chisq").median(),
-    )
-    .sort("type", "model")
-)
 print("Estimated buffering factors:")
 print(
     data.group_by("type", "model")
@@ -131,6 +123,19 @@ print(
         min_factor=pl.col("buffering_factor").min(),
         median_factor=pl.col("buffering_factor").median(),
         max_factor=pl.col("buffering_factor").max(),
+    )
+    .sort("type", "model")
+)
+print("Confidence intervals:")
+print(
+    data.group_by("type", "model")
+    .agg(
+        hi_min_factor=pl.col("buffering_factor_ci_hi").min(),
+        hi_median_factor=pl.col("buffering_factor_ci_hi").median(),
+        hi_max_factor=pl.col("buffering_factor_ci_hi").max(),
+        lo_min_factor=pl.col("buffering_factor_ci_lo").min(),
+        lo_median_factor=pl.col("buffering_factor_ci_lo").median(),
+        lo_max_factor=pl.col("buffering_factor_ci_lo").max(),
     )
     .sort("type", "model")
 )
@@ -153,10 +158,9 @@ print(
 
 ## AUC for identifying buffering
 roc = (
-    data.drop_nulls("anova_buffering_p")
-    .sort("anova_buffering_p")
+    data.sort("buffering_factor_ci_hi")
     .select(
-        p_value="anova_buffering_p",
+        statistic="buffering_factor_ci_hi",
         n_below=pl.row_index() + 1,
         n_true_positives=(pl.col("type") == "buffering").cum_sum(),
         n_positives=(pl.col("type") == "buffering").sum(),
