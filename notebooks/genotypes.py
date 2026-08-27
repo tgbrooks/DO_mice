@@ -55,13 +55,15 @@ def _(pathlib, pl):
 def _(pb, pl, yaml):
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     annot = pb.scan_gtf(config['gtf'], attr_fields=["gene_id", "gene_name"]).filter(pl.col("type") == "gene").collect()
-    return (annot,)
+    return annot, config
 
 
 @app.cell
-def _():
-    HAPLOTYPES = list("ABCDEFGH")
-    return (HAPLOTYPES,)
+def _(config, lp):
+    HAPLOTYPES = config["haplotypes"].split(",")
+    HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette( len(HAPLOTYPES) )
+    OUTLIER_MOUSE_IDS = config['outlier_ids']
+    return HAPLOTYPES, HAPLOTYPE_COLORS
 
 
 @app.cell
@@ -87,6 +89,8 @@ def _(annot, gene_selector):
 
 @app.cell
 def _(
+    HAPLOTYPES,
+    HAPLOTYPE_COLORS,
     gene_chrom,
     gene_end,
     gene_geno,
@@ -110,7 +114,16 @@ def _(
         pl.col("pos") >= gene_start - PADDING,
         chr = gene_chrom,
     ).unpivot(list("ABCDEFGH"), index=["mouse_id", "pos"], value_name="fraction", variable_name="haplotype")
-    _plt = lp.ggplot(nearby, lp.aes("pos", "fraction", color="haplotype", fill="haplotype")) + lp.geom_bar(stat="identity") + lp.facet_wrap("mouse_id", ncol=2) + lp.ggsize(900, math.ceil(len(_selected_mice)/2)*150) + lp.geom_vline(xintercept=gene_start, color="black") + lp.geom_vline(xintercept=gene_end, color="black")
+    _plt = (
+        lp.ggplot(nearby, lp.aes("pos", "fraction", color="haplotype", fill="haplotype"))
+        + lp.geom_bar(stat="identity")
+        + lp.facet_wrap("mouse_id", ncol=2)
+        + lp.ggsize(900, math.ceil(len(_selected_mice)/2)*150)
+        + lp.geom_vline(xintercept=gene_start, color="black")
+        + lp.geom_vline(xintercept=gene_end, color="black")
+        + lp.scale_color_manual(breaks=HAPLOTYPES, values=HAPLOTYPE_COLORS)
+        + lp.scale_fill_manual(breaks=HAPLOTYPES, values=HAPLOTYPE_COLORS)
+    )
     mo.vstack([
         "Plot of genotypes at markers near the selected gene in mice of a selected diplotype. Black lines denote the gene start/end locations.",
         _plt,
