@@ -54,10 +54,10 @@ rule combine_simulated_read_counts:
     run:
         import polars as pl
         temp = []
-        for input in input.by_gene:
-            temp.append(pl.read_csv(input, separator="\t"))
+        for file in input.by_gene:
+            temp.append(pl.read_csv(file, separator="\t"))
         pl.concat(temp).write_csv(output.by_gene, separator="\t")
         temp = []
-        for input in input.by_transcript:
-            temp.append(pl.read_csv(input, separator="\t"))
-        pl.concat(temp).write_csv(output.by_transcript, separator="\t")
+        for file in input.by_tx:
+            temp.append(pl.read_csv(file, separator="\t"))
+        pl.concat(temp).write_csv(output.by_tx, separator="\t")
