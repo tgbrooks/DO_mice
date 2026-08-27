@@ -259,7 +259,8 @@ true_params = pl.DataFrame(
         "model": models,
         "mean_expr": mean_expr,
         "dispersion": dispersion,
-        "buffering_effect": buffering_effects,
+        "true_buffering_factor": 1
+        + buffering_effects,  # buffering_effect = -1 corresponds to buffering_factor of 0 in the model we fit
         "faction_unique": fraction_unique,
         **{
             f"effect_{hap}": haplotype_effects[:, i] for i, hap in enumerate(HAPLOTYPES)

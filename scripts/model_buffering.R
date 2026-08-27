@@ -116,6 +116,24 @@ covariance_deming_regression <- function(b1, b2, V1, V2, C = NULL, grid = seq(-2
     )
 }
 
+compare_to_null_binom <- function(au2, family, ll_full) {
+    # glmmTMB crashes if you give it an empty binomial model with no predictors
+    # (but not betabinomial). But that's our null hypothesis. So we calculate it
+    # exaclty here (nothing to fit with no parameters).
+    y  <- au2$haplotype_1_unique
+    m  <- y + au2$haplotype_2_unique
+    ll0 <- if (identical(family, binomial)) {
+        sum(dbinom(y, m, 0.5, log = TRUE))
+    } else {                      # betabinomial: mu fixed at 0.5, phi free
+        -optimize(function(lp) { a <- exp(lp)/2
+            -sum(lchoose(m, y) + lbeta(y + a, m - y + a) - lbeta(a, a)) },
+        c(-10, 30))$objective
+    }
+    chisq_binom <- 2 * (as.numeric(ll_full) - ll0)
+    p_binom     <- pchisq(chisq_binom, df = 7, lower.tail = FALSE)
+    return(list(pvalue=p_binom, chisq=chisq_binom))
+}
+
 fit_model <- function(au) {
     # Fit our full buffering model
     #
@@ -156,7 +174,7 @@ fit_model <- function(au) {
     # since buffering affects both haplotypes
     family = betabinomial
     res_binom <- glmmTMB(
-        cbind(haplotype_1_unique, haplotype_2_unique) ~ effect_A + effect_B + effect_C + effect_D + effect_E + effect_F + effect_G,  # H is reference
+        cbind(haplotype_1_unique, haplotype_2_unique) ~ 0 + effect_A + effect_B + effect_C + effect_D + effect_E + effect_F + effect_G,  # H is reference
         family = family,
         data = au2,
     )
@@ -166,17 +184,12 @@ fit_model <- function(au) {
         # means that it converges to a standard binomial. Use that instead.
         family <- binomial
         res_binom <- glmmTMB(
-            cbind(haplotype_1_unique, haplotype_2_unique) ~ effect_A + effect_B + effect_C + effect_D + effect_E + effect_F + effect_G,  # H is reference
+            cbind(haplotype_1_unique, haplotype_2_unique) ~ 0 + effect_A + effect_B + effect_C + effect_D + effect_E + effect_F + effect_G,  # H is reference
             family = family,
             data = au2,
         )
     }
-    res_binom_restricted <- glmmTMB(
-        cbind(haplotype_1_unique, haplotype_2_unique) ~ 1,
-        family = family,
-        data = au2,
-    )
-    anova_binom <- anova(res_binom_restricted, res_binom)
+    anova_binom <- compare_to_null_binom(au2, family, logLik(res_binom))
 
     if (any(is.na(fixef(res_binom)$cond)) || any(is.na(vcov(res_binom)$cond))) {
         message("Skipping due to NA parameters in binom")
@@ -210,11 +223,15 @@ fit_model <- function(au) {
     )
 
     binom_vars <- c("effect_A", "effect_B", "effect_C", "effect_D", "effect_E", "effect_F", "effect_G")
-    total_vars <- c("A", "B", "C", "D", "E", "F", "G")
     binom_effects <- fixef(res_binom)$cond[binom_vars]
-    total_effects <- fixef(res_total)$cond[total_vars]
     binom_cov <- vcov(res_binom)$cond[binom_vars, binom_vars]
-    total_cov <- vcov(res_total)$cond[total_vars, total_vars]
+    # NOTE: to compare binomial and total models, we scale by 2 since total model
+    # is for the sum of two alleles: homozygous AA should have the same log fold change
+    # in total over BB as A has over B in AB binomial model, if no buffering. But AA is
+    # coded as A = 2, B = 0.
+    total_vars <- c("A", "B", "C", "D", "E", "F", "G")
+    total_effects <- fixef(res_total)$cond[total_vars] * 2
+    total_cov <- vcov(res_total)$cond[total_vars, total_vars] * 4
 
     if (any(is.na(fixef(res_total)$cond)) || any(is.na(vcov(res_total)$cond))) {
         message("Skipping due to NA parameters in total")
@@ -235,8 +252,8 @@ fit_model <- function(au) {
         deming_Q = deming$Q,
         deming_p_gof = deming$p_gof, # goodness of fit test
         # From the binomial model
-        anova_binom_p = anova_binom$`Pr(>Chisq)`[2],
-        anova_binom_chisq = anova_binom$Chisq[2],
+        anova_binom_p = anova_binom$pvalue,
+        anova_binom_chisq = anova_binom$chisq,
         effect_A = cis_A,
         effect_B = cis_B,
         effect_C = cis_C,
@@ -270,6 +287,7 @@ fit_model <- function(au) {
         total_F_se = total_cov["F","F"],
         total_G_se = total_cov["G","G"],
         total_H_se = 0, # reference, 0 by definition
+        dispersion = 1/exp(res_total$fit$par['betadisp']),
         # Meta data
         n_samples_binom = nrow(au2),
         n_samples_total = nrow(au),

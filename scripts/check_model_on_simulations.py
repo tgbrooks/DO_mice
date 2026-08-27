@@ -136,6 +136,7 @@ print(
         lo_min_factor=pl.col("buffering_factor_ci_lo").min(),
         lo_median_factor=pl.col("buffering_factor_ci_lo").median(),
         lo_max_factor=pl.col("buffering_factor_ci_lo").max(),
+        num_significant=(pl.col("buffering_factor_ci_hi") < 1).mean(),
     )
     .sort("type", "model")
 )
@@ -145,13 +146,15 @@ print(
 )
 print("  (Only for the buffering genes) ")
 buff = data.filter(type="buffering")
-res = scipy.stats.linregress(buff["buffering_effect"], buff["buffering_factor"])
+res = scipy.stats.linregress(buff["true_buffering_factor"], buff["buffering_factor"])
+corr = np.corrcoef(buff["true_buffering_factor"], buff["buffering_factor"])[0, 1]
 print(
     pl.DataFrame(
         {
             "slope": res.slope,
             "intercept": res.intercept,
             "pvalue": res.pvalue,
+            "correlation": corr,
         }
     )
 )
