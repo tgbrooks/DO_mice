@@ -68,6 +68,7 @@ def default_targets() -> list[str]:
             "results/genotypes.parquet",
             "geno/kinship/1.txt",
             "processed/simulated_counts/report.txt",
+            "results/simulated_reads/source_counts_by_gene.txt",
     ]
     targets += [f"results/simulated_reads/gbrs/{haplotype}.compressed.h5"
                     for haplotype in HAP_LIST]

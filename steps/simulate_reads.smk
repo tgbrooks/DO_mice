@@ -31,3 +31,33 @@ rule get_allele_unique_reads_simulated:
         mem_mb = 12_000
     script:
         "../scripts/get_allele_unique_reads_simulated.py"
+
+rule count_simulated_reads:
+    """ Summarize the generated reads by their true haplotype + source gene """
+    input:
+        fastq = "results/simulated_reads/fastq/{haplotype}_R1.fastq.gz",
+    output:
+        by_tx = "results/simulated_reads/source_counts/{haplotype}_by_transcript.txt",
+        by_gene = "results/simulated_reads/source_counts/{haplotype}_by_gene.txt",
+    resources:
+        mem_mb = 12_000,
+    script:
+        "../scripts/count_simulated_reads.py"
+
+rule combine_simulated_read_counts:
+    input:
+        by_gene = expand("results/simulated_reads/source_counts/{haplotype}_by_gene.txt", haplotype=HAP_LIST),
+        by_tx = expand("results/simulated_reads/source_counts/{haplotype}_by_transcript.txt", haplotype=HAP_LIST),
+    output:
+        by_gene = "results/simulated_reads/source_counts_by_gene.txt",
+        by_tx = "results/simulated_reads/source_counts_by_transcript.txt",
+    run:
+        import polars as pl
+        temp = []
+        for input in input.by_gene:
+            temp.append(pl.read_csv(input, separator="\t"))
+        pl.concat(temp).write_csv(output.by_gene, separator="\t")
+        temp = []
+        for input in input.by_transcript:
+            temp.append(pl.read_csv(input, separator="\t"))
+        pl.concat(temp).write_csv(output.by_transcript, separator="\t")
