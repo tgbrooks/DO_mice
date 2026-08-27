@@ -13,15 +13,16 @@ def _():
     import statsmodels.api as sm
     import numpy as np
     import yaml
+    import scipy.sparse
 
-    return lp, mo, np, pb, pl, sm, yaml
+    return lp, mo, np, pb, pl, scipy, yaml
 
 
 @app.cell
 def _():
     MIN_MEDIAN_EXPR_THRESHOLD = 50
     MIN_ASE_READS = 10
-    return MIN_ASE_READS, MIN_MEDIAN_EXPR_THRESHOLD
+    return (MIN_MEDIAN_EXPR_THRESHOLD,)
 
 
 @app.cell
@@ -396,16 +397,47 @@ def _(allele_unique, lp, mo, pl):
     return
 
 
+@app.cell
+def _(HAPLOTYPES, genotypes, pl):
+    haplotype_counts = genotypes.with_columns(
+        **{
+            hap: pl.col("genotype").str.contains(hap).cast(int)
+            + (pl.col("genotype") == f"{hap}{hap}").cast(int)
+            for hap in HAPLOTYPES
+        }
+    )
+    return (haplotype_counts,)
+
+
+app._unparsable_cell(
+    r"""
+    def _():
+        mat = (
+            haplotype_counts
+                .unpivot(HAPLOTYPES, index=["gene_id", "mouse_id"], variable_name="haplotype")
+                .pivot(index=["gene_id", "haplotype"], on="mouse_id", values="value")
+        )
+        return mat.select(mouse_ids).to_numpy())
+
+    haplotype_mat = _()
+    """,
+    name="_"
+)
+
+
 @app.cell(hide_code=True)
 def _(
     MIN_MEDIAN_EXPR_THRESHOLD,
     OUTLIER_MOUSE_IDS,
     counts,
+    haplotype_counts,
+    haplotype_mat,
     lp,
     mo,
     mouse_ids,
     np,
     pl,
+    scipy,
 ):
     gene_expr_mat = counts.pivot("mouse_id", index="gene_id", values="total")
     _expr_mat = gene_expr_mat.drop("gene_id").to_numpy()
@@ -420,7 +452,7 @@ def _(
         def run_pca(expr_mat, ids):
             X = expr_mat[high_variance_genes,]
             X = (X - np.mean(X, axis=1)[:, None]) / np.std(X, axis=1)[:, None]
-            U, V, DT = np.linalg.svd(X, full_matrices=False)
+            U, V, DT = scipy.sparse.linalg.svds(X, k=2)
             pca = pl.DataFrame(
                 {
                     "mouse_id": ids,
@@ -433,6 +465,17 @@ def _(
         ids_cleaned = [m for m in mouse_ids if m not in OUTLIER_MOUSE_IDS]
         _expr_mat_cleaned = gene_expr_mat.select(*ids_cleaned).to_numpy()
         pca_cleaned = run_pca(_expr_mat_cleaned, ids_cleaned)
+        geno_mat = haplotype_counts
+        pca_geno = run_pca(haplotype_mat, mouse_ids)
+        genotype_pca = (
+            lp.ggplot(pca_geno.with_columns(is_outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)), lp.aes("pca1", "pca2", color="is_outlier"))
+            + lp.geom_point(tooltips=lp.layer_tooltips(['mouse_id']))
+            + lp.ggtitle("Genotype PCA")
+            + lp.scale_color_manual(
+                breaks = [False, True],
+                values = ["black", "red"],
+            )
+        )
         return lp.gggrid([
             lp.ggplot(
                 pca.with_columns(outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)),
@@ -449,111 +492,16 @@ def _(
             ,
             lp.ggplot(pca_cleaned, lp.aes("pca1", "pca2"))
                 + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id"]))
-                + lp.ggtitle("Outliers removed")
-        ]) + lp.ggsize(900,500)
+                + lp.ggtitle("Outliers removed"),
+        ]) + lp.ggsize(900,500), genotype_pca
 
     mo.vstack(
         [
-            "PCA plot of the samples",
-            _(),
+            "PCA plot of the samples based off expression of high-variance genes and also on genotype.",
+            *_(),
         ]
     )
     return (gene_expr_mat,)
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    # Modelling genotype effects from ASE
-    """)
-    return
-
-
-@app.cell
-def _(MIN_ASE_READS, allele_unique, is_homozygous, pl):
-    # We need to discard samples that are sufficiently uninformative in terms of ASE
-    to_use = allele_unique.with_columns(
-        frac_AS=pl.col("allele_specific_reads") / pl.col("total_reads")
-    ).filter(
-        (pl.col("allele_specific_reads") > MIN_ASE_READS)
-        | is_homozygous("diplotype"),
-    )
-    to_use
-    return
-
-
-@app.cell
-def _(HAPLOTYPES, genotypes, pl):
-    haplotype_counts = genotypes.with_columns(
-        **{
-            hap: pl.col("genotype").str.contains(hap).cast(int)
-            + (pl.col("genotype") == f"{hap}{hap}").cast(int)
-            for hap in HAPLOTYPES
-        }
-    )
-    return (haplotype_counts,)
-
-
-@app.cell(disabled=True)
-def _(
-    HAPLOTYPES,
-    gene_dispersions,
-    gene_expr_mat,
-    genes_to_use,
-    haplotype_counts,
-    np,
-    pl,
-    size_factors,
-    sm,
-):
-    gene_id = "ENSMUSG00000051747"
-    assert (
-        sorted(gene_expr_mat.columns[1:]) == gene_expr_mat.columns[1:]
-    )  # samples are sorted
-    assert (
-        sorted(gene_expr_mat.columns[1:]) == size_factors["mouse_id"].to_list()
-    )
-    disp = gene_dispersions.filter(gene_id=gene_id)["dispersion"][0]
-
-    _selected_gene_ids = gene_expr_mat["gene_id"].filter(genes_to_use)
-    results = []
-    for gene_id in _selected_gene_ids:
-        # Fit a model where expression is linear with haplotype counts for each haplotype
-        endog = (
-            gene_expr_mat.filter(gene_id=gene_id)
-            .drop("gene_id")
-            .to_numpy()
-            .flatten()
-        )
-        exog = haplotype_counts.filter(gene_id=gene_id).sort("mouse_id")
-        hap_count = sm.GLM(
-            endog=endog,
-            exog=exog.select(HAPLOTYPES).to_numpy(),
-            family=sm.families.NegativeBinomial(alpha=disp),
-            offset=size_factors["size_factor"],
-        ).fit()
-        # Compare to model where all genotypes contribute equally
-        _rmatrix = np.hstack(
-            [np.ones((7, 1)), -np.eye(7)]
-        )  # A-B=0, A-C=0, ..., A-H=0
-        diff_test = hap_count.f_test(_rmatrix)
-
-        results.append(
-            {
-                "gene_id": gene_id,
-                "haplotype_effects": hap_count.params,
-                "haplotype_se": hap_count.bse,
-                "haplotype_effect_p": diff_test.pvalue,
-            }
-        )
-    results = pl.DataFrame(results)
-    return (results,)
-
-
-@app.cell
-def _(results):
-    results
-    return
 
 
 @app.cell(hide_code=True)
@@ -640,29 +588,32 @@ def _(HAPLOTYPES, buffering, lp, mo, pl):
 
 
 @app.cell
-def _(buffering, good_genes3, lp, pl):
+def _(buffering, good_genes4, lp, pl):
     (
-        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes3)), lp.aes("anova_binom_p", "buffering_factor"))
+        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes4)), lp.aes("anova_binom_p", "buffering_factor"))
         + lp.scale_x_log10()
         + lp.geom_pointdensity(
             tooltips=lp.layer_tooltips(
                 ["gene_id", "gene_name", "gene_biotype"]
-            )
+            ),
+            show_legend=False,
         )
+        + lp.ggmarginal(sides="tr", layer=lp.geom_density())
+        + lp.scale_color_viridis(option="magma")
     )
     return
 
 
 @app.cell
-def _(buffering, good_genes3, lp, mo, np, pl):
+def _(buffering, good_genes4, lp, mo, np, pl):
     _data = buffering.filter(
-        pl.col("gene_id").is_in(good_genes3),
+        pl.col("gene_id").is_in(good_genes4),
         pl.col("anova_binom_p") < 1e-25, # highly significant
     ).with_columns(
         pl.col("buffering_factor").cut(np.linspace(-0.25,1.25,31), include_breaks=True),
     ).with_columns(
         buffering_factor = pl.col("buffering_factor").struct.field("breakpoint"),
-        is_significant = pl.col("buffering_factor_ci_hi") < 0.5, #NOTE: change!
+        is_significant = pl.col("buffering_factor_ci_hi") < 1.0,
     ).group_by(
         ["buffering_factor", "is_significant"]
     ).agg(
@@ -679,9 +630,9 @@ def _(buffering, good_genes3, lp, mo, np, pl):
 
 
 @app.cell
-def _(buffering, good_genes3, lp, mo, np, pl):
+def _(buffering, good_genes4, lp, mo, np, pl):
     _data = buffering.filter(
-        pl.col("gene_id").is_in(good_genes3),
+        pl.col("gene_id").is_in(good_genes4),
         pl.col("anova_binom_p") < 1e-25, # highly significant
     ).with_columns(
         pl.col("deming_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
@@ -939,14 +890,14 @@ def _(
 
 
 @app.cell
-def _(HAPLOTYPES, buffering, gene_selector, lp, pl):
+def _(HAPLOTYPES, buffering, gene_selector, lp, mo, pl):
     def _():
         data = buffering.filter(gene_id = gene_selector.value)
         buff_factor = data['buffering_factor'][0]
         df = pl.DataFrame(dict(
             hap = [hap for hap in HAPLOTYPES if hap != "H"],
-            x = data[[f'effect_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0], # H is refernece, always 0
-            x_se = data[[f'effect_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
+            x = 2*data[[f'effect_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0], # H is refernece, always 0
+            x_se = 2*data[[f'effect_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
             y = data[[f'total_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
             y_se = data[[f'total_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
         )).with_columns(
@@ -955,6 +906,9 @@ def _(HAPLOTYPES, buffering, gene_selector, lp, pl):
             y_min = pl.col("y") - 1.96*pl.col("y_se"),
             y_max = pl.col("y") + 1.96*pl.col("y_se"),
         )
+        xmin, xmax = min(df['x_min']), max(df['x_max'])
+        ymin, ymax = min(df['y_min']), max(df['y_max'])
+        lims = min(ymin,xmin), max(xmax, ymax)
         return (
             lp.ggplot(df, lp.aes("x", "y"))
             + lp.geom_point(
@@ -963,11 +917,18 @@ def _(HAPLOTYPES, buffering, gene_selector, lp, pl):
             + lp.geom_errorbar(lp.aes(xmin="x_min", xmax="x_max"), color="black")
             + lp.geom_errorbar(lp.aes(ymin="y_min", ymax="y_max"), color="black")
             + lp.geom_point(data={"x": [0], "y": [0]}, mapping=lp.aes("x", "y"), alpha = 0)
-            + lp.labs(x="ASE (binomial GLM)", y="total counts (NB GLM)")
+            + lp.labs(x="beta (ASE, binomial GLM)", y="2 × beta (total counts, NB GLM)")
             + lp.geom_abline(slope=buff_factor, intercept=0, color="red", linetype=2)
+            + lp.geom_abline(slope=1, intercept=0, color="black", linetype=2)
+            + lp.coord_fixed()
+            + lp.xlim(*lims)
+            + lp.ylim(*lims)
             + lp.ggtitle("Estimated effects by model type")
         )
-    _() 
+    mo.vstack([
+        "Plot the ASE (binomial) model fit parameters versus the total counts (NB GLM) fit parameters, scaled up by 2. In dash red, the buffering fit line and in black the reference diagonal line. Scale factor of 2 is because the total counts are the sum of two allele counts.",
+        _(),
+    ])
     return
 
 
@@ -1186,10 +1147,42 @@ def _(HAPLOTYPES, good_genes2, lp, mo, np, pl, sim_reads):
 
 
 @app.cell
-def _(MAX_UNIQUE_READS_RATIO, mo, pl, sim_au_ratios):
+def _(MAX_UNIQUE_READS_RATIO, pl, sim_au_ratios):
     good_genes3 = sorted(sim_au_ratios.filter(pl.col("au_ratio") < MAX_UNIQUE_READS_RATIO)['gene_id'])
-    mo.vstack([f"Final total of genes selected for use: {len(good_genes3)}"])
     return (good_genes3,)
+
+
+@app.cell
+def _(good_genes3, lp, mo, pl, sim_reads, sim_source_counts):
+    MAX_OVERMAPPING_RATIO = 1.1
+    _data = sim_reads.join(sim_source_counts.select("gene_id", source_haplotype="haplotype", expected_reads="num_reads"), ["gene_id","source_haplotype"],).filter(pl.col("gene_id").is_in(good_genes3))
+    good_genes4 = list(
+        _data
+        .group_by("gene_id")
+        .agg(ratio = (pl.col("total_reads") / pl.col("expected_reads")).min())
+        .filter(pl.col('ratio') < MAX_OVERMAPPING_RATIO)['gene_id'].unique()
+    )
+    mo.vstack([
+        f"Check for multimapping between genes by comparing the number of reads that were generated from a gene to the number actually mapping there. Discard any genes with more than {MAX_OVERMAPPING_RATIO} the expected value",
+        lp.ggplot(_data.sample(n=5_000), lp.aes("expected_reads", "total_reads"))
+        + lp.geom_pointdensity()
+        + lp.scale_color_viridis(option="magma")
+        + lp.scale_x_log10()
+        + lp.scale_y_log10()
+    ])
+    return (good_genes4,)
+
+
+@app.cell
+def _(pl):
+    sim_source_counts = pl.read_csv("results/simulated_reads/source_counts_by_gene.txt", separator="\t")
+    return (sim_source_counts,)
+
+
+@app.cell
+def _(good_genes4, mo):
+    mo.vstack([f"Final total of genes selected for use: {len(good_genes4)}"])
+    return
 
 
 if __name__ == "__main__":
