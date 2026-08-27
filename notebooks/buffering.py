@@ -45,6 +45,12 @@ def _(pl):
 
 
 @app.cell
+def _(pl):
+    size_factors = pl.read_csv("results/Adipose/size_factors.txt", separator="\t")
+    return (size_factors,)
+
+
+@app.cell
 def _(genotypes):
     mouse_ids = sorted(genotypes["mouse_id"].unique())
     return (mouse_ids,)
@@ -458,76 +464,6 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Gene-level analysis
-    Here we just use gene counts, not separating out by alleles.
-    We run DESeq2 which will give us dispersions that we can use for the rest of the analysis.
-    DESeq2 does not allow predictor variables to vary across genes, so we just do the simplest model without genotype.
-    """)
-    return
-
-
-@app.cell(disabled=True)
-def _(MIN_MEDIAN_EXPR_THRESHOLD, gene_expr_mat, mo, np, pl):
-    import pydeseq2.dds
-
-    genes_to_use = (
-        np.median(gene_expr_mat.drop("gene_id").to_numpy(), axis=1)
-        > MIN_MEDIAN_EXPR_THRESHOLD
-    )
-
-    @mo.persistent_cache
-    def run_deseq2(gene_counts):
-        X = gene_counts.drop("gene_id").to_numpy()[genes_to_use].T
-        N_samples = gene_expr_mat.shape[1] - 1
-        dds = pydeseq2.dds.DeseqDataSet(
-            counts=X.astype(int),
-            metadata=pl.DataFrame(
-                {"intercept": np.ones(N_samples)}
-            ).to_pandas(),
-            design="~1",
-        )
-        dds.deseq2()
-        return dds
-
-    dds = run_deseq2(gene_expr_mat)
-    return dds, genes_to_use
-
-
-@app.cell
-def _(dds, gene_annot, gene_expr_mat, genes_to_use, lp, mo, pl):
-    gene_dispersions = pl.DataFrame(
-        {
-            "gene_id": gene_expr_mat.filter(genes_to_use)["gene_id"],
-            "dispersion": dds.var["MAP_dispersions"],
-            "normed_means": dds.var["_normed_means"],
-        }
-    )
-    size_factors = pl.DataFrame(
-        {
-            "mouse_id": gene_expr_mat.drop("gene_id").columns,
-            "size_factor": dds.obs["size_factors"],
-        }
-    )
-    mo.vstack(
-        [
-            "DESeq2 dispersion and mean estimates",
-            lp.ggplot(
-                gene_dispersions.join(gene_annot, "gene_id"),
-                lp.aes(x="normed_means", y="dispersion"),
-            )
-            + lp.geom_pointdensity(
-                tooltips=lp.layer_tooltips(["gene_id", "gene_name"])
-            )
-            + lp.scale_x_log10()
-            + lp.scale_y_log10(),
-        ]
-    )
-    return gene_dispersions, size_factors
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
     # Modelling genotype effects from ASE
     """)
     return
@@ -647,14 +583,14 @@ def _(buffering_all, gene_annot, mo, pl):
                     pl.col("convergence_code_binom") != 0
                 ).mean(),
                 frac_buffering_failed=(
-                    pl.col("convergence_code_buffering") != 0
+                    pl.col("convergence_code_total") != 0
                 ).mean(),
             ),
         ]
     )
     buffering = buffering_all.filter(
         pl.col("convergence_code_binom") == 0,
-        pl.col("convergence_code_buffering") == 0,
+        pl.col("convergence_code_total") == 0,
     ).join(
         gene_annot.select("gene_id", "gene_name", "gene_biotype"),
         "gene_id",
@@ -706,9 +642,8 @@ def _(HAPLOTYPES, buffering, lp, mo, pl):
 @app.cell
 def _(buffering, good_genes3, lp, pl):
     (
-        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes3)), lp.aes("anova_binom_p", "anova_buffering_p"))
+        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes3)), lp.aes("anova_binom_p", "buffering_factor"))
         + lp.scale_x_log10()
-        + lp.scale_y_log10()
         + lp.geom_pointdensity(
             tooltips=lp.layer_tooltips(
                 ["gene_id", "gene_name", "gene_biotype"]
@@ -727,7 +662,7 @@ def _(buffering, good_genes3, lp, mo, np, pl):
         pl.col("buffering_factor").cut(np.linspace(-0.25,1.25,31), include_breaks=True),
     ).with_columns(
         buffering_factor = pl.col("buffering_factor").struct.field("breakpoint"),
-        is_significant = pl.col("anova_buffering_p") < 1e-25, #highly significant
+        is_significant = pl.col("buffering_factor_ci_hi") < 0.5, #NOTE: change!
     ).group_by(
         ["buffering_factor", "is_significant"]
     ).agg(
@@ -739,6 +674,31 @@ def _(buffering, good_genes3, lp, mo, np, pl):
             _data,
             lp.aes("buffering_factor", "num_genes", fill="is_significant")
         ) + lp.geom_bar(stat="identity")
+    ])
+    return
+
+
+@app.cell
+def _(buffering, good_genes3, lp, mo, np, pl):
+    _data = buffering.filter(
+        pl.col("gene_id").is_in(good_genes3),
+        pl.col("anova_binom_p") < 1e-25, # highly significant
+    ).with_columns(
+        pl.col("deming_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
+    ).with_columns(
+        deming_p_gof = pl.col("deming_p_gof").struct.field("breakpoint"),
+    ).group_by(
+        "deming_p_gof"
+    ).agg(
+        num_genes = pl.len()
+    )
+    mo.vstack([
+        "Checking the goodness of fit tests for the deming models: testing whether there is a shared factor common to all haplotypes.",
+        lp.ggplot(
+            _data,
+            lp.aes("deming_p_gof", "num_genes"),
+        ) + lp.geom_bar(stat="identity")
+        + lp.scale_x_log10()
     ])
     return
 
@@ -975,6 +935,39 @@ def _(
         #return lp.gggrid(plot_grid, ncol=len(HAPLOTYPES)) + lp.ggsize( 1800, 1800 )
 
     _()
+    return
+
+
+@app.cell
+def _(HAPLOTYPES, buffering, gene_selector, lp, pl):
+    def _():
+        data = buffering.filter(gene_id = gene_selector.value)
+        buff_factor = data['buffering_factor'][0]
+        df = pl.DataFrame(dict(
+            hap = [hap for hap in HAPLOTYPES if hap != "H"],
+            x = data[[f'effect_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0], # H is refernece, always 0
+            x_se = data[[f'effect_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
+            y = data[[f'total_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
+            y_se = data[[f'total_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
+        )).with_columns(
+            x_min = pl.col("x") - 1.96*pl.col("x_se"),
+            x_max = pl.col("x") + 1.96*pl.col("x_se"),
+            y_min = pl.col("y") - 1.96*pl.col("y_se"),
+            y_max = pl.col("y") + 1.96*pl.col("y_se"),
+        )
+        return (
+            lp.ggplot(df, lp.aes("x", "y"))
+            + lp.geom_point(
+                tooltips=lp.layer_tooltips(["hap"])
+            )
+            + lp.geom_errorbar(lp.aes(xmin="x_min", xmax="x_max"), color="black")
+            + lp.geom_errorbar(lp.aes(ymin="y_min", ymax="y_max"), color="black")
+            + lp.geom_point(data={"x": [0], "y": [0]}, mapping=lp.aes("x", "y"), alpha = 0)
+            + lp.labs(x="ASE (binomial GLM)", y="total counts (NB GLM)")
+            + lp.geom_abline(slope=buff_factor, intercept=0, color="red", linetype=2)
+            + lp.ggtitle("Estimated effects by model type")
+        )
+    _() 
     return
 
 
