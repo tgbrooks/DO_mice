@@ -163,7 +163,14 @@ fit_model <- function(au) {
         filter(
             !is_homozygous,
         ) |>
-        filter((haplotype_1_unique > 0) | (haplotype_2_unique > 0))
+        filter((haplotype_1_unique > 0) | (haplotype_2_unique > 0)) |>
+        mutate(
+            # Ensure sorted diplotype (always true for real data but not for simulation)
+            diplo = paste0(pmin(hap1, hap2), pmax(hap1, hap2)),
+            sgn  = ifelse(hap1 < hap2, 1L, -1L)
+        )
+    # Model for the goodness of fit test
+    signed_diplo <- model.matrix(~ 0 + diplo, au2) * au2$sgn
 
     if (nrow(au2) == 0) {
         message("Skipping: no allele-specific expression")
@@ -190,6 +197,14 @@ fit_model <- function(au) {
         )
     }
     anova_binom <- compare_to_null_binom(au2, family, logLik(res_binom))
+
+    # Goodness of fit test for the binomial model compared to modelling each diplotype separately
+    res_binom_diplo <- glmmTMB(
+        cbind(haplotype_1_unique, haplotype_2_unique) ~ 0 + signed_diplo,
+        family = family,
+        data = au2,
+    )
+    binom_gof <- anova(res_binom_diplo, res_binom)
 
     if (any(is.na(fixef(res_binom)$cond)) || any(is.na(vcov(res_binom)$cond))) {
         message("Skipping due to NA parameters in binom")
@@ -270,6 +285,7 @@ fit_model <- function(au) {
         effect_F_se = cis_F_se,
         effect_G_se = cis_G_se,
         effect_H_se = 0, # Reference, 0 by definition
+        binom_p_gof = binom_gof['res_binom_diplo', 'Pr(>Chisq)'],
         # From the total counts model
         total_A = total_effects['A'],
         total_B = total_effects['B'],
