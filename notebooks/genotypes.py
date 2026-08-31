@@ -218,6 +218,7 @@ def _(HAPLOTYPES, lp, np, pl):
             + lp.scale_color_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "white"])
             + lp.scale_fill_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "white"])
             + lp.ggsize(900, 500)
+            + lp.labs(x="pos")
         )
 
     return (plot_msa,)
