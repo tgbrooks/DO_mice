@@ -395,6 +395,7 @@ dependencies = [
     { name = "pandas" },
     { name = "polars" },
     { name = "polars-bio" },
+    { name = "pyabpoa" },
     { name = "pydeseq2" },
     { name = "scipy" },
     { name = "snakemake" },
@@ -421,6 +422,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=3.0.5" },
     { name = "polars", specifier = ">=1.43.0" },
     { name = "polars-bio", specifier = ">=0.33.1" },
+    { name = "pyabpoa", specifier = ">=1.5.6" },
     { name = "pydeseq2", specifier = ">=0.5.4" },
     { name = "scipy", specifier = ">=1.18.0" },
     { name = "snakemake", specifier = ">=9.23.1" },
@@ -1615,6 +1617,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/cd/05/0a34433a064256a57
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/37/efad0257dc6e593a18957422533ff0f87ede7c9c6ea010a2177d738fb82f/pure_eval-0.2.3-py3-none-any.whl", hash = "sha256:1db8e35b67b3d218d818ae653e27f06c3aa420901fa7b081ca98cbedc874e0d0", size = 11842, upload-time = "2024-07-21T12:58:20.04Z" },
 ]
+
+[[package]]
+name = "pyabpoa"
+version = "1.5.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/35/4297ca44ffe231826c3942c11908fea6178f2718955353828512149dba37/pyabpoa-1.5.6.tar.gz", hash = "sha256:265f638c7fed0cde78cf0593c9e36121c1e718de1c73d7fa527dd62a7f90f191", size = 899656, upload-time = "2026-02-22T03:19:08.312Z" }
 
 [[package]]
 name = "pyarrow"

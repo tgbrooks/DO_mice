@@ -26,6 +26,12 @@ def _():
 
 
 @app.cell
+def _():
+    MAX_INCOMPATIBLE_MICE = 3
+    return (MAX_INCOMPATIBLE_MICE,)
+
+
+@app.cell
 def _(pl):
     counts = pl.read_parquet(
         "results/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
@@ -162,23 +168,33 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(allele_unique, lp, mo, pl):
+def _(OUTLIER_MOUSE_IDS, allele_unique, lp, mo, pl):
     # Check genotyping quality
     def _():
         df = allele_unique.group_by("mouse_id").agg(
             pl.col("total_reads").sum(),
             pl.col("diplotype_incompat_reads").sum(),
             pl.col("allele_specific_reads").sum(),
+        ).with_columns(
+            is_outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)
         )
         return lp.gggrid(
             [
-                lp.ggplot(df, lp.aes("total_reads", "allele_specific_reads"))
+                lp.ggplot(df, lp.aes("total_reads", "allele_specific_reads", color="is_outlier"))
                 + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id"]))
+                + lp.scale_color_manual(
+                    breaks = [False, True],
+                    values = ["black", "red"],
+                )
                 + lp.ylim(0),
                 lp.ggplot(
-                    df, lp.aes("total_reads", "diplotype_incompat_reads")
+                    df, lp.aes("total_reads", "diplotype_incompat_reads", color="is_outlier")
                 )
                 + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id"]))
+                + lp.scale_color_manual(
+                    breaks = [False, True],
+                    values = ["black", "red"],
+                )
                 + lp.ylim(0),
             ]
         ) + lp.ggsize(width=900, height=400)
@@ -193,7 +209,7 @@ def _(allele_unique, lp, mo, pl):
 
 
 @app.cell(hide_code=True)
-def _(allele_unique, imbalance, is_homozygous, lp, mo, pl):
+def _(OUTLIER_MOUSE_IDS, allele_unique, imbalance, is_homozygous, lp, mo, pl):
     # Check match of our allele-specific quants and GBRS quants
     # GBRS quants by EM should only approximate ours, though for gene-level will be pretty close
     # Multimappers between multiple genes will be the main exception, as will homozygous (which get 0 ASE in ours but 50%/50% in GBRS)
@@ -235,19 +251,31 @@ def _(allele_unique, imbalance, is_homozygous, lp, mo, pl):
                     "ASE_total", "total", method="spearman"
                 ),
             )
+        ).with_columns(
+            is_outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)
         )
         return lp.gggrid(
             [
                 lp.ggplot(df, lp.aes(y="correlation_total"))
-                + lp.geom_boxplot()
+                + lp.geom_boxplot(outlier_size=0)
                 + lp.geom_jitter(
+                    lp.aes(color="is_outlier"),
                     height=0, tooltips=lp.layer_tooltips(["mouse_id"])
+                )
+                + lp.scale_color_manual(
+                    breaks = [False, True],
+                    values = ["black", "red"],
                 )
                 + lp.labs(y="corr(total reads)"),
                 lp.ggplot(df, lp.aes(y="correlation"))
-                + lp.geom_boxplot()
+                + lp.geom_boxplot(outlier_size=0)
                 + lp.geom_jitter(
+                    lp.aes(color="is_outlier"),
                     height=0, tooltips=lp.layer_tooltips(["mouse_id"])
+                )
+                + lp.scale_color_manual(
+                    breaks = [False, True],
+                    values = ["black", "red"],
                 )
                 + lp.labs(y="corr(imbalance)"),
             ]
@@ -352,7 +380,7 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, allele_unique, lp, mo, pl):
                 + lp.scale_fill_viridis(option="magma", limits=[0]),
                 # lp.ggplot(simple, lp.aes("type", "N")) + lp.geom_boxplot() + lp.geom_jitter(height=0, tooltips=lp.layer_tooltips(["mouse_id"])) + lp.ylim(0),
                 lp.ggplot(simple, lp.aes(y="hom_het_fraction"))
-                + lp.geom_boxplot()
+                + lp.geom_boxplot(outlier_size=0)
                 + lp.geom_jitter(
                     height=0, tooltips=lp.layer_tooltips(["mouse_id"])
                 )
@@ -409,20 +437,18 @@ def _(HAPLOTYPES, genotypes, pl):
     return (haplotype_counts,)
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(HAPLOTYPES, haplotype_counts, mouse_ids):
     def _():
         mat = (
             haplotype_counts
                 .unpivot(HAPLOTYPES, index=["gene_id", "mouse_id"], variable_name="haplotype")
                 .pivot(index=["gene_id", "haplotype"], on="mouse_id", values="value")
         )
-        return mat.select(mouse_ids).to_numpy())
+        return mat.select(mouse_ids).to_numpy()
 
     haplotype_mat = _()
-    """,
-    name="_"
-)
+    return (haplotype_mat,)
 
 
 @app.cell(hide_code=True)
@@ -438,8 +464,14 @@ def _(
     np,
     pl,
     scipy,
+    size_factors,
 ):
-    gene_expr_mat = counts.pivot("mouse_id", index="gene_id", values="total")
+    gene_expr_mat = counts.join(
+        size_factors,
+        "mouse_id",
+    ).with_columns(
+        norm_counts = pl.col("total") / pl.col("size_factor"),
+    ).pivot("mouse_id", index="gene_id", values="norm_counts")
     _expr_mat = gene_expr_mat.drop("gene_id").to_numpy()
     _variance = (_expr_mat.std(axis=1) / (_expr_mat.mean(axis=1) + 1)) * (
         np.median(_expr_mat, axis=1) > MIN_MEDIAN_EXPR_THRESHOLD
@@ -502,6 +534,50 @@ def _(
         ]
     )
     return (gene_expr_mat,)
+
+
+@app.cell
+def _(
+    MAX_INCOMPATIBLE_MICE,
+    OUTLIER_MOUSE_IDS,
+    allele_unique,
+    good_genes4,
+    lp,
+    np,
+    pl,
+):
+    # Incompatible reads by gene
+    num_incompat_by_gene = allele_unique.filter(
+        ~pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS),
+    ).group_by(
+        "gene_id"
+    ).agg(
+        num_incompat = ((pl.col("diplotype_incompat_reads") / pl.col("total_reads")).fill_nan(0) > 0.05).sum()
+    ).with_columns(
+        good_gene = pl.col("gene_id").is_in(good_genes4),
+    )
+    _dat = num_incompat_by_gene.with_columns(
+        pl.col("num_incompat").cut(np.linspace(0,250,31), include_breaks=True),
+    ).group_by(
+        ["num_incompat", "good_gene"]
+    ).agg(
+        num_genes = pl.len(),
+    ).with_columns(
+        num_incompat = pl.col("num_incompat").struct.field("breakpoint"),
+    )
+
+    lp.ggplot(_dat, lp.aes("num_incompat", "num_genes", fill="good_gene")) +  lp.geom_bar(stat="identity") + lp.scale_y_log10() + lp.geom_vline(xintercept=MAX_INCOMPATIBLE_MICE+0.5)
+    return (num_incompat_by_gene,)
+
+
+@app.cell
+def _(MAX_INCOMPATIBLE_MICE, good_genes4, mo, num_incompat_by_gene, pl):
+    good_genes5 = list(num_incompat_by_gene.filter(
+        pl.col("gene_id").is_in(good_genes4),
+        pl.col("num_incompat") <= MAX_INCOMPATIBLE_MICE,
+    )['gene_id'])
+    mo.vstack([f"Remaining: {len(good_genes5)} pass incompatible threshold"])
+    return (good_genes5,)
 
 
 @app.cell(hide_code=True)
@@ -588,9 +664,9 @@ def _(HAPLOTYPES, buffering, lp, mo, pl):
 
 
 @app.cell
-def _(buffering, good_genes4, lp, pl):
+def _(buffering, good_genes5, lp, pl):
     (
-        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes4)), lp.aes("anova_binom_p", "buffering_factor"))
+        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes5)), lp.aes("anova_binom_p", "buffering_factor"))
         + lp.scale_x_log10()
         + lp.geom_pointdensity(
             tooltips=lp.layer_tooltips(
@@ -605,9 +681,9 @@ def _(buffering, good_genes4, lp, pl):
 
 
 @app.cell
-def _(buffering, good_genes4, lp, mo, np, pl):
+def _(buffering, good_genes5, lp, mo, np, pl):
     _data = buffering.filter(
-        pl.col("gene_id").is_in(good_genes4),
+        pl.col("gene_id").is_in(good_genes5),
         pl.col("anova_binom_p") < 1e-25, # highly significant
     ).with_columns(
         pl.col("buffering_factor").cut(np.linspace(-0.25,1.25,31), include_breaks=True),
@@ -630,9 +706,9 @@ def _(buffering, good_genes4, lp, mo, np, pl):
 
 
 @app.cell
-def _(buffering, good_genes4, lp, mo, np, pl):
+def _(buffering, good_genes5, lp, mo, np, pl):
     _data = buffering.filter(
-        pl.col("gene_id").is_in(good_genes4),
+        pl.col("gene_id").is_in(good_genes5),
         pl.col("anova_binom_p") < 1e-25, # highly significant
     ).with_columns(
         pl.col("deming_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
@@ -644,7 +720,7 @@ def _(buffering, good_genes4, lp, mo, np, pl):
         num_genes = pl.len()
     )
     mo.vstack([
-        "Checking the goodness of fit tests for the deming models: testing whether there is a shared factor common to all haplotypes.",
+        "Checking the goodness of fit tests for the deming models: testing whether there is a shared buffering factor common to all haplotypes.",
         lp.ggplot(
             _data,
             lp.aes("deming_p_gof", "num_genes"),
@@ -663,7 +739,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(gene_annot, gene_expr_mat, mo, pl):
     _vals = (
         gene_expr_mat.select("gene_id")
@@ -805,6 +881,7 @@ def _(
 def _(
     HAPLOTYPES,
     HAPLOTYPE_COLORS,
+    OUTLIER_MOUSE_IDS,
     allele_unique,
     gene_selector,
     lp,
@@ -814,6 +891,8 @@ def _(
     def _():
         au = allele_unique.filter(gene_id=gene_selector.value).join(
             size_factors, "mouse_id"
+        ).filter(
+            ~pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)
         )
         max_expr = au.select(
             max=(pl.col("total_reads") / pl.col("size_factor")).max()
@@ -890,14 +969,14 @@ def _(
 
 
 @app.cell
-def _(HAPLOTYPES, buffering, gene_selector, lp, mo, pl):
+def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering, gene_selector, lp, mo, pl):
     def _():
         data = buffering.filter(gene_id = gene_selector.value)
         buff_factor = data['buffering_factor'][0]
         df = pl.DataFrame(dict(
             hap = [hap for hap in HAPLOTYPES if hap != "H"],
-            x = 2*data[[f'effect_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0], # H is refernece, always 0
-            x_se = 2*data[[f'effect_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
+            x = data[[f'effect_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0], # H is refernece, always 0
+            x_se = data[[f'effect_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
             y = data[[f'total_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
             y_se = data[[f'total_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
         )).with_columns(
@@ -910,14 +989,18 @@ def _(HAPLOTYPES, buffering, gene_selector, lp, mo, pl):
         ymin, ymax = min(df['y_min']), max(df['y_max'])
         lims = min(ymin,xmin), max(xmax, ymax)
         return (
-            lp.ggplot(df, lp.aes("x", "y"))
+            lp.ggplot(df, lp.aes("x", "y", color="hap"))
             + lp.geom_point(
                 tooltips=lp.layer_tooltips(["hap"])
             )
-            + lp.geom_errorbar(lp.aes(xmin="x_min", xmax="x_max"), color="black")
-            + lp.geom_errorbar(lp.aes(ymin="y_min", ymax="y_max"), color="black")
-            + lp.geom_point(data={"x": [0], "y": [0]}, mapping=lp.aes("x", "y"), alpha = 0)
-            + lp.labs(x="beta (ASE, binomial GLM)", y="2 × beta (total counts, NB GLM)")
+            + lp.geom_errorbar(lp.aes(xmin="x_min", xmax="x_max"))
+            + lp.geom_errorbar(lp.aes(ymin="y_min", ymax="y_max"))
+            + lp.geom_point(data={"x": [0], "y": [0]}, mapping=lp.aes("x", "y"), alpha = 0, color="black") #ensure 0,0 is in view
+            + lp.labs(x="beta (ASE, binomial GLM)", y="beta (total counts, NB GLM)")
+            + lp.scale_color_manual(
+                values=HAPLOTYPE_COLORS,
+                breaks=HAPLOTYPES,
+            )
             + lp.geom_abline(slope=buff_factor, intercept=0, color="red", linetype=2)
             + lp.geom_abline(slope=1, intercept=0, color="black", linetype=2)
             + lp.coord_fixed()
@@ -926,7 +1009,7 @@ def _(HAPLOTYPES, buffering, gene_selector, lp, mo, pl):
             + lp.ggtitle("Estimated effects by model type")
         )
     mo.vstack([
-        "Plot the ASE (binomial) model fit parameters versus the total counts (NB GLM) fit parameters, scaled up by 2. In dash red, the buffering fit line and in black the reference diagonal line. Scale factor of 2 is because the total counts are the sum of two allele counts.",
+        "Plot the ASE (binomial) model fit parameters versus the total counts (NB GLM) fit parameters. In dash red, the buffering fit line and in black the reference diagonal line. Note that the buffering fit line takes into account covariance of the estimate, which is typically substantial and means that the fit may not line between the points (it's intercept is always 0).",
         _(),
     ])
     return
@@ -1154,7 +1237,7 @@ def _(MAX_UNIQUE_READS_RATIO, pl, sim_au_ratios):
 
 @app.cell
 def _(good_genes3, lp, mo, pl, sim_reads, sim_source_counts):
-    MAX_OVERMAPPING_RATIO = 1.1
+    MAX_OVERMAPPING_RATIO = 1.05
     _data = sim_reads.join(sim_source_counts.select("gene_id", source_haplotype="haplotype", expected_reads="num_reads"), ["gene_id","source_haplotype"],).filter(pl.col("gene_id").is_in(good_genes3))
     good_genes4 = list(
         _data

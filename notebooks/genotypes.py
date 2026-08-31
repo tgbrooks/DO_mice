@@ -11,10 +11,11 @@ def _():
     import polars_bio as pb
     import yaml
     import lets_plot as lp
+    import numpy as np
     import pathlib
     import math
 
-    return lp, math, mo, pathlib, pb, pl, yaml
+    return lp, math, mo, np, pathlib, pb, pl, yaml
 
 
 @app.cell(hide_code=True)
@@ -59,6 +60,12 @@ def _(pb, pl, yaml):
 
 
 @app.cell
+def _(config, pb, pl):
+    tx_annot = pb.scan_gtf(config['gtf'], attr_fields=["gene_id", "transcript_id"]).filter(pl.col("type") == "transcript").collect()
+    return (tx_annot,)
+
+
+@app.cell
 def _(config, lp):
     HAPLOTYPES = config["haplotypes"].split(",")
     HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette( len(HAPLOTYPES) )
@@ -68,8 +75,8 @@ def _(config, lp):
 
 @app.cell
 def _(HAPLOTYPES, annot, mo):
-    gene_ids = annot['gene_id']
-    gene_names = annot['gene_name']
+    gene_ids = annot.sort("gene_id")['gene_id']
+    gene_names = annot.sort("gene_id")['gene_name']
     _map = {f"{id} | {name}":id for id,name in zip(gene_ids, gene_names)}
     gene_selector = mo.ui.dropdown(_map, searchable=True)
     _haplotypes = [f"{h1}{h2}" for h1 in HAPLOTYPES for h2 in HAPLOTYPES]
@@ -129,6 +136,91 @@ def _(
         _plt,
     ])
     return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Sequence differences
+    """)
+    return
+
+
+@app.cell
+def _(pb, pl):
+    # Assess the differences in transcriptomes
+    transcripts = (
+        pb.scan_fasta("gbrs_ref/transcripts.fasta")
+        .select(
+            transcript_id=pl.col("name").str.split("_").list.get(0),
+            haplotype=pl.col("name").str.split("_").list.get(1),
+            sequence = "sequence",
+        )
+        .collect()
+    )
+    return (transcripts,)
+
+
+@app.cell
+def _(gene_selector, lp, plot_msa, transcripts, tx_annot):
+    import pyabpoa as pa
+    gene_transcripts = tx_annot.filter(gene_id = gene_selector.value)['transcript_id']
+    _temp = []
+    for transcript_id in gene_transcripts:
+        _dat = transcripts.filter(transcript_id = transcript_id)
+        a = pa.msa_aligner()
+        seqs=list(_dat['sequence'])
+        a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment 
+        _temp.append(plot_msa(a_res) + lp.ggtitle(transcript_id))
+    lp.gggrid(_temp, ncol=1) + lp.ggsize(900, 250*len(_temp)) + lp.ggtb()
+    return
+
+
+@app.cell
+def _(HAPLOTYPES, lp, np, pl):
+    def plot_msa(a_res):
+        assert len(a_res.cons_seq) == 1 # only one consensus sequence, hopefully, not sure when this fails
+        cons_seq = np.array(list(a_res.msa_seq[-1]))
+        x = np.arange(len(cons_seq))
+        hap_num = {hap: 8-i for i, hap in enumerate(HAPLOTYPES)}
+        _temp = []
+        for hap, seq in zip(HAPLOTYPES, a_res.msa_seq):
+            match_cons = np.array(list(seq))  == cons_seq
+            is_gap = np.array(list(seq)) == "-"
+            _temp.append(pl.DataFrame({
+                "pos": x,
+                "match_cons": match_cons,
+                "is_gap": is_gap,
+                "haplotype": hap,
+            }))
+        msa = pl.concat(_temp) \
+            .with_columns(
+                type = pl.when(pl.col("is_gap"))
+                    .then(pl.lit("gap"))
+                    .when(pl.col("match_cons"))
+                    .then(pl.lit('match'))
+                    .otherwise(pl.lit('mismatch'))
+            ).with_columns(
+                rle_id = pl.col("type").rle_id().over("haplotype")
+            ).group_by(
+                ["rle_id", "type", "haplotype"],
+            ).agg(
+                start = pl.col("pos").min(),
+                end = pl.col("pos").max()+1,
+            ).with_columns(
+                hap_bottom = pl.col("haplotype").replace_strict(hap_num),
+                hap_top = pl.col("haplotype").replace_strict(hap_num) + 0.9,
+            )
+        return (
+            lp.ggplot(msa, lp.aes(xmin = "start", xmax="end", ymin = "hap_bottom", ymax="hap_top",fill="type", color="type"))
+            + lp.geom_rect()
+            + lp.scale_y_continuous(breaks = [x+0.45 for x in hap_num.values()], labels=list(hap_num.keys()))
+            + lp.scale_color_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "white"])
+            + lp.scale_fill_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "white"])
+            + lp.ggsize(900, 500)
+        )
+
+    return (plot_msa,)
 
 
 if __name__ == "__main__":
