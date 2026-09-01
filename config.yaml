@@ -19,6 +19,28 @@ MIN_MEDIAN_COUNTS: 50
 # Mouse IDs of outlier / problematic mice (e.g., likely sample swap)
 outlier_ids: ["DO048", "DO122", "DO024", "DO267", "DO100", "DO191", "DO158"]
 
+# Map of EMASE genotype names to Ensembl names:
+ensembl_haplotypes: {
+  "A": "mus_musculus_aj",
+  "B": "mus_musculus",
+  "C": "mus_musculus_129s1svimj",
+  "D": "mus_musculus_nodshiltj",
+  "E": "mus_musculus_nzohlltj",
+  "F": "mus_musculus_casteij",
+  "G": "mus_musculus_pwkphj",
+  "H": "mus_musculus_wsbeij",
+}
+ensembl_haplotypes_full: {
+  "A": "Mus_musculus_aj.A_J_v3",
+  "B": "Mus_musculus.GRCm39",
+  "C": "Mus_musculus_129s1svimj.129S1_SvImJ_v3",
+  "D": "Mus_musculus_nodshiltj.NOD_ShiLtJ_v3",
+  "E": "Mus_musculus_nzohlltj.NZO_HlLtJ_v3",
+  "F": "Mus_musculus_casteij.CAST_EiJ_v3",
+  "G": "Mus_musculus_pwkphj.PWK_PhJ_v3",
+  "H": "Mus_musculus_wsbeij.WSB_EiJ_v3",
+}
+
 ## Tissues to process. Each tissue is one GEO series from the same DO cohort,
 ## so the same mouse can appear in several tissues and shares one genotype.
 run:

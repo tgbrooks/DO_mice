@@ -183,4 +183,5 @@ wildcard_constraints:
     end = r"R1|R2|SE",
     # GBRS quantification modes (multi-way across founders, or diploid).
     mode = r"multiway|diploid",
-    haplotype = '|'.join(HAP_LIST)
+    haplotype = '|'.join(HAP_LIST),
+    nonref_haplotype = "A|C|D|E|F|G|H", # not B, the reference hap

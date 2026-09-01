@@ -28,6 +28,8 @@ include: "steps/analyze.smk"
 include: "steps/simulations.smk"
 # Read-level simulations to test our pipeline
 include: "steps/simulate_reads.smk"
+# Transcriptomes from liftoff and latest Ensembl (v116) strain-specific releases
+include: "steps/prepare_reference.smk"
 
 # These are quick bookkeeping steps, not worth submitting as cluster jobs:
 localrules: genotyped_mice, combine_tpm
@@ -69,6 +71,7 @@ def default_targets() -> list[str]:
             "geno/kinship/1.txt",
             "processed/simulated_counts/report.txt",
             "results/simulated_reads/source_counts_by_gene.txt",
+            *[f"gbrs_ref/v116/{haplotype}.gff3.gz" for haplotype in HAP_LIST],
     ]
     targets += [f"results/simulated_reads/gbrs/{haplotype}.compressed.h5"
                     for haplotype in HAP_LIST]

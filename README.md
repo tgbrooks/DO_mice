@@ -47,6 +47,8 @@ apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/rgeno.
 apptainer build --ignore-subuid --ignore-fakeroot-command --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/sratools.sif containers/sratools.def
 # For R in more general contexts with more libraries installed
 apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/rgeneral.sif containers/rgeneral.def
+# For Liftoff
+apptainer build --bind /tmp/fips_off:/proc/sys/crypto/fips_enabled images/liftoff.sif containers/liftoff.def
 ```
 
 Bind any paths the jobs need with `--singularity-args "-B /your/path"`.
