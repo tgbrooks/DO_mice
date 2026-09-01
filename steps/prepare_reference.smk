@@ -60,4 +60,25 @@ rule gzip_gff:
     shell:
         "gzip -c {input} > {output}"
 
+rule select_transcripts:
+    input:
+        gffs = expand("gbrs_ref/v116/{haplotype}.gff3.gz", haplotype=HAP_LIST)
+    output:
+        transcripts = "gbrs_ref/v116/selected_transcripts.txt"
+    resources:
+        mem_mb=36_000
+    run:
+        "../scripts/select_transcripts.py"
+
+rule extract_transcriptome_file:
+    input:
+        gff = "gbrs_ref/v116/{haplotype}.gff3.gz",
+        fasta = "gbrs_ref/v116/{haplotype}.dna.fa.gz",
+        tx = "gbrs_ref/v116/selected_transcripts.txt",
+    output:
+        fasta = "gbrs_ref/v116/{haplotype}.cdna.fa.gz"
+    resources:
+        mem_mb = 12_000,
+    script:
+        "../scripts/extract_transcriptome.py"
 #gffread -w ${S}.transcripts.fa -g ${S}_v3.fa ${S}.gff3_polished

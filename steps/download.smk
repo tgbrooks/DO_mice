@@ -165,17 +165,6 @@ rule download_gbrs_reference:
         tar -xzf {params.bowtie_index_tar} --strip-components 1
         """
 
-rule download_transcriptome:
-    output:
-        "gbrs_ref/v116/{haplotype}.cdna.fa.gz"
-    resources:
-        sra_downloads=1
-    params:
-        ensembl = lambda wildcards: config['ensembl_haplotypes'][wildcards.haplotype],
-        ensembl_full = lambda wildcards: config['ensembl_haplotypes_full'][wildcards.haplotype],
-    shell:
-        "wget -O {output}  https://ftp.ensembl.org/pub/release-116/fasta/{params.ensembl}/cdna/{params.ensembl_full}.cdna.all.fa.gz"
-
 def ensembl_genome_url(wildcards):
     ensembl = config['ensembl_haplotypes'][wildcards.haplotype]
     ensembl_full = config['ensembl_haplotypes_full'][wildcards.haplotype]
