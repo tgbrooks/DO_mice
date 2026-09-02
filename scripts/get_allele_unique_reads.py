@@ -9,7 +9,7 @@ from util.summarize_count_types import summarize_count_types
 cfg = yaml.load(pathlib.Path("config.yaml").open(), yaml.Loader)
 haplotype_names = cfg["haplotypes"].split(",")
 
-H5 = "results/Adipose/gbrs/DO024.compressed.h5"
+H5 = "processed/Adipose/gbrs/DO024.compressed.h5"
 genotype_file = "geno/gbrs_genotypes/DO024.genotypes.tsv"
 outfile = "temp.parquet"
 H5 = snakemake.input.h5

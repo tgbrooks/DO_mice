@@ -2,8 +2,6 @@ library(DESeq2)
 library(tidyverse)
 library(arrow)
 
-count_file <- "results/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
-outfile <- "results/Adipose/size_factors.txt"
 count_file <- snakemake@input$counts
 outfile <- snakemake@output$outfile
 
@@ -12,7 +10,7 @@ counts_mat <- pivot_wider(
     counts,
     id_cols = "gene_id",
     names_from = "mouse_id",
-    values_from = "total",
+    values_from = "total_reads",
 ) |>
     column_to_rownames("gene_id") |>
     as.matrix()

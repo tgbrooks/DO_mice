@@ -29,7 +29,7 @@ GBRS_QUANT_SUFFIXES = [
 
 def end_fastq(wildcards) -> str:
     """The merged FASTQ for one end of one mouse."""
-    return f"results/{wildcards.tissue}/fastq/{wildcards.mouse}_{wildcards.end}.fastq.gz"
+    return f"processed/{wildcards.tissue}/fastq/{wildcards.mouse}_{wildcards.end}.fastq.gz"
 
 
 rule bowtie_align:
@@ -40,12 +40,13 @@ rule bowtie_align:
     """
     input:
         fastq = end_fastq,
-        index = BOWTIE_INDEX_FILES,
+        # Use our custom-made index
+        index = multiext("gbrs_ref/v116/bowtie_index/all_haps", ".1.ebwt", ".2.ebwt", ".3.ebwt", ".4.ebwt", ".rev.1.ebwt", ".rev.2.ebwt"),
     output:
-        bam = temp("results/{tissue}/gbrs/{mouse}.{end}.bam"),
+        bam = temp("processed/{tissue}/gbrs/{mouse}.{end}.bam"),
     params:
-        index = BOWTIE_INDEX,
-        log = "results/{tissue}/gbrs/{mouse}.{end}.bowtie.log",
+        index = "gbrs_ref/v116/bowtie_index/all_haps",
+        log = "processed/{tissue}/gbrs/{mouse}.{end}.bowtie.log",
     threads: int(GBRS["align_threads"])
     resources:
         mem_mb = 16000,
@@ -64,10 +65,10 @@ rule bowtie_align:
 rule bam2emase:
     """Convert one end's alignments into an EMASE incidence matrix."""
     input:
-        bam = "results/{tissue}/gbrs/{mouse}.{end}.bam",
+        bam = "processed/{tissue}/gbrs/{mouse}.{end}.bam",
         info = gbrs_file("transcript_info"),
     output:
-        h5 = temp("results/{tissue}/gbrs/{mouse}.{end}.h5"),
+        h5 = temp("processed/{tissue}/gbrs/{mouse}.{end}.h5"),
     params:
         haplotypes = HAPLOTYPES,
     resources:
@@ -88,10 +89,10 @@ rule bam2emase:
 rule emase_common_alignments:
     """Keep only reads whose two ends agree, for paired-end samples."""
     input:
-        r1 = "results/{tissue}/gbrs/{mouse}.R1.h5",
-        r2 = "results/{tissue}/gbrs/{mouse}.R2.h5",
+        r1 = "processed/{tissue}/gbrs/{mouse}.R1.h5",
+        r2 = "processed/{tissue}/gbrs/{mouse}.R2.h5",
     output:
-        h5 = temp("results/{tissue}/gbrs/{mouse}.merged.h5"),
+        h5 = temp("processed/{tissue}/gbrs/{mouse}.merged.h5"),
     resources:
         mem_mb = lambda wildcards, attempt: 64000+(24000*attempt),
         runtime = '12h',
@@ -109,8 +110,8 @@ rule emase_common_alignments:
 def emase_h5(wildcards) -> str:
     """The EMASE file to quantify: the paired intersection, or the single end."""
     if is_paired(wildcards.tissue, wildcards.mouse):
-        return f"results/{wildcards.tissue}/gbrs/{wildcards.mouse}.merged.h5"
-    return f"results/{wildcards.tissue}/gbrs/{wildcards.mouse}.SE.h5"
+        return f"processed/{wildcards.tissue}/gbrs/{wildcards.mouse}.merged.h5"
+    return f"processed/{wildcards.tissue}/gbrs/{wildcards.mouse}.SE.h5"
 
 
 rule gbrs_compress:
@@ -118,7 +119,7 @@ rule gbrs_compress:
     input:
         emase_h5,
     output:
-        h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
+        h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
     resources:
         mem_mb = lambda wildcards, attempt: 20000 + 12000*attempt,
         runtime = '12h',
@@ -135,16 +136,16 @@ rule gbrs_quantify_multiway:
     per-founder TPMs.
     """
     input:
-        h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
+        h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
         gene2transcripts = gbrs_file("gene2transcripts"),
         lengths = gbrs_file("transcript_lengths"),
     output:
         expand(
-            "results/{{tissue}}/gbrs/{{mouse}}.multiway.{suffix}",
+            "processed/{{tissue}}/gbrs/{{mouse}}.multiway.{suffix}",
             suffix=GBRS_QUANT_SUFFIXES,
         ),
     params:
-        outbase = "results/{tissue}/gbrs/{mouse}",
+        outbase = "processed/{tissue}/gbrs/{mouse}",
         model = GBRS["multiread_model"],
     resources:
         mem_mb = 32000,
@@ -171,16 +172,16 @@ rule gbrs_reconstruct:
     "reconstructed".
     """
     input:
-        expr = "results/{tissue}/gbrs/{mouse}.multiway.genes.tpm",
+        expr = "processed/{tissue}/gbrs/{mouse}.multiway.genes.tpm",
         tprob = lambda w: transition_prob_file(w.mouse),
         avecs = gbrs_file("emissions"),
         gene_pos = gbrs_file("gene_pos"),
     output:
-        genoprobs = "results/{tissue}/gbrs/{mouse}.genoprobs.npz",
-        genotypes = "results/{tissue}/gbrs/{mouse}.genotypes.tsv",
-        genotypes_npz = "results/{tissue}/gbrs/{mouse}.genotypes.npz",
+        genoprobs = "processed/{tissue}/gbrs/{mouse}.genoprobs.npz",
+        genotypes = "processed/{tissue}/gbrs/{mouse}.genotypes.tsv",
+        genotypes_npz = "processed/{tissue}/gbrs/{mouse}.genotypes.npz",
     params:
-        outbase = "results/{tissue}/gbrs/{mouse}",
+        outbase = "processed/{tissue}/gbrs/{mouse}",
         data_dir = GBRS_DIR,
     resources:
         mem_mb = 16000,
@@ -206,17 +207,17 @@ rule gbrs_quantify_diploid:
     `gbrs reconstruct`, per `gbrs: genotype_source:` in the config.
     """
     input:
-        h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
+        h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
         gene2transcripts = gbrs_file("gene2transcripts"),
         lengths = gbrs_file("transcript_lengths"),
         genotypes = lambda w: genotype_file(w.tissue, w.mouse),
     output:
         expand(
-            "results/{{tissue}}/gbrs/{{mouse}}.diploid.{suffix}",
+            "processed/{{tissue}}/gbrs/{{mouse}}.diploid.{suffix}",
             suffix=GBRS_QUANT_SUFFIXES,
         ),
     params:
-        outbase = "results/{tissue}/gbrs/{mouse}",
+        outbase = "processed/{tissue}/gbrs/{mouse}",
         model = GBRS["multiread_model"],
     resources:
         mem_mb = 32000,
@@ -239,11 +240,11 @@ rule gbrs_quantify_diploid:
 rule gbrs_interpolate:
     """Put the reconstructed genotype probabilities on the uniform genome grid."""
     input:
-        genoprobs = "results/{tissue}/gbrs/{mouse}.genoprobs.npz",
+        genoprobs = "processed/{tissue}/gbrs/{mouse}.genoprobs.npz",
         grid = gbrs_file("genome_grid"),
         gene_pos = gbrs_file("gene_pos"),
     output:
-        "results/{tissue}/gbrs/{mouse}.interpolated.genoprobs.npz",
+        "processed/{tissue}/gbrs/{mouse}.interpolated.genoprobs.npz",
     params:
         data_dir = GBRS_DIR,
     resources:
@@ -265,9 +266,9 @@ rule gbrs_interpolate:
 rule gbrs_plot:
     """Plot the reconstructed founder mosaic for one mouse."""
     input:
-        "results/{tissue}/gbrs/{mouse}.interpolated.genoprobs.npz",
+        "processed/{tissue}/gbrs/{mouse}.interpolated.genoprobs.npz",
     output:
-        "results/{tissue}/gbrs/{mouse}.genome.pdf",
+        "processed/{tissue}/gbrs/{mouse}.genome.pdf",
     params:
         data_dir = GBRS_DIR,
     resources:
@@ -285,10 +286,10 @@ rule gbrs_plot:
 rule gbrs_export:
     """Export founder dosages at the grid positions, for QTL mapping."""
     input:
-        genoprobs = "results/{tissue}/gbrs/{mouse}.interpolated.genoprobs.npz",
+        genoprobs = "processed/{tissue}/gbrs/{mouse}.interpolated.genoprobs.npz",
         grid = gbrs_file("genome_grid"),
     output:
-        "results/{tissue}/gbrs/{mouse}.interpolated.genoprobs.tsv",
+        "processed/{tissue}/gbrs/{mouse}.interpolated.genoprobs.tsv",
     params:
         haplotypes = HAPLOTYPES,
         data_dir = GBRS_DIR,
@@ -316,14 +317,14 @@ rule combine_tpm:
     """
     input:
         tpm = lambda w: expand(
-            "results/{tissue}/gbrs/{mouse}.{mode}.genes.tpm",
+            "processed/{tissue}/gbrs/{mouse}.{mode}.genes.tpm",
             tissue=w.tissue,
             mouse=MICE[w.tissue],
             mode=w.mode,
         ),
     output:
-        total = "results/{tissue}/{tissue}.{mode}.genes.tpm.parquet",
-        by_founder = "results/{tissue}/{tissue}.{mode}.genes.founder_tpm.parquet",
+        total = "processed/{tissue}/{tissue}.{mode}.genes.tpm.parquet",
+        by_founder = "processed/{tissue}/{tissue}.{mode}.genes.founder_tpm.parquet",
     params:
         mice = lambda w: MICE[w.tissue],
         haplotypes = HAP_LIST,
@@ -340,16 +341,16 @@ rule combine_counts:
     """
     input:
         counts = lambda w: expand(
-            "results/{tissue}/gbrs/{mouse}.{mode}.genes.expected_read_counts",
-            tissue=w.tissue,
-            mouse=MICE[w.tissue],
+            "processed/{tissue_real}/gbrs/{mouse}.{mode}.genes.expected_read_counts",
+            tissue_real=w.tissue_real,
+            mouse=MICE[w.tissue_real],
             mode=w.mode,
         ),
     output:
-        total = "results/{tissue}/{tissue}.{mode}.genes.expected_read_counts.parquet",
-        by_founder = "results/{tissue}/{tissue}.{mode}.genes.founder_expected_read_counts.parquet",
+        total = "processed/{tissue_real}/{tissue_real}.{mode}.genes.expected_read_counts.parquet",
+        by_founder = "processed/{tissue_real}/{tissue_real}.{mode}.genes.founder_expected_read_counts.parquet",
     params:
-        mice = lambda w: MICE[w.tissue],
+        mice = lambda w: MICE[w.tissue_real],
         haplotypes = HAP_LIST,
     resources:
         mem_mb = 8000,
@@ -360,7 +361,7 @@ rule gbrs_quantify_diploid_bootstrapped:
     """Quantify variability of expression against the mouse's own diploid genome.
     """
     input:
-        h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
+        h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
         gene2transcripts = gbrs_file("gene2transcripts"),
         lengths = gbrs_file("transcript_lengths"),
         genotypes = lambda w: genotype_file(w.tissue, w.mouse),
@@ -378,7 +379,7 @@ rule gbrs_quantify_diploid_bootstrapped:
 rule gbrs_allele_unique_reads:
     """ Count how many reads distinguish allele-specificity in each gene """
     input:
-        h5 = "results/{tissue}/gbrs/{mouse}.compressed.h5",
+        h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
         genotypes = "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
     output:
         gene_unique = "processed/{tissue}/gbrs_allele_unique_reads/{mouse}.allele_unique_reads.parquet",

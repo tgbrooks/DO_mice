@@ -150,7 +150,7 @@ rule combine_genotypes:
             mouse=ALL_MICE,
         ),
     output:
-        geno = "results/genotypes.parquet",
+        geno = "processed/genotypes.parquet",
     params:
         mice = ALL_MICE,
     resources:

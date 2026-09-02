@@ -24,9 +24,9 @@ rule gene_annot:
 rule compute_size_factors:
     """ Compute DESeq2 size factors for each library """
     input:
-        counts = "results/{tissue}/{tissue}.diploid.genes.founder_expected_read_counts.parquet",
+        counts = "processed/{tissue}/allele_unique_reads.parquet"
     output:
-        outfile = "results/{tissue}/size_factors.txt",
+        outfile = "processed/{tissue}/size_factors.txt",
     resources:
         mem_mb = 6_000
     container:
@@ -64,11 +64,11 @@ def get_chunk_genes(wildcards):
 rule model_buffering:
     """ Compute buffering factors for each gene of a chromosome """
     input:
-        counts = "results/{tissue_real}/{tissue_real}.diploid.genes.founder_expected_read_counts.parquet",
+        #counts = "processed/{tissue_real}/{tissue_real}.diploid.genes.founder_expected_read_counts.parquet",
         allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
-        size_factors = "results/{tissue_real}/size_factors.txt",
+        size_factors = "processed/{tissue_real}/size_factors.txt",
         phenotypes = "phenotypes.csv.gz",
-        genotypes = "results/genotypes.parquet",
+        genotypes = "processed/genotypes.parquet",
         kinship = "geno/kinship/{chromosome}.txt",
         chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
     output:

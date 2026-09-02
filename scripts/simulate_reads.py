@@ -14,7 +14,7 @@ READ_LENGTH = 101
 FRAGMENT_LENGTHS = [150, 200, 250, 300, 350, 400]
 SKIP_POSITIONS = 10
 fasta = (
-    pb.scan_fasta("gbrs_ref/transcripts.fasta")
+    pb.scan_fasta("gbrs_ref/v116/all_haps.cdna.fa")
     .filter(pl.col("name").str.ends_with(haplotype))
     .collect()
 ).with_columns(

@@ -29,7 +29,7 @@ annot = (
 haplotypes = [f"h{i}" for i in range(8)]  # compressed.h5 labels them h0, ..., h7
 results = []
 for source_haplotype in haplotype_names:
-    H5 = f"results/simulated_reads/gbrs/{source_haplotype}.compressed.h5"
+    H5 = f"processed/simulated_reads/gbrs/{source_haplotype}.compressed.h5"
     print(f"Processing {H5}")
     data = load_compressed_emase(H5, haplotypes)
 

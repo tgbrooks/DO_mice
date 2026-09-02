@@ -3,9 +3,8 @@ library(glmmTMB)
 library(arrow)
 
 
-count_file <- "results/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
 MIN_MEDIAN_COUNTS <- 50
-size_factors_file <- "results/Adipose/size_factors.txt"
+size_factors_file <- "processed/Adipose/size_factors.txt"
 outfile <- "temp.txt"
 chromosome <- "5"
 kinship_file <- paste0("geno/kinship/", chromosome, ".txt")
@@ -18,7 +17,6 @@ gene_ids <- c(
 outlier_ids <- c("DO122")
 allele_unique_reads <- "processed/Adipose/allele_unique_reads.parquet"
 
-count_file <- "processed/simulated_counts/simulated_counts.diploid.genes.founder_expected_read_counts.parquet"
 MIN_MEDIAN_COUNTS <- 50
 size_factors_file <- "processed/simulated_counts/size_factors.txt"
 kinship_file <- "processed/simulated_counts/kinship.txt"
@@ -29,7 +27,6 @@ gene_ids <- c("GENE0000", "GENE0001", "GENE00002")
 outfile <- "temp.txt"
 
 
-count_file <- snakemake@input$counts
 size_factors_file <- snakemake@input$size_factors
 kinship_file <- snakemake@input$kinship
 phenotypes_file <- snakemake@input$phenotypes
@@ -39,14 +36,6 @@ gene_ids <- snakemake@params$genes
 outlier_ids <- snakemake@params$outlier_ids
 outfile <- snakemake@output$outfile
 
-
-counts <- read_parquet(count_file)
-mouse_ids <- unique((counts |> filter(!(mouse_id %in% outlier_ids)))$mouse_id)
-
-# Kinship matrix
-K   <- read_tsv(kinship_file)
-K2  <- 2 * as.matrix(column_to_rownames(K, "mouse_id"))
-K2 <- K2[mouse_ids, mouse_ids]
 
 # Allele-specific counts
 allele_unique <- read_parquet(allele_unique_reads) |>
@@ -66,6 +55,14 @@ allele_unique <- read_parquet(allele_unique_reads) |>
         filter( # Discard outliers
             !(mouse_id %in% outlier_ids),
         )
+
+mouse_ids <- unique((allele_unique |> filter(!(mouse_id %in% outlier_ids)))$mouse_id)
+
+# Kinship matrix
+K   <- read_tsv(kinship_file)
+K2  <- 2 * as.matrix(column_to_rownames(K, "mouse_id"))
+K2 <- K2[mouse_ids, mouse_ids]
+
 
 size_factors <- read_tsv(size_factors_file)
 phenotypes <- read_csv(phenotypes_file)
@@ -318,14 +315,14 @@ fit_model <- function(au) {
 ###### GENOTYPE MODEL
 temp <- list()
 for (gene in gene_ids) {
-    if (!(gene %in% counts$gene_id)) {
-        message("Skipping ", gene, " not in counts")
+    if (!(gene %in% allele_unique$gene_id)) {
+        message("Skipping ", gene, " not quantified")
         next
     }
 
-    data <- counts |> 
+    data <- allele_unique |> 
         filter(gene_id == gene)
-    median_counts <- data$total |> median()
+    median_counts <- data$total_reads |> median()
     if (median_counts < MIN_MEDIAN_COUNTS) {
         message("Skipping ", gene, " too low expressed")
         next

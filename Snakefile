@@ -43,37 +43,32 @@ def default_targets() -> list[str]:
         if not mice:
             continue
         # Allele-specific expression against each mouse's own genome:
-        targets += expand(
-            "results/{tissue}/gbrs/{mouse}.diploid.genes.tpm", tissue=tissue, mouse=mice
-        )
+        #targets += expand(
+        #    "processed/{tissue}/gbrs/{mouse}.diploid.genes.tpm", tissue=tissue, mouse=mice
+        #)
         targets += [
             f"results/{tissue}/buffering.txt",
-            f"results/{tissue}/{tissue}.diploid.genes.tpm.parquet",
-            f"results/{tissue}/{tissue}.diploid.genes.expected_read_counts.parquet",
-            # We don't currently use the multiway alignments unless 'run_reconstruct' is enabled
-            #f"results/{tissue}/{tissue}.multiway.genes.tpm.parquet",
-            #f"results/{tissue}/{tissue}.multiway.genes.expected_read_counts.parquet",
         ]
-        targets += [f"processed/{tissue}/gbrs/{mouse}.bootstrap_quants.parquet" for mouse in mice]
+        #targets += [f"processed/{tissue}/gbrs/{mouse}.bootstrap_quants.parquet" for mouse in mice]
         if GBRS["run_reconstruct"]:
             # GBRS's own genome reconstruction, to compare against the array
             # genotypes:
             targets += expand(
-                "results/{tissue}/gbrs/{mouse}.genome.pdf", tissue=tissue, mouse=mice
+                "processed/{tissue}/gbrs/{mouse}.genome.pdf", tissue=tissue, mouse=mice
             )
             targets += expand(
-                "results/{tissue}/gbrs/{mouse}.interpolated.genoprobs.tsv",
+                "processed/{tissue}/gbrs/{mouse}.interpolated.genoprobs.tsv",
                 tissue=tissue,
                 mouse=mice,
             )
     targets += [
-            "results/genotypes.parquet",
+            "processed/genotypes.parquet",
             "geno/kinship/1.txt",
             "processed/simulated_counts/report.txt",
-            "results/simulated_reads/source_counts_by_gene.txt",
+            "processed/simulated_reads/source_counts_by_gene.txt",
             *[f"gbrs_ref/v116/{haplotype}.gff3.gz" for haplotype in HAP_LIST],
     ]
-    targets += [f"results/simulated_reads/gbrs/{haplotype}.compressed.h5"
+    targets += [f"processed/simulated_reads/gbrs/{haplotype}.compressed.h5"
                     for haplotype in HAP_LIST]
     return targets
 

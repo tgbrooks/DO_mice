@@ -166,7 +166,7 @@ def genotype_file(tissue: str, mouse: str) -> str:
     if source == "downloaded":
         return f"geno/gbrs_genotypes/{mouse}.genotypes.tsv"
     if source == "reconstructed":
-        return f"results/{tissue}/gbrs/{mouse}.genotypes.tsv"
+        return f"processed/{tissue}/gbrs/{mouse}.genotypes.tsv"
     raise ValueError(
         f"gbrs: genotype_source must be 'downloaded' or 'reconstructed', not {source!r}"
     )
