@@ -67,7 +67,7 @@ rule select_transcripts:
         transcripts = "gbrs_ref/v116/selected_transcripts.txt"
     resources:
         mem_mb=36_000
-    run:
+    script:
         "../scripts/select_transcripts.py"
 
 rule extract_transcriptome_file:
@@ -78,7 +78,35 @@ rule extract_transcriptome_file:
     output:
         fasta = "gbrs_ref/v116/{haplotype}.cdna.fa.gz"
     resources:
-        mem_mb = 12_000,
+        mem_mb = 18_000,
     script:
         "../scripts/extract_transcriptome.py"
+
+rule combined_transcriptome:
+    input:
+        fastas = expand("gbrs_ref/v116/{haplotype}.cdna.fa.gz", haplotype=HAP_LIST),
+    output:
+        out = "gbrs_ref/v116/all_haps.cdna.fa"
+    run:
+        import polars as pl
+        import polars_bio as pb
+        temp = []
+        for fasta, hap in zip(input.fastas, HAP_LIST):
+            temp.append(pb.read_fasta(fasta).with_columns(
+                name = pl.col("name") + "_" + hap
+            ))
+        pb.write_fasta(pl.concat(temp), output.out)
+
+rule make_bowtie_index:
+    input:
+        fasta = "gbrs_ref/v116/all_haps.cdna.fa"
+    output:
+        outfiles = multiext("gbrs_ref/v116/bowtie_index/all_haps", ".1.ebwt", ".2.ebwt", ".3.ebwt", ".4.ebwt", ".rev.1.ebwt", ".rev.2.ebwt")
+    container:
+        "images/gbrs.sif"
+    resources:
+        mem_mb = 64_000,
+        threads = 12,
+    shell:
+        "bowtie-build {input.fasta} gbrs_ref/v116/bowtie_index/all_haps -f --threads {threads} --seed 100"
 #gffread -w ${S}.transcripts.fa -g ${S}_v3.fa ${S}.gff3_polished

@@ -58,5 +58,9 @@ print(
 
 selected = len_diffs.filter(pl.col("len_diff") <= 10)
 print(f"Resulting in {selected['Parent'].n_unique()} genes")
-IDs = selected.select(transcript_id=pl.col("ID").str.strip_prefix("transcript:"))
+IDs = (
+    selected.select(transcript_id=pl.col("ID").str.strip_prefix("transcript:"))
+    .unique()
+    .sort("transcript_id")
+)
 IDs.write_csv("gbrs_ref/v116/selected_transcripts.txt", separator="\t")

@@ -5,7 +5,11 @@ haplotype = snakemake.wildcards.haplotype
 print(f"Processing {haplotype}")
 transcript_ids = pl.read_csv("gbrs_ref/v116/selected_transcripts.txt", separator="\t")
 
-gff = pb.read_gff(f"gbrs_ref/v116/{haplotype}.gff3.gz", attr_fields=["Parent", "ID"])
+gff = (
+    pb.scan_gff(f"gbrs_ref/v116/{haplotype}.gff3.gz", attr_fields=["Parent", "ID"])
+    .filter(pl.col("type") == "exon")
+    .collect()
+)
 
 fasta = pb.read_fasta(f"gbrs_ref/v116/{haplotype}.dna.fa.gz")
 
@@ -16,17 +20,21 @@ def rev_complement(seq):
     return seq.translate(tab)[::-1]
 
 
+chrom_seqs = fasta.rows_by_key("name", named=True, unique=True)
+del fasta
+
 results = []
-for transcript in transcript_ids["transcript_id"]:
-    print(f"\t{transcript}")
+for i, transcript in enumerate(transcript_ids["transcript_id"]):
+    if i % 1000 == 0:
+        print(f"\t{i}: {transcript}", flush=True)
     exons = gff.filter(Parent=f"transcript:{transcript}", type="exon")
     if len(exons) == 0:
         raise ValueError(f"No exons available for {transcript}")
     seqs = []
-    for chrom, start, end, strand in exons.select(
-        "chrom", "start", "end", "strand"
-    ).iter_rows():
-        chr_seq = fasta.filter(name=chrom)["sequence"][0]
+    chrom = exons["chrom"][0]
+    strand = exons["strand"][0]
+    chr_seq = chrom_seqs[chrom]["sequence"]
+    for start, end in exons.select("start", "end").iter_rows():
         seqs.append(chr_seq[start - 1 : end])
     seq = "".join(seqs)
     if strand == "-":
