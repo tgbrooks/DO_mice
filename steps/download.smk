@@ -187,3 +187,9 @@ rule download_reference_gff3:
         "gbrs_ref/v116/B.gff3.gz"
     shell:
         "wget -O {output} https://ftp.ensembl.org/pub/release-116/gff3/mus_musculus/Mus_musculus.GRCm39.116.gff3.gz"
+
+rule download_reference_gtf:
+    output:
+        "gbrs_ref/v116/B.gtf.gz"
+    shell:
+        "wget -O {output} https://ftp.ensembl.org/pub/release-116/gtf/mus_musculus/Mus_musculus.GRCm39.116.gtf.gz"

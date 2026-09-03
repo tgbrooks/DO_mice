@@ -6,7 +6,7 @@ import pathlib
 rule gene_annot:
     """ Simplified gene annotation for easy consumption """
     input:
-        gtf = config['gtf'],
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
         annot = 'processed/gene_annot.txt'
     resources:
@@ -37,7 +37,7 @@ rule compute_size_factors:
 checkpoint chunk_chromosomes:
     """ Break each chromosome into 100-gene chunks """
     input:
-        annot = config['gtf'],
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
         outdir = directory('processed/{tissue}/chromosome_chunks')
     params:

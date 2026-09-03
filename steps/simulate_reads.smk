@@ -25,6 +25,7 @@ rule count_simulated_reads:
     """ Summarize the generated reads by their true haplotype + source gene """
     input:
         fastq = "processed/simulated_reads/fastq/{haplotype}_R1.fastq.gz",
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
         by_tx = "processed/simulated_reads/source_counts/{haplotype}_by_transcript.txt",
         by_gene = "processed/simulated_reads/source_counts/{haplotype}_by_gene.txt",

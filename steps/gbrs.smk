@@ -66,7 +66,7 @@ rule bam2emase:
     """Convert one end's alignments into an EMASE incidence matrix."""
     input:
         bam = "processed/{tissue}/gbrs/{mouse}.{end}.bam",
-        info = gbrs_file("transcript_info"),
+        info = "gbrs_ref/v116/emase.fullTranscripts.info",
     output:
         h5 = temp("processed/{tissue}/gbrs/{mouse}.{end}.h5"),
     params:
@@ -381,6 +381,7 @@ rule gbrs_allele_unique_reads:
     input:
         h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
         genotypes = "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
         gene_unique = "processed/{tissue}/gbrs_allele_unique_reads/{mouse}.allele_unique_reads.parquet",
     script:

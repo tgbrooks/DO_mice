@@ -1,12 +1,11 @@
 import polars as pl
 import polars_bio as pb
 import pathlib
-import yaml
 
-config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
+gtf_file = snakemake.input.gtf
 
 annot = (
-    pb.scan_gtf(config["gtf"], attr_fields=["gene_id", "transcript_id"])
+    pb.scan_gtf(gtf_file, attr_fields=["gene_id", "transcript_id"])
     .filter(pl.col("type") == "transcript")
     .collect()
 )
