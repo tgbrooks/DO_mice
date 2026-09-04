@@ -110,16 +110,6 @@ rule make_bowtie_index:
     shell:
         "bowtie-build {input.fasta} gbrs_ref/v116/bowtie_index/all_haps -f --threads {threads} --seed 100"
 
-rule make_transcript_info_file:
-    input:
-        gff="gbrs_ref/v116/B.gff3.gz"
-    output:
-        out="gbrs_ref/v116/emase.fullTranscripts.info",
-    resources:
-        mem_mb=12_000
-    script:
-        "../scripts/make_transcript_info_file.py"
-
 rule make_reference_gtf:
     input:
         gtf = "gbrs_ref/v116/B.gtf.gz"
@@ -129,3 +119,14 @@ rule make_reference_gtf:
         mem_mb=12_000
     script:
         "../scripts/make_reference_gtf.py"
+
+rule make_transcript_info_file:
+    input:
+        gtf="gbrs_ref/v116/reference.gtf.gz"
+    output:
+        out="gbrs_ref/v116/emase.fullTranscripts.info",
+    resources:
+        mem_mb=12_000
+    script:
+        "../scripts/make_transcript_info_file.py"
+

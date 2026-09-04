@@ -49,6 +49,7 @@ def default_targets() -> list[str]:
         targets += [
             f"results/{tissue}/buffering.txt",
         ]
+        targets += [f"processed/{tissue}/gbrs/{mouse}.compressed.h5" for mouse in mice]
         #targets += [f"processed/{tissue}/gbrs/{mouse}.bootstrap_quants.parquet" for mouse in mice]
         if GBRS["run_reconstruct"]:
             # GBRS's own genome reconstruction, to compare against the array

@@ -37,7 +37,7 @@ rule compute_size_factors:
 checkpoint chunk_chromosomes:
     """ Break each chromosome into 100-gene chunks """
     input:
-        gtf = "gbrs_ref/v116/reference.gtf.gz",
+        annot = "gbrs_ref/v116/reference.gtf.gz",
     output:
         outdir = directory('processed/{tissue}/chromosome_chunks')
     params:

@@ -166,13 +166,14 @@ fit_model <- function(au) {
             diplo = paste0(pmin(hap1, hap2), pmax(hap1, hap2)),
             sgn  = ifelse(hap1 < hap2, 1L, -1L)
         )
+    if ((nrow(au2) == 0) || (length(unique(au2$diplotype)) < 2)) {
+        message("Skipping: no or insufficient allele-specific expression")
+        return("SKIP")
+    }
+
     # Model for the goodness of fit test
     signed_diplo <- model.matrix(~ 0 + diplo, au2) * au2$sgn
 
-    if (nrow(au2) == 0) {
-        message("Skipping: no allele-specific expression")
-        return("SKIP")
-    }
     # Fit a logit binomial model for the two haplotype unique counts
     # this estimates the cis effects in a manner that is independent of buffering
     # since buffering affects both haplotypes

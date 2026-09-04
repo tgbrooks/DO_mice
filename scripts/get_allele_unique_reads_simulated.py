@@ -19,7 +19,7 @@ outfile = "temp.parquet"
 
 annot = (
     pb.scan_gtf(
-        cfg["gtf"],
+        "gbrs_ref/v116/reference.gtf.gz",
         attr_fields=["gene_id", "transcript_id", "transcript_version"],
     )
     .filter(pl.col("type") == "transcript")

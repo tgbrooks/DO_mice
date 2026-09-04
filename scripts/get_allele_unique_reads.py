@@ -35,7 +35,9 @@ annot = (
 )
 
 transcript_genotypes = genotypes.join(
-    annot.select("gene_id", "transcript_id"), "gene_id", how="left"
+    annot.select("gene_id", "transcript_id"),
+    "gene_id",
+    how="right",
 )
 
 # Make sure the reference matches

@@ -1,20 +1,20 @@
 import polars as pl
 import polars_bio as pb
 
-gff = "gbrs_ref/v116/B.gff3.gz"
+gtf = "gbrs_ref/v116/reference.gtf.gz"
 out = "gbrs_ref/v116/emase.fullTranscripts.info"
 
-gff = snakemake.input.gff
+gtf = snakemake.input.gtf
 out = snakemake.output.out
 
 annot = (
-    pb.scan_gff(gff, attr_fields=["Parent", "ID"])
-    .filter(pl.col("ID").str.starts_with("transcript:"))
+    pb.scan_gtf(gtf, attr_fields=["transcript_id"])
+    .filter(pl.col("type") == "transcript")
     .collect()
 )
 
 annot.select(
-    transcript_id=pl.col("ID").str.strip_prefix("transcript:"),
+    transcript_id="transcript_id",
     # the parts of emase we use don't use this column
     # and in fact the GBRS-paper Zenodo-provided file also just gives 0.0 for all transcripts
     length=pl.lit(0.0),
