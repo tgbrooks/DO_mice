@@ -34,26 +34,20 @@ def _():
 @app.cell
 def _(pl):
     counts = pl.read_parquet(
-        "results/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
+        "processed/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
     )
-    return (counts,)
-
-
-@app.cell
-def _(counts):
-    counts
     return
 
 
 @app.cell
 def _(pl):
-    genotypes = pl.read_parquet("results/genotypes.parquet")
+    genotypes = pl.read_parquet("processed/genotypes.parquet")
     return (genotypes,)
 
 
 @app.cell
 def _(pl):
-    size_factors = pl.read_csv("results/Adipose/size_factors.txt", separator="\t")
+    size_factors = pl.read_csv("processed/Adipose/size_factors.txt", separator="\t")
     return (size_factors,)
 
 
@@ -69,14 +63,14 @@ def _(lp, yaml):
     HAPLOTYPES = config["haplotypes"].split(",")
     HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette( len(HAPLOTYPES) )
     OUTLIER_MOUSE_IDS = config['outlier_ids']
-    return HAPLOTYPES, HAPLOTYPE_COLORS, OUTLIER_MOUSE_IDS, config
+    return HAPLOTYPES, HAPLOTYPE_COLORS, OUTLIER_MOUSE_IDS
 
 
 @app.cell
-def _(config, pb, pl):
+def _(pb, pl):
     gene_annot = (
         pb.scan_gtf(
-            config["gtf"], attr_fields=["gene_id", "gene_name", "gene_biotype"]
+            "gbrs_ref/v116/reference.gtf.gz", attr_fields=["gene_id", "gene_name", "gene_biotype"]
         )
         .filter(pl.col("type") == "gene")
         .collect()
@@ -85,10 +79,10 @@ def _(config, pb, pl):
 
 
 @app.cell
-def _(config, pb, pl):
+def _(pb, pl):
     tx_annot = (
         pb.scan_gtf(
-            config["gtf"], attr_fields=["gene_id", "transcript_id"]
+            "gbrs_ref/v116/reference.gtf.gz", attr_fields=["gene_id", "transcript_id"]
         )
         .filter(pl.col("type") == "transcript")
         .collect()
@@ -110,35 +104,6 @@ def _(HAPLOTYPES, pl):
     def is_homozygous(col):
         return pl.col(col).is_in([f"{x}{x}" for x in HAPLOTYPES])
 
-    return (is_homozygous,)
-
-
-@app.cell
-def _(HAPLOTYPES, counts, genotypes, is_homozygous, lp, pl):
-    imbalance = counts.select(
-        "gene_id",
-        "mouse_id",
-        "total",
-        imbalance=pl.max_horizontal(
-            [pl.col(hap) / pl.col("total") for hap in HAPLOTYPES]
-        ),
-    ).join(genotypes, ["gene_id", "mouse_id"])
-    (
-        lp.ggplot(
-            imbalance.filter(
-                pl.col("total") > 100,
-                ~is_homozygous("genotype"),
-            ).sample(n=10000),
-            lp.aes(x="imbalance"),
-        )
-        + lp.geom_histogram()
-    )
-    return (imbalance,)
-
-
-@app.cell
-def _(imbalance):
-    imbalance
     return
 
 
@@ -202,88 +167,6 @@ def _(OUTLIER_MOUSE_IDS, allele_unique, lp, mo, pl):
     mo.vstack(
         [
             "We want allele-specific reads to be many and diplotype incompatible reads to be few. Any outlier samples could indicate a genotype file swap error.",
-            _(),
-        ]
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def _(OUTLIER_MOUSE_IDS, allele_unique, imbalance, is_homozygous, lp, mo, pl):
-    # Check match of our allele-specific quants and GBRS quants
-    # GBRS quants by EM should only approximate ours, though for gene-level will be pretty close
-    # Multimappers between multiple genes will be the main exception, as will homozygous (which get 0 ASE in ours but 50%/50% in GBRS)
-    def _():
-        df = (
-            allele_unique.select(
-                "mouse_id",
-                "gene_id",
-                "allele_specific_reads",
-                ASE_imbalance=(
-                    pl.max_horizontal(
-                        "haplotype_1_unique", "haplotype_2_unique"
-                    )
-                    / (
-                        pl.col("haplotype_1_unique")
-                        + pl.col("haplotype_2_unique")
-                    )
-                ),
-                ASE_total="total_reads",
-            )
-            .join(
-                imbalance.select(
-                    "gene_id", "mouse_id", "genotype", "imbalance", "total"
-                ),
-                ["gene_id", "mouse_id"],
-                how="inner",
-            )
-            .filter(
-                ~is_homozygous("genotype"),
-                pl.col("total") > 100,
-                pl.col("allele_specific_reads") > 30,
-            )
-            .group_by("mouse_id")
-            .agg(
-                correlation=pl.corr(
-                    "ASE_imbalance", "imbalance", method="spearman"
-                ),
-                correlation_total=pl.corr(
-                    "ASE_total", "total", method="spearman"
-                ),
-            )
-        ).with_columns(
-            is_outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)
-        )
-        return lp.gggrid(
-            [
-                lp.ggplot(df, lp.aes(y="correlation_total"))
-                + lp.geom_boxplot(outlier_size=0)
-                + lp.geom_jitter(
-                    lp.aes(color="is_outlier"),
-                    height=0, tooltips=lp.layer_tooltips(["mouse_id"])
-                )
-                + lp.scale_color_manual(
-                    breaks = [False, True],
-                    values = ["black", "red"],
-                )
-                + lp.labs(y="corr(total reads)"),
-                lp.ggplot(df, lp.aes(y="correlation"))
-                + lp.geom_boxplot(outlier_size=0)
-                + lp.geom_jitter(
-                    lp.aes(color="is_outlier"),
-                    height=0, tooltips=lp.layer_tooltips(["mouse_id"])
-                )
-                + lp.scale_color_manual(
-                    breaks = [False, True],
-                    values = ["black", "red"],
-                )
-                + lp.labs(y="corr(imbalance)"),
-            ]
-        )
-
-    mo.vstack(
-        [
-            "We expect GBRS quantified allele-specific imbalance and our own (non-EM) ASE quants to be close, at least when we have a large number of allele-specific reads",
             _(),
         ]
     )
@@ -455,7 +338,7 @@ def _(HAPLOTYPES, haplotype_counts, mouse_ids):
 def _(
     MIN_MEDIAN_EXPR_THRESHOLD,
     OUTLIER_MOUSE_IDS,
-    counts,
+    allele_unique,
     haplotype_counts,
     haplotype_mat,
     lp,
@@ -466,11 +349,11 @@ def _(
     scipy,
     size_factors,
 ):
-    gene_expr_mat = counts.join(
+    gene_expr_mat = allele_unique.join(
         size_factors,
         "mouse_id",
     ).with_columns(
-        norm_counts = pl.col("total") / pl.col("size_factor"),
+        norm_counts = pl.col("total_reads") / pl.col("size_factor"),
     ).pivot("mouse_id", index="gene_id", values="norm_counts")
     _expr_mat = gene_expr_mat.drop("gene_id").to_numpy()
     _variance = (_expr_mat.std(axis=1) / (_expr_mat.mean(axis=1) + 1)) * (
@@ -480,19 +363,24 @@ def _(
         :500
     ]  # use top 500 most variable genes
 
+    def normalize_mat(expr_mat):
+        X = expr_mat[high_variance_genes,]
+        X = (X - np.mean(X, axis=1)[:, None]) / np.std(X, axis=1)[:, None]
+        return X
+    
+    def run_pca(expr_mat, ids):
+        X = normalize_mat(expr_mat)
+        U, V, DT = scipy.sparse.linalg.svds(X, k=2)
+        pca = pl.DataFrame(
+            {
+                "mouse_id": ids,
+                "pca1": (U[:, [0]].T @ X).flatten(),
+                "pca2": (U[:, [1]].T @ X).flatten(),
+            }
+        )
+        return pca
+    
     def _():
-        def run_pca(expr_mat, ids):
-            X = expr_mat[high_variance_genes,]
-            X = (X - np.mean(X, axis=1)[:, None]) / np.std(X, axis=1)[:, None]
-            U, V, DT = scipy.sparse.linalg.svds(X, k=2)
-            pca = pl.DataFrame(
-                {
-                    "mouse_id": ids,
-                    "pca1": (U[:, [0]].T @ X).flatten(),
-                    "pca2": (U[:, [1]].T @ X).flatten(),
-                }
-            )
-            return pca
         pca = run_pca(_expr_mat, gene_expr_mat.columns[1:])
         ids_cleaned = [m for m in mouse_ids if m not in OUTLIER_MOUSE_IDS]
         _expr_mat_cleaned = gene_expr_mat.select(*ids_cleaned).to_numpy()
@@ -533,7 +421,22 @@ def _(
             *_(),
         ]
     )
-    return (gene_expr_mat,)
+    return gene_expr_mat, normalize_mat
+
+
+@app.cell
+def _(gene_expr_mat, lp, mo, normalize_mat, np):
+    # Check for duplicate samples
+    _expr_mat = gene_expr_mat.drop("gene_id").to_numpy()
+    _X = normalize_mat(_expr_mat)
+    sample_correlations = np.corrcoef(_X.T)
+    _corrs = (sample_correlations - np.eye(sample_correlations.shape[0])).flatten()
+    mo.vstack([
+        "Check for duplicate samples with very high correlation:",
+        lp.ggplot({"corr": _corrs}, lp.aes(y="corr")) + lp.geom_boxplot()
+        + lp.labs(x='', y="sample-sample correlation")
+    ])
+    return
 
 
 @app.cell
@@ -686,7 +589,7 @@ def _(buffering, good_genes5, lp, mo, np, pl):
         pl.col("gene_id").is_in(good_genes5),
         pl.col("anova_binom_p") < 1e-25, # highly significant
     ).with_columns(
-        pl.col("buffering_factor").cut(np.linspace(-0.25,1.25,31), include_breaks=True),
+        pl.col("buffering_factor").cut(np.linspace(-0.5,1.5,31), include_breaks=True),
     ).with_columns(
         buffering_factor = pl.col("buffering_factor").struct.field("breakpoint"),
         is_significant = pl.col("buffering_factor_ci_hi") < 1.0,
@@ -705,12 +608,13 @@ def _(buffering, good_genes5, lp, mo, np, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(buffering, good_genes5, lp, mo, np, pl):
-    _data = buffering.filter(
+    _data1 = buffering.filter(
         pl.col("gene_id").is_in(good_genes5),
         pl.col("anova_binom_p") < 1e-25, # highly significant
-    ).with_columns(
+    )
+    _data2 = _data1.with_columns(
         pl.col("deming_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
     ).with_columns(
         deming_p_gof = pl.col("deming_p_gof").struct.field("breakpoint"),
@@ -722,10 +626,20 @@ def _(buffering, good_genes5, lp, mo, np, pl):
     mo.vstack([
         "Checking the goodness of fit tests for the deming models: testing whether there is a shared buffering factor common to all haplotypes.",
         lp.ggplot(
-            _data,
+            _data2,
             lp.aes("deming_p_gof", "num_genes"),
         ) + lp.geom_bar(stat="identity")
-        + lp.scale_x_log10()
+        + lp.scale_x_log10(),
+        lp.ggplot(
+            _data1.sort("deming_p_gof").with_columns(
+                deming_p_gof = -pl.col('deming_p_gof').log10(),
+                theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
+            ),
+            lp.aes(x="theoretical_p", y="deming_p_gof"),
+        )
+        + lp.geom_point()
+        + lp.geom_abline(intercept=0, slope=1, color='red')
+        + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
     ])
     return
 
@@ -968,7 +882,18 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
+def _(buffering, gene_selector, mo):
+    _dat = buffering.filter(gene_id = gene_selector.value).to_dicts()[0]
+    mo.vstack([
+        f"gene_id: {_dat['gene_id']} | {_dat['gene_name']}",
+        f"binom: p={_dat['anova_binom_p']:0.1e} | GOF p={_dat['binom_p_gof']:0.1e}",
+        f"buffering factor: {_dat['buffering_factor']:0.2f} ({_dat['buffering_factor_ci_lo']:0.2f}-{_dat['buffering_factor_ci_hi']:0.2f})"
+    ])
+    return
+
+
+@app.cell(hide_code=True)
 def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering, gene_selector, lp, mo, pl):
     def _():
         data = buffering.filter(gene_id = gene_selector.value)
@@ -1258,7 +1183,7 @@ def _(good_genes3, lp, mo, pl, sim_reads, sim_source_counts):
 
 @app.cell
 def _(pl):
-    sim_source_counts = pl.read_csv("results/simulated_reads/source_counts_by_gene.txt", separator="\t")
+    sim_source_counts = pl.read_csv("processed/simulated_reads/source_counts_by_gene.txt", separator="\t")
     return (sim_source_counts,)
 
 

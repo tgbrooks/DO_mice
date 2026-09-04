@@ -55,13 +55,13 @@ def _(pathlib, pl):
 @app.cell
 def _(pb, pl, yaml):
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
-    annot = pb.scan_gtf(config['gtf'], attr_fields=["gene_id", "gene_name"]).filter(pl.col("type") == "gene").collect()
+    annot = pb.scan_gtf("gbrs_ref/v116/reference.gtf.gz", attr_fields=["gene_id", "gene_name"]).filter(pl.col("type") == "gene").collect()
     return annot, config
 
 
 @app.cell
-def _(config, pb, pl):
-    tx_annot = pb.scan_gtf(config['gtf'], attr_fields=["gene_id", "transcript_id"]).filter(pl.col("type") == "transcript").collect()
+def _(pb, pl):
+    tx_annot = pb.scan_gtf("gbrs_ref/v116/reference.gtf.gz", attr_fields=["gene_id", "transcript_id"]).filter(pl.col("type") == "transcript").collect()
     return (tx_annot,)
 
 
@@ -150,7 +150,7 @@ def _(mo):
 def _(pb, pl):
     # Assess the differences in transcriptomes
     transcripts = (
-        pb.scan_fasta("gbrs_ref/transcripts.fasta")
+        pb.scan_fasta("gbrs_ref/v116/all_haps.cdna.fa")
         .select(
             transcript_id=pl.col("name").str.split("_").list.get(0),
             haplotype=pl.col("name").str.split("_").list.get(1),

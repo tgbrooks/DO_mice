@@ -13,9 +13,7 @@ from util.summarize_count_types import summarize_count_types
 cfg = yaml.load(pathlib.Path("config.yaml").open(), yaml.Loader)
 haplotype_names = cfg["haplotypes"].split(",")
 
-outfile = "temp.parquet"
-
-# outfile = snakemake.output.gene_unique
+outfile = snakemake.output.gene_unique
 
 annot = (
     pb.scan_gtf(
