@@ -18,9 +18,9 @@ except NameError:
     # for testing
     SEED = 100
     N_SAMPLES = 200
-    N_NO_CIS_GENES = 50
-    N_NO_BUFFERING_GENES = 50
-    N_BUFFERING_GENES = 50
+    N_NO_CIS_GENES = 500
+    N_NO_BUFFERING_GENES = 500
+    N_BUFFERING_GENES = 500
 N_GENES = N_NO_CIS_GENES + N_NO_BUFFERING_GENES + N_BUFFERING_GENES
 HAPLOTYPES = np.array(list("ABCDEFGH"))
 N_HAPLOTYPES = len(HAPLOTYPES)
@@ -35,6 +35,7 @@ rng = np.random.default_rng(seed=SEED)
 models = rng.choice(MODELS, size=N_GENES)
 mean_expr = 10 ** rng.normal(2, 1, size=N_GENES)  # per allele, so total is 2x this
 dispersion = 10 ** rng.normal(-1, 0.5, size=N_GENES)
+dispersion[models == "POISSON"] = 0
 fraction_unique = rng.uniform(0.05, 0.3, size=N_GENES)
 haplotype_effects = np.concatenate(
     [
@@ -86,29 +87,45 @@ buffered_haplotype_means = haplotype_means * buffering_factor
 ##################################################
 allele_counts = np.zeros((N_SAMPLES, N_GENES, N_HAPLOTYPES), dtype=int)
 # Poisson model:
-allele_counts[:, models == "POISSON"] = rng.poisson(
-    buffered_haplotype_means,
-    size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
-)[:, models == "POISSON"]
+pois = models == "POISSON"
+allele_counts[:, pois] = rng.poisson(
+    buffered_haplotype_means[:, pois],
+    size=(N_SAMPLES, np.sum(pois), N_HAPLOTYPES),
+)
 # Negative binomial: mu = r(1-p)/p, dispersion = 1/r
 # so p = 1/(mu dispersion + 1)
-p = 1 / (buffered_haplotype_means * dispersion[:, None] + 1)
-r = 1 / dispersion[:, None]
-allele_counts[:, models == "NEGATIVE_BINOMIAL"] = rng.negative_binomial(
+# NOTE: since the full gene is a sum of two haplotypes,
+# we have to change the dispersion parameter to get the desired
+# dispersion of the whole gene. Also note that the full gene (sum of
+# two independent NB) is not negative binomial so this just matches
+# the moments. For X_i ~ NB(mean=mu_i, dispersion=alpha):
+#   Var[X_1 + X_2] = (mu_1 + mu_2) + alpha (mu_1^2 + mu_2^2)
+#   but really want last term alpha (mu_1 + mu_2)^2 instead
+nb = models == "NEGATIVE_BINOMIAL"
+hap_dispersion = dispersion * (
+    buffered_haplotype_means.sum(axis=-1) ** 2
+    / (buffered_haplotype_means**2).sum(axis=-1)
+)
+p = 1 / (buffered_haplotype_means[:, nb] * hap_dispersion[:, nb, None] + 1)
+r = 1 / hap_dispersion[:, nb, None]
+allele_counts[:, nb] = rng.negative_binomial(
     r,
     p,
-    size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
-)[:, models == "NEGATIVE_BINOMIAL"]
+    size=(N_SAMPLES, np.sum(nb), N_HAPLOTYPES),
+)
 # Shared dispersion model: poisson-gamma where the gamma variance
 # is shared between the two alleles
-scale_factor = rng.gamma(  # a mean 1 gamma with varying variance
-    1 / dispersion,
-    dispersion,
+# NOTE: no dispersion correction like for NEGATIVE_BINOMIAL case needed here
+s = models == "SHARED_DISPERSION"
+shared_scale_factor = rng.gamma(  # a mean 1 gamma with varying variance
+    1 / dispersion[s],
+    dispersion[s],
+    size=(N_SAMPLES, np.sum(s)),
 )
-allele_counts[:, models == "SHARED_DISPERSION"] = rng.poisson(
-    buffered_haplotype_means * scale_factor[None, :, None],
-    size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
-)[:, models == "SHARED_DISPERSION"]
+allele_counts[:, s] = rng.poisson(
+    buffered_haplotype_means[:, s, :] * shared_scale_factor[:, :, None],
+    size=(N_SAMPLES, np.sum(s), N_HAPLOTYPES),
+)
 
 ##################################################
 # Binomial thinning to get the *unique* counts
@@ -118,6 +135,10 @@ allele_unique_counts = rng.binomial(
     fraction_unique[None, :, None],
     size=(N_SAMPLES, N_GENES, N_HAPLOTYPES),
 )
+# Homozygotes have no allele uniques
+is_hom = diplotypes[:, :, 0] == diplotypes[:, :, 1]
+allele_unique_counts[is_hom] = 0
+
 total_counts = allele_counts.sum(axis=-1)
 
 

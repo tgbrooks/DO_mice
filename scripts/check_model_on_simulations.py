@@ -11,6 +11,8 @@ pl.Config(
     tbl_hide_column_data_types=True,
 )
 
+MODELS = ["POISSON", "NEGATIVE_BINOMIAL", "SHARED_DISPERSION"]
+
 temp = []
 for file in pathlib.Path("processed/simulated_counts/buffering").glob("*.txt"):
     temp.append(
@@ -25,9 +27,7 @@ truth = pl.read_csv("processed/simulated_counts/true_params.txt", separator="\t"
 
 data = results.join(truth, "gene_id", suffix="_true").with_columns(
     type=pl.col("type").cast(pl.Enum(["no_cis", "no_buffering", "buffering"])),
-    model=pl.col("model").cast(
-        pl.Enum(["POISSON", "NEGATIVE_BINOMIAL", "SHARED_DISPERSION"])
-    ),
+    model=pl.col("model").cast(pl.Enum(MODELS)),
 )
 
 haplotypes = list("ABCDEFGH")
@@ -60,7 +60,11 @@ for model in data["model"].unique():
             "correlation": corr,
         }
     )
-binom_test = pl.DataFrame(temp).sort("model")
+binom_test = (
+    pl.DataFrame(temp)
+    .with_columns(model=pl.col("model").cast(pl.Enum(MODELS)))
+    .sort("model")
+)
 
 
 print("""
@@ -227,5 +231,9 @@ for (model,), _dat in data.group_by("model"):
             "ROC AUC": auc_roc,
         }
     )
-res = pl.DataFrame(temp)
+res = (
+    pl.DataFrame(temp)
+    .with_columns(model=pl.col("model").cast(pl.Enum(MODELS)))
+    .sort("model")
+)
 print(res)
