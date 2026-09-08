@@ -35,29 +35,32 @@ haplotypes = list("ABCDEFGH")
 # Check if the binomial step is performing well
 # True and estimated haplotype effects should be well-correlated
 temp = []
-for hap in haplotypes:
-    if hap == "H":
-        continue
-    for model in data["model"].unique():
+for model in data["model"].unique():
+    est = []
+    true = []
+    for hap in haplotypes:
+        if hap == "H":
+            continue
         # H is used as the reference in the model, so we compare everything to that
         d = data.filter(model=model)
-        est = d[f"effect_{hap}"]
-        true = d[f"effect_{hap}_true"] - d["effect_H_true"]
-        res = scipy.stats.linregress(
-            true,
-            est,
-        )
-        corr = np.corrcoef(est, true)[0, 1]
-        temp.append(
-            {
-                "haplotype": hap,
-                "model": model,
-                "intercept": res.intercept,
-                "slope": res.slope,
-                "correlation": corr,
-            }
-        )
-binom_test = pl.DataFrame(temp).sort("model", "haplotype")
+        est.append(d[f"effect_{hap}"].to_numpy())
+        true.append((d[f"effect_{hap}_true"] - d["effect_H_true"]).to_numpy())
+    est = np.concatenate(est)
+    true = np.concatenate(true)
+    res = scipy.stats.linregress(
+        true,
+        est,
+    )
+    corr = np.corrcoef(est, true)[0, 1]
+    temp.append(
+        {
+            "model": model,
+            "intercept": res.intercept,
+            "slope": res.slope,
+            "correlation": corr,
+        }
+    )
+binom_test = pl.DataFrame(temp).sort("model")
 
 
 print("""
@@ -108,6 +111,51 @@ print(
     .sort("type", "model")
 )
 
+print("Check that fit effects match simulated effects")
+
+
+#### CHECK TOTAL COUNTS MODEL
+print("""
+---------------------------------------------------------------------
+NEGATIVE BINOMIAL (TOTAL COUNTS) MODEL:
+---------------------------------------------------------------------
+Here we check that true and estimated parameters of the negative binomial
+model of total counts. We want correlation close to 1, intercept 0,
+and slope 1. Comparing true and estimated values.
+
+Among non-buffering genes:
+""")
+
+# Check if the NB step is performing well
+# True and estimated haplotype effects should be well-correlated
+temp = []
+for model in data["model"].unique():
+    est = []
+    true = []
+    for hap in haplotypes:
+        if hap == "H":
+            continue
+        # H is used as the reference in the model, so we compare everything to that
+        d = data.filter(pl.col("type") != "buffering", model=model)
+        est.append(d[f"total_{hap}"].to_numpy())
+        true.append((d[f"effect_{hap}_true"] - d["effect_H_true"]).to_numpy())
+    true = np.concatenate(true)
+    est = np.concatenate(est)
+    res = scipy.stats.linregress(
+        true,
+        est,
+    )
+    corr = np.corrcoef(true, est)[0, 1]
+    temp.append(
+        {
+            "model": model,
+            "intercept": res.intercept,
+            "slope": res.slope,
+            "correlation": corr,
+        }
+    )
+nb_test = pl.DataFrame(temp).sort("model")
+print(nb_test)
 
 #### CHECK BUFFERING MODEL
 print("""
@@ -145,34 +193,39 @@ print(
     "Check if the estimated buffering factor corresponds with the actual buffering effect"
 )
 print("  (Only for the buffering genes) ")
-buff = data.filter(type="buffering")
-res = scipy.stats.linregress(buff["true_buffering_factor"], buff["buffering_factor"])
-corr = np.corrcoef(buff["true_buffering_factor"], buff["buffering_factor"])[0, 1]
-print(
-    pl.DataFrame(
+temp = []
+for (model,), _dat in data.group_by("model"):
+    buff = _dat.filter(type="buffering")
+    res = scipy.stats.linregress(
+        buff["true_buffering_factor"], buff["buffering_factor"]
+    )
+    corr = np.corrcoef(buff["true_buffering_factor"], buff["buffering_factor"])[0, 1]
+
+    ## AUC for identifying buffering
+    roc = (
+        _dat.sort("buffering_factor_ci_hi")
+        .select(
+            statistic="buffering_factor_ci_hi",
+            n_below=pl.row_index() + 1,
+            n_true_positives=(pl.col("type") == "buffering").cum_sum(),
+            n_positives=(pl.col("type") == "buffering").sum(),
+        )
+        .with_columns(
+            fpr=(pl.col("n_below") - pl.col("n_true_positives"))
+            / (pl.len() - pl.col("n_positives")),
+            tpr=pl.col("n_true_positives") / pl.col("n_positives"),
+        )
+    )
+    auc_roc = scipy.integrate.trapezoid(roc["tpr"], roc["fpr"])
+    temp.append(
         {
+            "model": model,
             "slope": res.slope,
             "intercept": res.intercept,
             "pvalue": res.pvalue,
             "correlation": corr,
+            "ROC AUC": auc_roc,
         }
     )
-)
-
-## AUC for identifying buffering
-roc = (
-    data.sort("buffering_factor_ci_hi")
-    .select(
-        statistic="buffering_factor_ci_hi",
-        n_below=pl.row_index() + 1,
-        n_true_positives=(pl.col("type") == "buffering").cum_sum(),
-        n_positives=(pl.col("type") == "buffering").sum(),
-    )
-    .with_columns(
-        fpr=(pl.col("n_below") - pl.col("n_true_positives"))
-        / (pl.len() - pl.col("n_positives")),
-        tpr=pl.col("n_true_positives") / pl.col("n_positives"),
-    )
-)
-auc_roc = scipy.integrate.trapezoid(roc["tpr"], roc["fpr"])
-print(f"AUC of ROC curve: {auc_roc:0.3}")
+res = pl.DataFrame(temp)
+print(res)
