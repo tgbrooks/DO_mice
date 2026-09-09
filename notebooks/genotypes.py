@@ -173,6 +173,43 @@ def _(gene_selector, lp, plot_msa, transcripts, tx_annot):
         a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment 
         _temp.append(plot_msa(a_res) + lp.ggtitle(transcript_id))
     lp.gggrid(_temp, ncol=1) + lp.ggsize(900, 250*len(_temp)) + lp.ggtb()
+    return gene_transcripts, pa
+
+
+@app.cell
+def _(HAPLOTYPES, gene_transcripts, lp, np, pa, pl, transcripts):
+    def _():
+        num_unique = []
+        for transcript_id in gene_transcripts:
+            _dat = transcripts.filter(transcript_id = transcript_id)
+            a = pa.msa_aligner()
+            seqs=list(_dat['sequence'])
+            a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment
+            for i, hap1 in enumerate(HAPLOTYPES):
+                for j, hap2 in enumerate(HAPLOTYPES):
+                    seq1 = np.array(list(a_res.msa_seq[i]))
+                    seq2 = np.array(list(a_res.msa_seq[j]))
+                    seq1_unique_bases = (seq1 != seq2) & (seq1 != "-")
+                    seq2_unique_bases = (seq1 != seq2) & (seq2 != "-")
+
+                    num_unique.append({
+                        "hap1": hap1,
+                        "hap2": hap2,
+                        "transcript_id": transcript_id,
+                        "num_unique": np.sum(seq1 != seq2),
+                        "seq1_unique": np.sum(seq1_unique_bases),
+                        "seq2_unique": np.sum(seq2_unique_bases),
+                    })
+        num_unique = pl.DataFrame(num_unique)
+        return (
+            lp.ggplot(num_unique, lp.aes(x="hap1", y="hap2", fill="seq1_unique"))
+                + lp.facet_grid(y="transcript_id")
+                + lp.scale_fill_viridis(option="inferno")
+                + lp.scale_y_discrete_reversed()
+                + lp.geom_tile(tooltips=lp.layer_tooltips(["hap1", "hap2", "num_unique", "seq1_unique", "seq2_unique"]))
+                + lp.ggtitle("Number of unique nucleotide positions")
+        )
+    _()
     return
 
 
@@ -209,7 +246,7 @@ def _(HAPLOTYPES, lp, np, pl):
                 end = pl.col("pos").max()+1,
             ).with_columns(
                 hap_bottom = pl.col("haplotype").replace_strict(hap_num),
-                hap_top = pl.col("haplotype").replace_strict(hap_num) + 0.9,
+                hap_top = pl.col("haplotype").replace_strict(hap_num) + 0.8,
             )
         return (
             lp.ggplot(msa, lp.aes(xmin = "start", xmax="end", ymin = "hap_bottom", ymax="hap_top",fill="type", color="type"))

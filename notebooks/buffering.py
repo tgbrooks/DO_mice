@@ -33,14 +33,6 @@ def _():
 
 @app.cell
 def _(pl):
-    counts = pl.read_parquet(
-        "processed/Adipose/Adipose.diploid.genes.founder_expected_read_counts.parquet"
-    )
-    return
-
-
-@app.cell
-def _(pl):
     genotypes = pl.read_parquet("processed/genotypes.parquet")
     return (genotypes,)
 
@@ -96,7 +88,7 @@ def _(pl):
     # https://datadryad.org/dataset/doi:10.5061/dryad.pj105
     pheno = pl.read_csv("phenotypes.csv.gz")
     pheno
-    return
+    return (pheno,)
 
 
 @app.cell
@@ -345,6 +337,7 @@ def _(
     mo,
     mouse_ids,
     np,
+    pheno,
     pl,
     scipy,
     size_factors,
@@ -367,7 +360,7 @@ def _(
         X = expr_mat[high_variance_genes,]
         X = (X - np.mean(X, axis=1)[:, None]) / np.std(X, axis=1)[:, None]
         return X
-    
+
     def run_pca(expr_mat, ids):
         X = normalize_mat(expr_mat)
         U, V, DT = scipy.sparse.linalg.svds(X, k=2)
@@ -379,7 +372,7 @@ def _(
             }
         )
         return pca
-    
+
     def _():
         pca = run_pca(_expr_mat, gene_expr_mat.columns[1:])
         ids_cleaned = [m for m in mouse_ids if m not in OUTLIER_MOUSE_IDS]
@@ -388,8 +381,12 @@ def _(
         geno_mat = haplotype_counts
         pca_geno = run_pca(haplotype_mat, mouse_ids)
         genotype_pca = (
-            lp.ggplot(pca_geno.with_columns(is_outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)), lp.aes("pca1", "pca2", color="is_outlier"))
-            + lp.geom_point(tooltips=lp.layer_tooltips(['mouse_id']))
+            lp.ggplot(
+                pca_geno.with_columns(is_outlier = pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS))
+                    .join(pheno, left_on="mouse_id", right_on="mouse.id"),
+                lp.aes("pca1", "pca2", color="is_outlier")
+            )
+            + lp.geom_point(tooltips=lp.layer_tooltips(['mouse_id', "sex", "DOwave"]))
             + lp.ggtitle("Genotype PCA")
             + lp.scale_color_manual(
                 breaks = [False, True],
@@ -410,9 +407,13 @@ def _(
                 )
                 + lp.ggtitle("All samples")
             ,
-            lp.ggplot(pca_cleaned, lp.aes("pca1", "pca2"))
+            lp.ggplot(
+                pca_cleaned.join(pheno, left_on="mouse_id", right_on="mouse.id"),
+                lp.aes("pca1", "pca2", color="sex")
+            )
                 + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id"]))
-                + lp.ggtitle("Outliers removed"),
+                + lp.ggtitle("Outliers removed")
+                + lp.scale_color_manual(breaks=["F", "M"], values=["orange", "green"]),
         ]) + lp.ggsize(900,500), genotype_pca
 
     mo.vstack(
@@ -491,6 +492,125 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    We build two models and compare them to get the buffering rate.
+
+    ### Binomial model of ASE:
+
+    First, allele-specific expression is modelled using a binomial GLM.
+    We use a matrix of 7 predictors $X_{binom}$ built by putting a 1 in the column corresponding to the first haplotype
+    and a -1 in the column corresponding to the second haplotype (ignoring all H haplotypes since those are used as the reference).
+    If a sample is homozygous, we drop it.
+    No intercept column is included (50/50 expression is the default).
+    Then the outcome variable is the binomial result `(n_successes, n_failures)` where `n_successes` is the number of reads uniquely mapping to the first haplotype (A) and `n_failures` is the number of reads uniquely mapping to the second haplotype (B).
+
+    ```
+    (hap1_unique, hap2_unique) ~ Binom( expit(X_binom beta_binom), n = hap1_unique + hap2_unique )
+    ```
+
+    ### Negative binomial model of total read counts:
+
+    Next, we use a negative binomial GLM to model the total read counts to a gene (summing over both alleles as well as all allele-ambiguous reads).
+    Here, the predictor matrix $X_{nb}$ is just the dosage of each of 7 haplotypes (again, using H as the reference).
+    Unlike the binomial model, we also include an intercept, covariates (sex and DO wave) as well as a random effect for kinship: since the binomial model always compares within the same mouse, covariates would cancel out.
+    Library size normalization factors are fit by DESeq2 first, which are likewise included only in the negative binomial model.
+
+    ```
+    total_counts ~ NBinom(exp(X_nb beta_nb + covariates))
+    ```
+
+    ### Connecting the models
+
+    Suppose for now that expression is actually simpler: just Poisson with each allele independent.
+    The (unknown) true total reads to a haplotype $i$ is $y_i$ of which $u_i$ are uniquely mapping to that haplotype.
+    We assume:
+    $$
+    y_i \sim \mbox{Poisson}(\lambda_i) \\
+    u_i \sim \mbox{Binom}(y_i, p)
+    $$
+    Note that we assume $p$, the fraction of reads that are unique, doesn't depend upon the haplotype.
+    Then
+    $$
+    u_i \sim \mbox{Poisson}(p \lambda _i)
+    $$
+    and the conditional distribution fo the unique reads is:
+    $$
+    u_i | u_1 + u_2 \sim \mbox{Binom}(u_1 + u_2, \quad \lambda_i/(\lambda_1 + \lambda_2))
+    $$
+    see [Wikipedia](https://en.wikipedia.org/wiki/Poisson_distribution#Sums_of_Poisson-distributed_random_variables:~:text=are%20independent%2C%20then%20the%20distribution%20of).
+    In particular, $\mbox{E}[u_1/(u_1 + u_2)] = \lambda_1 / (\lambda_1 + \lambda_2)$.
+
+    The parameter $\beta_{binom}$ from the binomial GLM with a logistic link comes from:
+    $$
+    \begin{align}
+    \mbox{E}[u_1 / (u_1 + u_2)]
+        &= \mbox{expit}(\beta_{binom, 1} - \beta_{binom, 2}) \\
+        &= \exp (\beta_{binom, 1} - \beta_{binom, 2}) / (\exp(\beta_{binom,1} - \beta_{binom,2}) + 1) \\
+        &= \exp (\beta_{binom, 1}) / (\exp(\beta_{binom,1}) + \exp(\beta_{binom, 2})) \\
+    \end{align}
+    $$
+    By the previous identity, $\exp(\beta_{binom,i}) = \lambda_i$.
+
+    Meanwhile, the negative binomial GLM with log link gives:
+    $$
+    \begin{align}
+    \mbox{E}[y_1 + y_2] &= \exp(\beta_{nb, 1} + \beta_{nb, 2}) \\
+        &\approx \exp(\beta_{nb,1}) + \exp(\beta_{nb, 2})
+    \end{align}
+    $$
+    for relatively small haplotype effects.
+    So $\exp(\beta_{nb,i}) \approx \lambda_i$.
+
+    ### With buffering
+    All this so far assumes no buffering.
+    If instead we have for heterozygous:
+    $$
+    y_i \sim \mbox{Poisson}(\lambda_i (\lambda_*/ (\lambda_1 + \lambda_2))^{1-bf})
+    $$
+    and for homozygous:
+    $$
+    y_i \sim \mbox{Poisson}(\lambda_i (\lambda_*/ (2\lambda_i))^{1-bf}).
+    $$
+    where $\lambda_*$ is the 'target' mean and $bf$ is a buffering-factor:
+    $bf$ of 0 corresponds to the total expression $\lambda_1 + \lambda_2$ being shrunk completely towards $\lambda_*$ and $bf=1$ corresponds to no buffering.
+
+    Nothing changes in the binomial model since the ratio $\mbox{E}[u_1/(u_1+u_2)]$ is unchanged.
+
+    However, in the negative binomial model, we now have for heterozygous
+    $$
+    \begin{align}
+    \mbox{E}[y_1 + y_2]
+        &= (\lambda_1 + \lambda_2) (\lambda_* / (\lambda_1 + \lambda))^{1 - bf} \\
+        &= (\lambda_1 + \lambda_2)^{bf} (\lambda_*)^{1 - bf}
+    \end{align}
+    $$
+    and for homozygous:
+    $$
+    \begin{align}
+    \mbox{E}[y_i]
+        &= 2 \lambda_i (\lambda_* / (2 \lambda_1))^{1 - bf} \\
+        &= (2 \lambda_i)^{bf} (\lambda_*)^{1-bf}
+    \end{align}
+    $$
+    So the NB GLM satisfies:
+    $$
+    \beta_{nb, i} \approx bf \log(\lambda_i)
+    $$
+    with the intercept term absorbing the $\lambda_*^{1-bf}$ part.
+    This approximation again depends upon the assumption that effect sizes are small.
+
+    Now we see that the buffering factor is estimated by the ratio:
+    $$
+    \widehat{bf} \approx \beta_{nb,i} / \beta_{binom, i}.
+    $$
+
+    Since we have 8 founder types, we have 7 estimates and we instead esimate $bf$ by a Deming-like regression of $\beta_{binom, i}$ versus $\beta_{nb,i}$, accounting for the known estimation variance from each model.
+    """)
+    return
+
+
 @app.cell
 def _(pl):
     buffering_all = pl.read_csv(
@@ -525,51 +645,16 @@ def _(buffering_all, gene_annot, mo, pl):
     return (buffering,)
 
 
-@app.cell(hide_code=True)
-def _(HAPLOTYPES, buffering, lp, mo, pl):
-    genotype_effects = buffering.unpivot(
-        [f"effect_{hap}" for hap in HAPLOTYPES],
-        index=["gene_id", "anova_binom_p"],
-        variable_name="haplotype",
-        value_name="effect",
-    ).with_columns(
-        haplotype=pl.col("haplotype").str.strip_prefix("effect_"),
-        abs_effect=pl.col("effect").abs(),
-    )
-    _hap = lp.as_discrete("haplotype", levels=HAPLOTYPES, order=1)
-    mo.vstack(
-        [
-            "Plot genotype effects from the binomial model",
-            lp.gggrid(
-                [
-                    lp.ggplot(
-                        genotype_effects.sample(n=10_000),
-                        lp.aes(x=_hap, y="abs_effect"),
-                    )
-                    + lp.geom_violin()
-                    + lp.scale_y_log10()
-                    + lp.ggtitle("All genes"),
-                    lp.ggplot(
-                        genotype_effects.filter(
-                            pl.col("anova_binom_p") < 1e-3
-                        ).sample(n=10_000),
-                        lp.aes(x=_hap, y="abs_effect"),
-                    )
-                    + lp.geom_violin()
-                    + lp.scale_y_log10()
-                    + lp.ggtitle("Significant genes"),
-                ]
-            )
-            + lp.ggsize(900, 500),
-        ]
-    )
-    return
-
-
 @app.cell
 def _(buffering, good_genes5, lp, pl):
     (
-        lp.ggplot(buffering.filter(pl.col('gene_id').is_in(good_genes5)), lp.aes("anova_binom_p", "buffering_factor"))
+        lp.ggplot(
+            buffering.filter(
+                pl.col('gene_id').is_in(good_genes5),
+                pl.col("binom_p_gof") > 1e-3, # consistent binomial fit
+            ),
+            lp.aes("anova_binom_p", "buffering_factor")
+        )
         + lp.scale_x_log10()
         + lp.geom_pointdensity(
             tooltips=lp.layer_tooltips(
@@ -583,7 +668,7 @@ def _(buffering, good_genes5, lp, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(buffering, good_genes5, lp, mo, np, pl):
     _data = buffering.filter(
         pl.col("gene_id").is_in(good_genes5),
@@ -615,6 +700,44 @@ def _(buffering, good_genes5, lp, mo, np, pl):
         pl.col("anova_binom_p") < 1e-25, # highly significant
     )
     _data2 = _data1.with_columns(
+        pl.col("binom_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
+    ).with_columns(
+        binom_p_gof = pl.col("binom_p_gof").struct.field("breakpoint"),
+    ).group_by(
+        "binom_p_gof"
+    ).agg(
+        num_genes = pl.len()
+    )
+    mo.vstack([
+        "Checking the goodness of fit tests for the ASE (binomial) models: testing whether haplotypes are consistent in ASE.",
+        lp.gggrid([
+            lp.ggplot(
+                _data2,
+                lp.aes("binom_p_gof", "num_genes"),
+            ) + lp.geom_bar(stat="identity")
+            + lp.scale_x_log10(),
+            lp.ggplot(
+                _data1.sort("binom_p_gof").with_columns(
+                    binom_p_gof = -pl.col('binom_p_gof').log10(),
+                    theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
+                ),
+                lp.aes(x="theoretical_p", y="binom_p_gof"),
+            )
+            + lp.geom_point()
+            + lp.geom_abline(intercept=0, slope=1, color='red')
+            + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
+        ]) + lp.ggsize(900, 400)
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(buffering, good_genes5, lp, mo, np, pl):
+    _data1 = buffering.filter(
+        pl.col("gene_id").is_in(good_genes5),
+        pl.col("anova_binom_p") < 1e-25, # highly significant
+    )
+    _data2 = _data1.with_columns(
         pl.col("deming_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
     ).with_columns(
         deming_p_gof = pl.col("deming_p_gof").struct.field("breakpoint"),
@@ -625,21 +748,23 @@ def _(buffering, good_genes5, lp, mo, np, pl):
     )
     mo.vstack([
         "Checking the goodness of fit tests for the deming models: testing whether there is a shared buffering factor common to all haplotypes.",
-        lp.ggplot(
-            _data2,
-            lp.aes("deming_p_gof", "num_genes"),
-        ) + lp.geom_bar(stat="identity")
-        + lp.scale_x_log10(),
-        lp.ggplot(
-            _data1.sort("deming_p_gof").with_columns(
-                deming_p_gof = -pl.col('deming_p_gof').log10(),
-                theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
-            ),
-            lp.aes(x="theoretical_p", y="deming_p_gof"),
-        )
-        + lp.geom_point()
-        + lp.geom_abline(intercept=0, slope=1, color='red')
-        + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
+        lp.gggrid([
+            lp.ggplot(
+                _data2,
+                lp.aes("deming_p_gof", "num_genes"),
+            ) + lp.geom_bar(stat="identity")
+            + lp.scale_x_log10(),
+            lp.ggplot(
+                _data1.sort("deming_p_gof").with_columns(
+                    deming_p_gof = -pl.col('deming_p_gof').log10(),
+                    theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
+                ),
+                lp.aes(x="theoretical_p", y="deming_p_gof"),
+            )
+            + lp.geom_point()
+            + lp.geom_abline(intercept=0, slope=1, color='red')
+            + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
+        ]) + lp.ggsize(900, 400)
     ])
     return
 
@@ -679,6 +804,7 @@ def _(gene_annot, gene_expr_mat, mo, pl):
 def _(
     HAPLOTYPES,
     HAPLOTYPE_COLORS,
+    OUTLIER_MOUSE_IDS,
     allele_unique,
     gene_selector,
     lp,
@@ -695,6 +821,8 @@ def _(
                 norm_expr=pl.col("total_reads") / pl.col("size_factor"),
                 norm_hap1=pl.col("haplotype_1_unique") / pl.col("size_factor"),
                 norm_hap2=pl.col("haplotype_2_unique") / pl.col("size_factor"),
+            ).filter(
+                ~pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)
             )
         )
         by_hap_counts = pl.concat(
