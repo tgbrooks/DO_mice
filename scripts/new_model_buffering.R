@@ -193,7 +193,7 @@ fit_model <- function(au) {
 
     # Goodness of fit test for the binomial model compared to modelling each diplotype separately
     res_binom_diplo <- glmmTMB(
-        cbind(haplotype_1_unique, haplotype_2_unique) ~ 0 + signed_diplo + (1 | mouse_id),
+        cbind(haplotype_1_unique, haplotype_2_unique) ~ 0 + signed_diplo,
         family = family,
         data = au2,
     )

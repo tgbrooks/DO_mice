@@ -106,7 +106,7 @@ rule collect_buffering_results:
         temp =[]
         for r in input.results:
             try:
-                data = pl.read_csv(r, separator="\t", null_values="NA")
+                data = pl.read_csv(r, separator="\t", null_values="NA", schema_overrides={"binom_p_gof": pl.Float64})
             except pl.exceptions.NoDataError:
                 print(f"No results in {r} - skipping")
                 continue
