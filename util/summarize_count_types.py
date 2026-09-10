@@ -126,6 +126,12 @@ def summarize_count_types(data, annot, genotypes):
     compat_reads = compat_groups.multiply(data.count)
     total_reads = np.asarray(np.sum(compat_reads, axis=1))[:, 0].astype(int)
 
+    def num_incompat_with_hap(hap):
+        # Count reads compatible with *some* haplotype of the gene but not with `hap`
+        incompat_groups = (compat_groups - gene_haps[hap]) > 0
+        incompat_reads = incompat_groups.multiply(data.count)
+        return np.asarray(np.sum(incompat_reads, axis=1))[:, 0].astype(int)
+
     df = pl.DataFrame(
         {
             "gene_id": genotypes["gene_id"],
@@ -136,6 +142,10 @@ def summarize_count_types(data, annot, genotypes):
             "haplotype_1_unique": hap1_unique_reads,
             "haplotype_2_unique": hap2_unique_reads,
             "diplotype_incompat_reads": only_other_compat_reads,
+            **{
+                f"not_{hap_name}_reads": num_incompat_with_hap(hap)
+                for hap_name, hap in zip(haplotype_names, haplotypes)
+            },
         }
     )
     return df
@@ -165,5 +175,8 @@ assert out.to_dicts() == [
         "haplotype_1_unique": 8,
         "haplotype_2_unique": 2,
         "diplotype_incompat_reads": 3,
+        "not_A_reads": 5,
+        "not_B_reads": 11,
+        "not_C_reads": 8,
     }
 ]

@@ -376,7 +376,7 @@ rule gbrs_quantify_diploid_bootstrapped:
     script:
         "../scripts/bootstrap_gbrs_diploid.py"
 
-rule gbrs_allele_unique_reads:
+rule get_allele_unique_reads:
     """ Count how many reads distinguish allele-specificity in each gene """
     input:
         h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
