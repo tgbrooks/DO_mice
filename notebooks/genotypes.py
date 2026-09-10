@@ -171,12 +171,12 @@ def _(gene_selector, lp, plot_msa, transcripts, tx_annot):
         a = pa.msa_aligner()
         seqs=list(_dat['sequence'])
         a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment 
-        _temp.append(plot_msa(a_res) + lp.ggtitle(transcript_id))
+        _temp.append(plot_msa(a_res, _dat['haplotype']) + lp.ggtitle(transcript_id))
     lp.gggrid(_temp, ncol=1) + lp.ggsize(900, 250*len(_temp)) + lp.ggtb()
     return gene_transcripts, pa
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(HAPLOTYPES, gene_transcripts, lp, np, pa, pl, transcripts):
     def _():
         num_unique = []
@@ -214,14 +214,14 @@ def _(HAPLOTYPES, gene_transcripts, lp, np, pa, pl, transcripts):
 
 
 @app.cell
-def _(HAPLOTYPES, lp, np, pl):
-    def plot_msa(a_res):
+def _(lp, np, pl):
+    def plot_msa(a_res, labels):
         assert len(a_res.cons_seq) == 1 # only one consensus sequence, hopefully, not sure when this fails
         cons_seq = np.array(list(a_res.msa_seq[-1]))
         x = np.arange(len(cons_seq))
-        hap_num = {hap: 8-i for i, hap in enumerate(HAPLOTYPES)}
+        hap_num = {hap: len(labels)-i for i, hap in enumerate(labels)}
         _temp = []
-        for hap, seq in zip(HAPLOTYPES, a_res.msa_seq):
+        for hap, seq in zip(labels, a_res.msa_seq):
             match_cons = np.array(list(seq))  == cons_seq
             is_gap = np.array(list(seq)) == "-"
             _temp.append(pl.DataFrame({
@@ -247,6 +247,8 @@ def _(HAPLOTYPES, lp, np, pl):
             ).with_columns(
                 hap_bottom = pl.col("haplotype").replace_strict(hap_num),
                 hap_top = pl.col("haplotype").replace_strict(hap_num) + 0.8,
+            ).sort(
+                pl.col("type")
             )
         return (
             lp.ggplot(msa, lp.aes(xmin = "start", xmax="end", ymin = "hap_bottom", ymax="hap_top",fill="type", color="type"))
@@ -259,6 +261,24 @@ def _(HAPLOTYPES, lp, np, pl):
         )
 
     return (plot_msa,)
+
+
+@app.cell
+def _(gene_selector, lp, mo, pa, pl, plot_msa, transcripts, tx_annot):
+    def _():
+        gene_transcripts = tx_annot.filter(gene_id = gene_selector.value)['transcript_id']
+        _gene = transcripts.filter(pl.col("transcript_id").is_in(list(gene_transcripts))).sort('transcript_id')
+        a = pa.msa_aligner()
+        seqs=list(_gene['sequence'])
+        a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment
+        return plot_msa(a_res, _gene['transcript_id'] + '_' + _gene['haplotype']) + lp.ggtitle(gene_selector.value) + lp.ggsize(900, 250*len(gene_transcripts)) + lp.ggtb()
+
+
+    mo.vstack([
+        "Multiple sequence alignment of all haplotypes across all transcripts",
+        _()
+    ])
+    return
 
 
 if __name__ == "__main__":
