@@ -646,13 +646,36 @@ def _(buffering_all, gene_annot, mo, pl):
 
 
 @app.cell
-def _(buffering, good_genes5, lp, pl):
+def _(buffering, good_genes5, lp, np, pl):
+    def moving_median(x,y, eval_pts, sd):
+        x = np.asarray(x)
+        y = np.asarray(y)
+        weights = np.exp(-(x[None,:]-eval_pts[:,None])**2/(2*sd**2))
+        weights = weights / np.sum(weights, axis=1)[:,None]
+        order = np.argsort(y)
+        median_idx = np.empty(eval_pts.shape, dtype=np.int64)
+        for i, w in enumerate(weights):
+            median_idx[i] = np.searchsorted(
+                np.cumsum(w[order]),
+                0.5
+            )
+        median_idx = np.minimum(y.shape[0]-1, median_idx)
+        medians = y[order][median_idx]
+        return medians
+    _dat = buffering.filter(
+        pl.col('gene_id').is_in(good_genes5),
+    )
+
+    _eval_pts = np.geomspace(_dat['anova_binom_p'].min(), _dat['anova_binom_p'].max(), 100)
+    _mm = moving_median(
+        np.log10(_dat['anova_binom_p']),
+        _dat['buffering_factor'],
+        np.log10(_eval_pts),
+        sd=3
+    )
     (
         lp.ggplot(
-            buffering.filter(
-                pl.col('gene_id').is_in(good_genes5),
-                pl.col("binom_p_gof") > 1e-3, # consistent binomial fit
-            ),
+            _dat,
             lp.aes("anova_binom_p", "buffering_factor")
         )
         + lp.scale_x_log10()
@@ -661,6 +684,11 @@ def _(buffering, good_genes5, lp, pl):
                 ["gene_id", "gene_name", "gene_biotype"]
             ),
             show_legend=False,
+        )
+        + lp.geom_line(
+            lp.aes("x", "y"),
+            data = pl.DataFrame({"x":_eval_pts, "y": _mm}),
+            color="red",
         )
         + lp.ggmarginal(sides="tr", layer=lp.geom_density())
         + lp.scale_color_viridis(option="magma")
@@ -844,10 +872,11 @@ def _(
             ]
         )
         _hap = lp.as_discrete("hap", levels=HAPLOTYPES, order=1)
+        _hap_str = lp.as_discrete("hap_str", levels=["A", "AA", "B", "BB", "C", "CC", "D", "DD", "E", "EE", "F", "FF", "G", "GG", "H", "HH"], order=1)
         median_expr = au["norm_expr"].median()
         plt_totals = (
             lp.ggplot(
-                by_hap_counts, lp.aes(x="hap_str", y="norm_expr", color=_hap)
+                by_hap_counts, lp.aes(x=_hap_str, y="norm_expr", color=_hap)
             )
             + lp.geom_boxplot(outlier_size=0, show_legend=False)
             + lp.geom_jitter(
