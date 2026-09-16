@@ -664,21 +664,22 @@ def _(buffering, good_genes5, lp, np, pl):
         return medians
     _dat = buffering.filter(
         pl.col('gene_id').is_in(good_genes5),
+    ).with_columns(
+        -pl.col("anova_binom_p").log10().alias("-log10_anova_binom_p")
     )
 
-    _eval_pts = np.geomspace(_dat['anova_binom_p'].min(), _dat['anova_binom_p'].max(), 100)
+    _eval_pts = np.linspace(_dat['-log10_anova_binom_p'].min(), _dat['-log10_anova_binom_p'].max(), 100)
     _mm = moving_median(
-        np.log10(_dat['anova_binom_p']),
+        _dat['-log10_anova_binom_p'],
         _dat['buffering_factor'],
-        np.log10(_eval_pts),
+        (_eval_pts),
         sd=3
     )
     (
         lp.ggplot(
             _dat,
-            lp.aes("anova_binom_p", "buffering_factor")
+            lp.aes("-log10_anova_binom_p", "buffering_factor")
         )
-        + lp.scale_x_log10()
         + lp.geom_pointdensity(
             tooltips=lp.layer_tooltips(
                 ["gene_id", "gene_name", "gene_biotype"]
@@ -1088,6 +1089,7 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering, gene_selector, lp, mo, pl):
             + lp.coord_fixed()
             + lp.xlim(*lims)
             + lp.ylim(*lims)
+            + lp.ggtb()
             + lp.ggtitle("Estimated effects by model type")
         )
     mo.vstack([
