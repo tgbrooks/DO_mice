@@ -230,14 +230,15 @@ def _(lp, np, pl):
                 "is_gap": is_gap,
                 "haplotype": hap,
             }))
-        msa = pl.concat(_temp) \
+        msa_raw = pl.concat(_temp) \
             .with_columns(
                 type = pl.when(pl.col("is_gap"))
                     .then(pl.lit("gap"))
                     .when(pl.col("match_cons"))
                     .then(pl.lit('match'))
                     .otherwise(pl.lit('mismatch'))
-            ).with_columns(
+            )
+        msa = msa_raw.with_columns(
                 rle_id = pl.col("type").rle_id().over("haplotype")
             ).group_by(
                 ["rle_id", "type", "haplotype"],
@@ -250,12 +251,32 @@ def _(lp, np, pl):
             ).sort(
                 pl.col("type")
             )
+        any_variant = (
+            msa_raw
+            .filter(pl.col("type") != "match")
+            .select("pos", "type")
+            .unique()
+            .sort("pos")
+            # NOTE: this RLE isn't really working
+            .with_columns(
+                rle_id = pl.col("pos").rle_id().over("type")
+            ).group_by(
+                ["rle_id", "type"]
+            ).agg(
+                start = pl.col("pos").min(),
+                end = pl.col("pos").max()+1,
+            ).with_columns(
+                hap_bottom = pl.when(pl.col("type") == "gap").then(-0.5).otherwise(-0.75),
+                hap_top = pl.when(pl.col("type") == "gap").then(-0.25).otherwise(-0.5),
+            )
+        )
         return (
             lp.ggplot(msa, lp.aes(xmin = "start", xmax="end", ymin = "hap_bottom", ymax="hap_top",fill="type", color="type"))
             + lp.geom_rect()
+            + lp.geom_rect(data=any_variant)
             + lp.scale_y_continuous(breaks = [x+0.45 for x in hap_num.values()], labels=list(hap_num.keys()))
-            + lp.scale_color_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "white"])
-            + lp.scale_fill_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "white"])
+            + lp.scale_color_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "gold"])
+            + lp.scale_fill_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "gold"])
             + lp.ggsize(900, 500)
             + lp.labs(x="pos")
         )
