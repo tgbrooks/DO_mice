@@ -255,7 +255,7 @@ def _(
             np.ndarray
         )  # n_classes - number of reads of this compatibility class
 
-    def _any(sparse_matrix, axis):
+    def sparse_any(sparse_matrix, axis):
         return (sparse_matrix != 0).sum(axis=axis) > 0
 
     # First get data for just one gene
@@ -264,15 +264,15 @@ def _(
         # 8 x n_classes array of compatibility with this gene
         gene_compat = np.array(
             [
-                _any(scipy.sparse.csr_array(compat[tx, :]), axis=0)
+                sparse_any(scipy.sparse.csr_array(compat[tx, :]), axis=0)
                 for compat in emase.haps.values()
             ]
         )
-        relevant_classes = _any(gene_compat, axis=0)
+        relevant_classes = sparse_any(gene_compat, axis=0)
         final_compat = gene_compat[:, relevant_classes]
         counts = emase.count[relevant_classes]
-        # Note: classes arise from *transcripts* not genes and therefore could have identical gene compatibility
-        # in different classes. We'll combine those in the next step.
+        # note: classes arise from *transcripts* not genes and therefore could have identical gene compatibility
+        # in different classes. we'll combine those in the next step.
         return CompatClasses(compat=final_compat, counts=counts)
 
     compatibility_classes = {
@@ -335,7 +335,7 @@ def _(
     gene_class_counts = uniformize_compat_classes(
         compatibility_classes, min_n_classes=None
     )
-    return (gene_class_counts,)
+    return gene_class_counts, sparse_any, transcripts
 
 
 @app.cell
@@ -448,7 +448,7 @@ def _(args, model, pm, time):
     with model:
         idata_ase = pm.sample(
             300,
-            random_seed=102,
+            random_seed=101,
             nuts_sampler="nutpie",
             backend=args.backend,
             # nuts={"low_rank_modified_mass_matrix": True}
@@ -587,7 +587,7 @@ def _(HAPLOTYPES, gene_class_counts, idata_ase, lp, np, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, mo, np, pl):
     # For each diplotype, plot the fit percentage of reads that are allele-unique for both haplotypes
     def _():
@@ -716,7 +716,7 @@ def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, mo, np, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     HAPLOTYPES,
     gene_class_counts,
@@ -823,7 +823,6 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp, pl):
         + lp.scale_color_manual(breaks=HAPLOTYPES, values=HAPLOTYPE_COLORS)
         + lp.ggtitle("Biases in rate of producing allele unique reads")
     )
-
     return
 
 
@@ -1112,7 +1111,7 @@ def _(buffering_res):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     HAPLOTYPES,
     HAPLOTYPE_COLORS,
@@ -1179,6 +1178,77 @@ def _(
             _(),
         ]
     )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # QC
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    all_compatibility_classes,
+    allele_unique,
+    gene_annot,
+    gene_selector,
+    mo,
+    np,
+    pl,
+    scipy,
+    sparse_any,
+    transcripts,
+    tx_annot,
+):
+    # Check multimapping across genes
+    def  _():
+        temp = []
+        for mouse_id, emase in all_compatibility_classes.items():
+            emase
+            tx = np.isin(emase.lname, [tx.encode() for tx in transcripts])
+            # 8 x n_classes array of compatibility with this gene
+            gene_compat = np.array(
+                [
+                    sparse_any(scipy.sparse.csr_array(compat[tx, :]), axis=0)
+                    for compat in emase.haps.values()
+                ]
+            )
+            relevant_classes = sparse_any(gene_compat, axis=0)
+            all_tx = np.array(
+                [
+                    sparse_any(scipy.sparse.csr_array(compat[:, relevant_classes]), axis=1)
+                    for compat in emase.haps.values()
+                ]
+            ).any(axis=0)
+            multimapper_tx = all_tx & (~tx)
+            for mm_tx in np.where(multimapper_tx)[0]:
+                mm_compat =  np.array(
+                    [
+                        scipy.sparse.csr_array(compat)[mm_tx,:].todense()
+                        for compat in emase.haps.values()
+                    ]
+                ).any(axis=0) & relevant_classes
+                temp.append({
+                    "mouse_id": mouse_id,
+                    "transcript_id": emase.lname[mm_tx].decode(),
+                    "read_count": emase.count[mm_compat].sum()
+                })
+        return pl.DataFrame(temp, schema={"mouse_id": pl.Utf8, "transcript_id": pl.Utf8, "read_count": pl.Int32})
+    multimapper_tx_ids = _()
+    multimapper_gene_ids = (
+        multimapper_tx_ids
+            .join(tx_annot.select('gene_id', 'transcript_id'), "transcript_id")
+            .join(gene_annot.select('gene_id', 'gene_name'), 'gene_id')
+            .join(allele_unique.filter(gene_id = gene_selector.value).select("mouse_id", "diplotype"), "mouse_id")
+            .sort("read_count")
+    )
+    mo.vstack([
+        "List of gene multimapping reads",
+        multimapper_gene_ids
+    ])
     return
 
 
