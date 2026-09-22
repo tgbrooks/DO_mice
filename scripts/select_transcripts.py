@@ -44,19 +44,7 @@ print(f"Identified {all_haps['ID'].n_unique()} transcripts in all haplotypes")
 primary = all_haps.filter(pl.col("tag").str.contains("gencode_primary"))
 print(f"Of those, {primary['ID'].n_unique()} were gencode primary")
 
-len_diffs = primary.with_columns(
-    len_diff=(
-        pl.col("tx_length").max().over("ID") - pl.col("tx_length").min().over("ID")
-    )
-)
-print(
-    f"Of those, {len_diffs.filter(pl.col('len_diff') <= 10)['ID'].n_unique()} have all haplotypes within 10nt length"
-)
-print(
-    f"Note: only {len_diffs.filter(len_diff=0)['ID'].n_unique()} have consistent lengths across all haplotypes"
-)
-
-selected = len_diffs.filter(pl.col("len_diff") <= 10)
+selected = primary
 print(f"Resulting in {selected['Parent'].n_unique()} genes")
 IDs = (
     selected.select(transcript_id=pl.col("ID").str.strip_prefix("transcript:"))
