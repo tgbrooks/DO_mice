@@ -225,10 +225,10 @@ tx_num_to_id = {i: name.decode() for i, name in enumerate(cemase.lname)}
 # Write out in batches
 arrow_schema = pyarrow.schema(
     {
-        "read_class": pyarrow.int64(),
+        "read_class": pyarrow.int32(),
         "hap": pyarrow.large_string(),
-        "tx_num": pyarrow.int64(),
-        "struct": pyarrow.int32(),
+        "tx_num": pyarrow.int32(),
+        "start": pyarrow.int32(),
         "len": pyarrow.int32(),
         "cov": pyarrow.int32(),
     }
@@ -249,9 +249,9 @@ with pyarrow.parquet.ParquetWriter(OUTFILE, arrow_schema) as writer:
                 ]
             )
             .select(
-                "read_class",
+                pl.col("read_class").cast(pl.Int32),
                 "hap",
-                "tx_num",
+                pl.col("tx_num").cast(pl.Int32),
                 cov=pl.col("cov").list.eval(
                     pl.struct(
                         start=(
