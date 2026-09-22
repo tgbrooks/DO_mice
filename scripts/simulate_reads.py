@@ -59,7 +59,7 @@ with (
                     continue
                 frag_seq = seq[start:end]
                 frag_fwd = rev_complement(frag_seq[:READ_LENGTH])
-                frag_rev = frag_seq[:READ_LENGTH]
+                frag_rev = frag_seq[-READ_LENGTH:]
 
                 R1.write(f"@{transcript}_{start}_{end}\n")
                 R1.write(frag_fwd + "\n")
