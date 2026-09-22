@@ -112,3 +112,16 @@ rule collect_buffering_results:
                 continue
             temp.append(data)
         pl.concat(temp).write_csv(output.results, separator="\t")
+
+rule compute_coverage:
+    input:
+        R1 = "processed/{tissue}/gbrs/{sample_id}.R1.bam",
+        R2 = "processed/{tissue}/gbrs/{sample_id}.R2.bam",
+        emase = "processed/{tissue}/gbrs/{sample_id}.compressed.h5",
+    output:
+        out = "processed/{tissue}/cov/{sample_id}.cov.parquet",
+    resources:
+        mem_mb = 24_000,
+    script:
+        "../scripts/compute_coverage.py"
+
