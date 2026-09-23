@@ -17,18 +17,24 @@ import pyarrow.parquet
 import numpy as np
 import itertools
 import json
-
+import argparse
 
 from util.compressed_emase import load_compressed_emase
 
+parser = argparse.ArgumentParser("Compute coverage per read alignment class")
+parser.add_argument("--R1", help="R1 bam")
+parser.add_argument("--R2", help="R2 bam")
+parser.add_argument("--emase", help="compressed emase h5 file")
+parser.add_argument("--out", help="output parquet")
+args = parser.parse_args()
 # R1_BAM = "processed/simulated_reads/gbrs/A.R1.bam"
 # R2_BAM = "processed/simulated_reads/gbrs/A.R2.bam"
 # COMPRESSED_EMASE = "processed/simulated_reads/gbrs/A.compressed.h5"
 # OUTFILE = "temp_cov.parquet"
-R1_BAM = snakemake.input.R1
-R2_BAM = snakemake.input.R2
-COMPRESSED_EMASE = snakemake.input.emase
-OUTFILE = snakemake.output.out
+R1_BAM = args.R1
+R2_BAM = args.R2
+COMPRESSED_EMASE = args.emase
+OUTFILE = args.out
 
 cemase = load_compressed_emase(
     COMPRESSED_EMASE,
@@ -159,6 +165,7 @@ while not (R1_done and R2_done):
     assert R1_to_process is not None
     assert R2_to_process is not None
 
+    finished = R1_completed & R2_completed
     ready = (
         R1_to_process.join(
             R2_to_process,
@@ -167,11 +174,10 @@ while not (R1_done and R2_done):
             suffix="_R2",
         )
         .filter(
-            pl.col("name").is_in(R1_completed.intersection(R2_completed)),
+            pl.col("name").is_in(finished),
         )
         .unique(subset=["name", "chrom"])
     )  # drop multiple alignments to the same transcript
-    finished = R1_completed & R2_completed
 
     R1_to_process = R1_to_process.filter(~pl.col("name").is_in(finished))
     R2_to_process = R2_to_process.filter(~pl.col("name").is_in(finished))
@@ -215,7 +221,10 @@ while not (R1_done and R2_done):
         processed_alignments += 1
     i += 1
     if i % 100 == 0:
-        print(f"Process batches: {i}")
+        print(f"Processed batches: {i}")
+        print(
+            f"Working sizes: {len(R1_completed)=} {len(R2_completed)=} {R1_to_process.shape=} {R2_to_process.shape=}"
+        )
 
 print(f"Processed {processed_alignments} alignments")
 
