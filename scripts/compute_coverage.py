@@ -114,76 +114,90 @@ def bam_batches(file):
     )
 
 
-R1 = bam_batches(R1_BAM)
-R2 = bam_batches(R2_BAM)
+class Stream:
+    def __init__(self, path):
+        self.batches = bam_batches(path)
+        self.buf = None
+        self.seen = set()  # current read, may continue into next batch
+        self.completed = {}  # insertion-ordered set of fully buffered read names
+        self.last = None
+        self.done = False
 
-R1_to_process = None
-R2_to_process = None
-R1_seen = set()
-R2_seen = set()
-R1_completed = set()
-R2_completed = set()
-R1_done = False
-R2_done = False
+    def knows(self, name):
+        return name in self.completed or name in self.seen
+
+    def pull(self):
+        try:
+            new = next(self.batches)
+        except StopIteration:
+            self.done = True
+            self.completed.update(dict.fromkeys(self.seen))
+            self.seen, self.last = set(), None
+            return
+        self.buf = new if self.buf is None else pl.concat([self.buf, new])
+        if len(new):
+            names = new["name"].unique(maintain_order=True).to_list()
+            self.last = names[-1]
+            self.completed.update(
+                dict.fromkeys(n for n in [*self.seen, *names] if n != self.last)
+            )
+            self.seen = {self.last}
+
+
+def evict(completed, finished):
+    """Drop finished names plus any unfinished names that precede the last
+    finished one in this stream's order: the other stream has already passed
+    them, so they can never be matched."""
+    cut = None
+    for k in completed:
+        if k in finished:
+            cut = k
+    orphans = set()
+    if cut is None:
+        return orphans
+    for k in list(completed):
+        del completed[k]
+        if k not in finished:
+            orphans.add(k)
+        if k == cut:
+            break
+    return orphans
+
+
+r1, r2 = Stream(R1_BAM), Stream(R2_BAM)
 i = 0
 processed_alignments = 0
-while not (R1_done and R2_done):
-    try:
-        R1_new = next(R1)
-        if R1_to_process is None:
-            R1_to_process = R1_new
-        else:
-            R1_to_process = pl.concat([R1_to_process, R1_new])
-        if len(R1_new) > 0:
-            R1_seen.update(R1_new["name"])
-            R1_last_read = R1_new["name"][-1]  # Last read may continue in next batch
-            new_completed = R1_seen.difference([R1_last_read])
-            R1_completed.update(new_completed)
-            R1_seen = {R1_last_read}
-    except StopIteration:
-        R1_done = True
-        R1_completed.update(R1_seen)
-        R1_seen = set()
+n_orphans = 0
+while not (r1.done and r2.done):
+    r1_behind = r1.last is not None and r2.knows(r1.last)
+    r2_behind = r2.last is not None and r1.knows(r2.last)
+    if r1.done:
+        r2.pull()
+    elif r2.done:
+        r1.pull()
+    elif r1_behind and not r2_behind:
+        r1.pull()
+    elif r2_behind and not r1_behind:
+        r2.pull()
+    else:
+        r1.pull()
+        r2.pull()
 
-    try:
-        R2_new = next(R2)
-        if R2_to_process is None:
-            R2_to_process = R2_new
-        else:
-            R2_to_process = pl.concat([R2_to_process, R2_new])
-        if len(R2_new) > 0:
-            R2_seen.update(R2_new["name"])
-            R2_last_read = R2_new["name"][-1]  # Last read may continue in next batch
-            new_completed = R2_seen.difference([R2_last_read])
-            R2_completed.update(new_completed)
-            R2_seen = {R2_last_read}
-    except StopIteration:
-        R2_done = True
-        R2_completed.update(R2_seen)
-        R2_seen = set()
+    if r1.buf is None or r2.buf is None:
+        continue
 
-    assert R1_to_process is not None
-    assert R2_to_process is not None
-
-    finished = R1_completed & R2_completed
+    finished = r1.completed.keys() & r2.completed.keys()
     ready = (
-        R1_to_process.join(
-            R2_to_process,
-            ["name", "chrom"],  # 'chrom' includes tx and hap
-            how="inner",
-            suffix="_R2",
-        )
-        .filter(
-            pl.col("name").is_in(finished),
-        )
+        r1.buf.join(r2.buf, ["name", "chrom"], how="inner", suffix="_R2")
+        .filter(pl.col("name").is_in(finished))
         .unique(subset=["name", "chrom"])
-    )  # drop multiple alignments to the same transcript
+    )
 
-    R1_to_process = R1_to_process.filter(~pl.col("name").is_in(finished))
-    R2_to_process = R2_to_process.filter(~pl.col("name").is_in(finished))
-
-    R1_completed.difference_update(finished)
-    R2_completed.difference_update(finished)
+    orphans = evict(r1.completed, finished) | evict(r2.completed, finished)
+    n_orphans += len(orphans)
+    drop = finished | orphans
+    r1.buf = r1.buf.filter(~pl.col("name").is_in(drop))
+    r2.buf = r2.buf.filter(~pl.col("name").is_in(drop))
 
     # Determine read classes
     ready = ready.with_columns(
@@ -223,7 +237,7 @@ while not (R1_done and R2_done):
     if i % 100 == 0:
         print(f"Processed batches: {i}")
         print(
-            f"Working sizes: {len(R1_completed)=} {len(R2_completed)=} {R1_to_process.shape=} {R2_to_process.shape=}"
+            f"Working sizes: {len(r1.completed)=} {len(r2.completed)=} {r1.buf.shape=} {r2.buf.shape=}"
         )
 
 print(f"Processed {processed_alignments} alignments")
