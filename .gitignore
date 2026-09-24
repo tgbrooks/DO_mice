@@ -22,3 +22,5 @@ temp*
 .cache
 .RData
 .Rhistory
+backup*
+*.backup
