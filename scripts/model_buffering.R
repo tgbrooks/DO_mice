@@ -289,13 +289,13 @@ fit_model <- function(au) {
         total_F = total_effects['F'],
         total_G = total_effects['G'],
         total_H = 0, # reference, 0 by definition
-        total_A_se = total_cov["A","A"],
-        total_B_se = total_cov["B","B"],
-        total_C_se = total_cov["C","C"],
-        total_D_se = total_cov["D","D"],
-        total_E_se = total_cov["E","E"],
-        total_F_se = total_cov["F","F"],
-        total_G_se = total_cov["G","G"],
+        total_A_se = sqrt(total_cov["A","A"]),
+        total_B_se = sqrt(total_cov["B","B"]),
+        total_C_se = sqrt(total_cov["C","C"]),
+        total_D_se = sqrt(total_cov["D","D"]),
+        total_E_se = sqrt(total_cov["E","E"]),
+        total_F_se = sqrt(total_cov["F","F"]),
+        total_G_se = sqrt(total_cov["G","G"]),
         total_H_se = 0, # reference, 0 by definition
         dispersion = 1/exp(res_total$fit$par['betadisp']),
         # Meta data
