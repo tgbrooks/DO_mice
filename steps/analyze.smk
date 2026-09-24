@@ -122,6 +122,6 @@ rule compute_coverage:
         out = "processed/{tissue}/cov/{sample_id}.cov.parquet",
     resources:
         mem_mb = 24_000,
-    script:
-        "../scripts/compute_coverage.py"
+    shell:
+        "python ../scripts/compute_coverage.py --R1 {input.R1} --R2 {input.R2} --emase {input.emase} --out {output}"
 
