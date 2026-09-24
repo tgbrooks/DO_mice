@@ -3,77 +3,58 @@ import marimo
 __generated_with = "0.23.15"
 app = marimo.App(width="medium")
 
+with app.setup:
+    import polars as pl
+    import polars_bio as pb
+    import numpy as np
+    import scipy.sparse
+    import scipy.optimize
+    import scipy.stats
+    import pymc as pm
+    import arviz as az
+    import time
+
+    import yaml
+
+    from util.compressed_emase import load_compressed_emase
+    from util.compat_classes import get_gene_class_counts, get_gene_totals, sparse_any
+    from buffering.ASE_model import make_ase_model
+    from buffering.total_counts_model import make_total_model
+
+    config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
+    HAPLOTYPES = config["haplotypes"].split(",")
+    HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
+    SEX_TO_NUM = {"F": 0, "M": 1}
+
 
 @app.cell
 def _():
     import marimo as mo
     import lets_plot as lp
-    import polars as pl
-    import polars_bio as pb
-    import numpy as np
-    import yaml
-    import scipy.sparse
-    import scipy.optimize
-    import scipy.stats
-    from dataclasses import dataclass
-    import pytensor
-    import pymc as pm
-    import arviz as az
-    import pytensor.tensor as pt
-    import time
 
-    from util.compressed_emase import load_compressed_emase
-
-    return (
-        az,
-        dataclass,
-        load_compressed_emase,
-        lp,
-        mo,
-        np,
-        pb,
-        pl,
-        pm,
-        pt,
-        scipy,
-        time,
-        yaml,
-    )
-
-
-@app.cell
-def _(pl):
-    size_factors = pl.read_csv(
-        "processed/Adipose/size_factors.txt", separator="\t"
-    )
-    return (size_factors,)
-
-
-@app.cell
-def _(lp, yaml):
-    config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
-    HAPLOTYPES = config["haplotypes"].split(",")
-    HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette(
-        len(HAPLOTYPES)
-    )
-    OUTLIER_MOUSE_IDS = config["outlier_ids"]
-    return HAPLOTYPES, HAPLOTYPE_COLORS, OUTLIER_MOUSE_IDS
-
-
-@app.cell
-def _(HAPLOTYPES):
-    HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
-    return (HAP_TO_HAPNUM,)
+    return lp, mo
 
 
 @app.cell
 def _():
-    SEX_TO_NUM = {"F": 0, "M": 1}
-    return (SEX_TO_NUM,)
+    size_factors = pl.read_csv("processed/Adipose/size_factors.txt", separator="\t")
+    return (size_factors,)
 
 
 @app.cell
-def _(pb, pl):
+def _():
+    OUTLIER_MOUSE_IDS = config["outlier_ids"]
+    return (OUTLIER_MOUSE_IDS,)
+
+
+@app.cell
+def _(lp):
+    HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette(len(HAPLOTYPES))
+    return (HAPLOTYPE_COLORS,)
+
+
+@app.cell
+def _():
     gene_annot = (
         pb.scan_gtf(
             "gbrs_ref/v116/reference.gtf.gz",
@@ -86,7 +67,7 @@ def _(pb, pl):
 
 
 @app.cell
-def _(pb, pl):
+def _():
     tx_annot = (
         pb.scan_gtf(
             "gbrs_ref/v116/reference.gtf.gz",
@@ -99,12 +80,16 @@ def _(pb, pl):
 
 
 @app.cell
-def _(pl):
-    allele_unique = pl.read_parquet(
-        "processed/Adipose/allele_unique_reads.parquet"
-    )
+def _(jallele_unique):
+    allele_unique = pl.read_parquet("processed/Adipose/allele_unique_reads.parquet")
     allele_unique
     return (allele_unique,)
+
+
+@app.cell
+def _(allele_unique):
+    diplotypes = allele_unique.select("mouse_id", "gene_id", "diplotype")
+    return (diplotypes,)
 
 
 @app.cell
@@ -191,7 +176,7 @@ def _(mo):
 
 
 @app.cell
-def _(HAPLOTYPES, OUTLIER_MOUSE_IDS, load_compressed_emase, mouse_ids):
+def _(OUTLIER_MOUSE_IDS, mouse_ids):
     # Load ALL the read compatibility data form all the mice
     all_compatibility_classes = {}
     for mouse_id in mouse_ids:
@@ -205,7 +190,7 @@ def _(HAPLOTYPES, OUTLIER_MOUSE_IDS, load_compressed_emase, mouse_ids):
 
 
 @app.cell(hide_code=True)
-def _(allele_unique, args, gene_annot, mo, pl):
+def _(allele_unique, args, gene_annot, mo):
     _vals = (
         allele_unique.select("gene_id")
         .unique()
@@ -214,9 +199,9 @@ def _(allele_unique, args, gene_annot, mo, pl):
         .drop_nulls()
     )
     _names = list(
-        _vals.select(
-            name=pl.col("gene_id") + " | " + pl.col("gene_name")
-        ).drop_nulls()["name"]
+        _vals.select(name=pl.col("gene_id") + " | " + pl.col("gene_name")).drop_nulls()[
+            "name"
+        ]
     )
     gene_ids = list(_vals["gene_id"])
     _options = {_name: _id for _name, _id in zip(_names, gene_ids)}
@@ -229,127 +214,30 @@ def _(allele_unique, args, gene_annot, mo, pl):
     else:
         default = None
     gene_selector = mo.ui.dropdown(_options, value=default, searchable=True)
-    gene_selector
+    mo.sidebar(
+        [
+            "Gene selector:",
+            gene_selector,
+        ]
+    )
     return (gene_selector,)
 
 
 @app.cell
-def _(
-    all_compatibility_classes,
-    dataclass,
-    gene_selector,
-    np,
-    out,
-    scipy,
-    tx_annot,
-):
-    # select just this genes data
-    transcripts = list(
-        tx_annot.filter(gene_id=gene_selector.value)["transcript_id"]
+def _(all_compatibility_classes, diplotypes, gene_selector, tx_annot):
+    gene_class_counts = get_gene_class_counts(
+        gene_selector.value, tx_annot, all_compatibility_classes
     )
-
-    @dataclass
-    class CompatClasses:
-        compat: np.ndarray  # 8 x n_classes - compatibility of the read class with each of the 8 haplotypes
-        counts: (
-            np.ndarray
-        )  # n_classes - number of reads of this compatibility class
-
-    def sparse_any(sparse_matrix, axis):
-        return (sparse_matrix != 0).sum(axis=axis) > 0
-
-    # First get data for just one gene
-    def extract_gene(emase, transcripts):
-        tx = np.isin(emase.lname, [tx.encode() for tx in transcripts])
-        # 8 x n_classes array of compatibility with this gene
-        gene_compat = np.array(
-            [
-                sparse_any(scipy.sparse.csr_array(compat[tx, :]), axis=0)
-                for compat in emase.haps.values()
-            ]
-        )
-        relevant_classes = sparse_any(gene_compat, axis=0)
-        final_compat = gene_compat[:, relevant_classes]
-        counts = emase.count[relevant_classes]
-        # note: classes arise from *transcripts* not genes and therefore could have identical gene compatibility
-        # in different classes. we'll combine those in the next step.
-        return CompatClasses(compat=final_compat, counts=counts)
-
-    compatibility_classes = {
-        mouse_id: extract_gene(emase, transcripts)
-        for mouse_id, emase in all_compatibility_classes.items()
-    }
-
-    @dataclass
-    class CompatClassesDf:
-        """All read compatibility data from one gene across all samples"""
-
-        compat: np.ndarray  # 8 x n_classes
-        counts: np.ndarray  # n_samples x n_classes
-        ids: list[str]  # n_samples ids list
-
-    # Now uniformize it: all samples to have the *same* compatibility classes
-    def uniformize_compat_classes(
-        compat_classes: dict[str, CompatClasses], min_n_classes: int | None
-    ) -> CompatClassesDf:
-        """
-        Aggregate classes and counts, putting zeros in classes that are missing for any sample.
-        Pad classes to min_n_classes.
-        """
-        n_samples = len(compat_classes)
-        classes = set()
-        for compat in compat_classes.values():
-            classes.update([tuple(col) for col in compat.compat.T])
-        classes = np.array(
-            [np.array(cls) for cls in classes]
-        )  # fix the ordering
-        if min_n_classes is not None and classes.shape[0] < min_n_classes:
-            # Pad with classes that incompatible with all haplotypes
-            # These should have no reads reported since such reads simply don't align to this gene
-            n_padding_classes = min_n_classes - len(classes)
-            classes = np.concatenate(
-                [
-                    classes,
-                    np.zeros(
-                        (n_padding_classes, classes.shape[1]), dtype=bool
-                    ),
-                ]
-            )
-        compat_map = {tuple(row): i for i, row in enumerate(classes)}
-        counts_out = np.zeros((n_samples, classes.shape[0]))
-        for i, compat in enumerate(compat_classes.values()):
-            matches = np.array(
-                [compat_map[tuple(col)] for col in compat.compat.T]
-            )
-            # matches may have repeated indices due to transcripts classes being identical at gene level
-            # we sum those repeated indices
-            np.add.at(counts_out[i], matches, compat.counts)
-            # counts_out[i, matches] += compat.counts
-        return CompatClassesDf(
-            compat=classes,
-            counts=counts_out,
-            ids=compat_classes.keys(),
-        )
-        return out
-
-    gene_class_counts = uniformize_compat_classes(
-        compatibility_classes, min_n_classes=None
-    )
-    return gene_class_counts, sparse_any, transcripts
+    ase_model = make_ase_model(gene_selector.value, gene_class_counts, diplotypes)
+    return ase_model, gene_class_counts
 
 
 @app.cell
-def _(
-    HAPLOTYPES,
-    HAP_TO_HAPNUM,
-    allele_unique,
-    gene_class_counts,
-    gene_selector,
-    np,
-    pl,
-    pm,
-    pt,
-):
+def _(allele_unique, gene_class_counts, gene_selector):
+    # For plotting
+    n_samples = int(gene_class_counts.counts.shape[0])
+    n_classes = int(gene_class_counts.compat.shape[0])
+    n_haps = len(HAPLOTYPES)
     gene_diplotypes = (
         allele_unique.filter(gene_id=gene_selector.value)
         .select("diplotype", "mouse_id")
@@ -365,93 +253,24 @@ def _(
     hap2 = gene_diplotypes.select(
         pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM)
     )["diplotype"].to_numpy()
-    n_samples = int(gene_class_counts.counts.shape[0])
-    n_classes = int(gene_class_counts.compat.shape[0])
-    n_haps = len(HAPLOTYPES)
-    obs_total_counts = gene_class_counts.counts.sum(axis=1)
-    model = pm.Model(
-        coords={
-            "haplotypes": HAPLOTYPES,
-            "classes": [f"class_{i}" for i in range(n_classes)],
-            "samples": gene_class_counts.ids,
-        }
-    )
-    DIRICHLET_PRIOR = (
-        1 / 5
-    )  # Encourages very low proportions for unobserved classes
-    # mask out classes which have no expression from anything with that haplotype
-    mask = np.array(
-        [
-            gene_class_counts.counts[hap1 == i].any(axis=0).astype(int)
-            | gene_class_counts.counts[hap2 == i].any(axis=0).astype(int)
-            for i in range(len(HAPLOTYPES))
-        ]
-    )
-    with model:
-        _counts = pm.Data(
-            "counts", gene_class_counts.counts, dims=("samples", "classes")
-        )
-        _hap1 = pm.Data("hap1", hap1, dims="samples")
-        _hap2 = pm.Data("hap2", hap2, dims="samples")
-        _mask = pm.Data("mask", mask, dims=("haplotypes", "classes"))
-        _nz = _counts > 0
-
-        # Nuisance variables
-        # Rates at which reads from a haplotype are assigned to each class
-        # q = pm.Dirichlet('q', a=np.ones(n_classes)*DIRICHLET_PRIOR, dims=("haplotypes", "classes"))
-        q_raw = pm.Normal("q_raw", sigma=3, dims=("haplotypes", "classes"))
-
-        def masked_softmax(q, mask):
-            exp = pm.math.exp(q) * mask
-            norm = exp.sum(axis=1)[:, None]
-            return exp / norm
-
-        q = pm.Deterministic(
-            "q", masked_softmax(q_raw, mask), dims=("haplotypes", "classes")
-        )
-
-        # Actual effects
-        beta = pm.ZeroSumNormal("beta", sigma=2.0, dims="haplotypes")
-
-        # Random per-sample effects
-        sigma_u = pm.HalfNormal("sigma_u", 1.0)
-        u_raw = pm.Normal("u_raw", 0, 1, dims="samples")
-        u = sigma_u * u_raw
-
-        p = pm.Deterministic(
-            "p",
-            pm.math.sigmoid(beta[_hap1] - beta[_hap2] + u),
-            dims=("samples"),
-        )
-        class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
-
-        # Log-likelihood - used instaed of pm.Multinomial since its a bit faster
-        # We drop the constant terms that don't depend upon class_props
-        pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
-
-        # pm.Multinomial("class_counts", n=obs_total_counts, p=class_props,
-        #               observed=gene_class_counts.counts, dims=("samples","classes"))
-    return hap1, hap2, model, n_classes
+    return hap1, hap2, n_classes, n_haps
 
 
 @app.cell
-def _(mo, model, pm):
-    mo.mermaid(pm.model_to_mermaid(model))
+def _(ase_model, mo):
+    mo.mermaid(pm.model_to_mermaid(ase_model))
     return
 
 
 @app.cell
-def _(args, model, pm, time):
+def _(args, ase_model):
     # Fit the model
-    # with pytensor.config.change_flags(profile=True, profiling__time_thunks = True):
     _start = time.time()
-    with model:
+    with ase_model:
         idata_ase = pm.sample(
             300,
             random_seed=101,
             nuts_sampler="nutpie",
-            backend=args.backend,
-            # nuts={"low_rank_modified_mass_matrix": True}
         )
     _end = time.time()
     ase_model_time = _end - _start
@@ -459,13 +278,13 @@ def _(args, model, pm, time):
 
 
 @app.cell
-def _(az, idata_ase):
+def _(idata_ase):
     az.plot_trace_dist(idata_ase, var_names=["beta"], compact=False)
     return
 
 
 @app.cell
-def _(az, idata_ase):
+def _(idata_ase):
     az.plot_forest(
         idata_ase,
         var_names=["beta"],
@@ -477,13 +296,39 @@ def _(az, idata_ase):
 
 
 @app.cell
-def _(az, idata_ase):
+def _(idata_ase, lp, n_haps):
+    _gamma = (
+        (idata_ase["posterior"]["sigma_gamma"] * idata_ase["posterior"]["gamma"])
+        .to_numpy()
+        .reshape((-1, (n_haps * (n_haps - 1) // 2)))
+    )
+    _df = (
+        pl.DataFrame({f"gamma_{i}": _gamma[:, i] for i in range(_gamma.shape[1])})
+        .unpivot(on=[f"gamma_{i}" for i in range(_gamma.shape[1])])
+        .group_by("variable")
+        .agg(
+            mean=pl.col("value").mean(),
+            low=pl.col("value").quantile(0.05),
+            hi=pl.col("value").quantile(0.95),
+        )
+    )
+    (
+        lp.ggplot(_df, lp.aes(x="mean", y="variable"))
+        + lp.geom_point()
+        + lp.geom_errorbar(lp.aes(xmin="low", xmax="hi"))
+        + lp.labs(x="gamma")
+    )
+    return
+
+
+@app.cell
+def _(idata_ase):
     az.summary(idata_ase, var_names="beta", filter_vars="like")
     return
 
 
-app._unparsable_cell(
-    r"""
+@app.cell(hide_code=True)
+def _(gene_class_counts, idata_ase, lp, n_classes):
     q_hat = np.mean(idata_ase["posterior"]["q"], axis=(0, 1))
     q_hat_se = np.std(idata_ase["posterior"]["q"], axis=(0, 1))
     # q_hat = [np.mean(samples['posterior'][f'q_{i}'], axis=(0,1)) for i in range(n_haps)]
@@ -509,12 +354,12 @@ app._unparsable_cell(
             for i, hap in enumerate(HAPLOTYPES)
         ]
     ).with_columns(
-        y = pl.col("q_hat")
+        y=pl.col("q_hat"),
         ymin=pl.col("q_hat") - 1.96 * pl.col("q_hat_se"),
         ymax=pl.col("q_hat") + 1.96 * pl.col("q_hat_se"),
     )
     (
-        lp.ggplot(_dat, lp.aes(x="class", y="q_hat", color="is_leak"))
+        lp.ggplot(_dat, lp.aes(x="class", y="y", color="is_leak"))
         + lp.facet_wrap("haplotype")
         + lp.geom_point(
             tooltips=lp.layer_tooltips(
@@ -524,15 +369,15 @@ app._unparsable_cell(
         + lp.geom_errorbar(lp.aes(ymin="ymin", ymax="ymax"))
         + lp.scale_color_manual(breaks=[False, True], values=["black", "red"])
         + lp.ggtb()
+        + lp.labs(y="q_hat")
+        + lp.scale_y_log10()
         + lp.ggtitle("Class proportions by haplotype")
     )
-    """,
-    column=None, disabled=False, hide_code=True, name="_"
-)
+    return
 
 
 @app.cell
-def _(HAPLOTYPES, gene_class_counts, idata_ase, lp, np, pl):
+def _(gene_class_counts, idata_ase, lp):
     class_summaries = (
         idata_ase["posterior"]["q"].values @ gene_class_counts.compat
     ).mean(axis=(0, 1))
@@ -540,10 +385,7 @@ def _(HAPLOTYPES, gene_class_counts, idata_ase, lp, np, pl):
         [
             (
                 idata_ase["posterior"]["q"].values[:, :, i, :]
-                @ (
-                    (~gene_class_counts.compat[:, i, None])
-                    & gene_class_counts.compat
-                )
+                @ ((~gene_class_counts.compat[:, i, None]) & gene_class_counts.compat)
             ).mean(axis=(0, 1))
             for i in range(len(HAPLOTYPES))
         ]
@@ -588,15 +430,14 @@ def _(HAPLOTYPES, gene_class_counts, idata_ase, lp, np, pl):
 
 
 @app.cell(hide_code=True)
-def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, mo, np, pl):
+def _(gene_class_counts, hap1, hap2, idata_ase, lp, mo):
     # For each diplotype, plot the fit percentage of reads that are allele-unique for both haplotypes
     def _():
         temp = []
         p = idata_ase["posterior"]["p"].values
         q = idata_ase["posterior"]["q"].values
         class_props = (
-            p[:, :, :, None] * q[:, :, hap1]
-            + (1 - p)[:, :, :, None] * q[:, :, hap2]
+            p[:, :, :, None] * q[:, :, hap1] + (1 - p)[:, :, :, None] * q[:, :, hap2]
         )
         for i, h1 in enumerate(HAPLOTYPES):
             for j, h2 in enumerate(HAPLOTYPES):
@@ -627,21 +468,19 @@ def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, mo, np, pl):
 
                 tots = gene_class_counts.counts[selected].sum(axis=1)
                 actual_h1_unique_counts = (
-                    gene_class_counts.counts[selected][
-                        :, h1_unique_classes
-                    ].sum(axis=1)
+                    gene_class_counts.counts[selected][:, h1_unique_classes].sum(axis=1)
                     / tots
                 )
                 actual_h2_unique_counts = (
-                    gene_class_counts.counts[selected][
-                        :, h2_unique_classes
-                    ].sum(axis=1)
+                    gene_class_counts.counts[selected][:, h2_unique_classes].sum(axis=1)
                     / tots
                 )
                 pred_allele_ratio = np.empty(p.shape[2])
-                pred_allele_ratio[selected1] = p[:,:,selected1].mean(axis=(0,1))
-                pred_allele_ratio[selected2] = 1-p[:,:,selected2].mean(axis=(0,1))
-                actual_allele_ratio = actual_h1_unique_counts / (actual_h2_unique_counts + actual_h1_unique_counts)
+                pred_allele_ratio[selected1] = p[:, :, selected1].mean(axis=(0, 1))
+                pred_allele_ratio[selected2] = 1 - p[:, :, selected2].mean(axis=(0, 1))
+                actual_allele_ratio = (actual_h1_unique_counts + 1e-9) / (
+                    actual_h2_unique_counts + actual_h1_unique_counts + 2e-9
+                )
                 temp.append(
                     pl.DataFrame(
                         {
@@ -662,54 +501,46 @@ def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, mo, np, pl):
         return pl.concat(temp)
 
     pred_allele_unique = _()
-    _res = (
-        pred_allele_unique
-        .unpivot(
-            index=["hap1", "hap2"],
-            on=[
-                "pred_hap1_unique_counts",
-                "actual_hap1_unique_counts",
-                # Only show hap1 values - the lower/upper triangular show opposite haps
-                #"pred_hap2_unique_counts",
-                #"actual_hap2_unique_counts",
-            ],
-            variable_name="var",
-            value_name="frac",
-        )
-        .with_columns(
-            type=pl.col("var").str.split("_").list.get(0),
-            hap=pl.col("var").str.split("_").list.get(1),
-        )
+    _res = pred_allele_unique.unpivot(
+        index=["hap1", "hap2"],
+        on=[
+            "pred_hap1_unique_counts",
+            "actual_hap1_unique_counts",
+            # Only show hap1 values - the lower/upper triangular show opposite haps
+            # "pred_hap2_unique_counts",
+            # "actual_hap2_unique_counts",
+        ],
+        variable_name="var",
+        value_name="frac",
+    ).with_columns(
+        type=pl.col("var").str.split("_").list.get(0),
+        hap=pl.col("var").str.split("_").list.get(1),
     )
-    _res2 = (
-        pred_allele_unique
-        .unpivot(
-            index=["hap1", "hap2"],
-            on=["pred_allele_ratio", "actual_allele_ratio"],
-            variable_name="var",
-            value_name="allele_ratio",
-        )
-        .with_columns(
-            type=pl.col("var").str.split("_").list.get(0),
-        )
+    _res2 = pred_allele_unique.unpivot(
+        index=["hap1", "hap2"],
+        on=["pred_allele_ratio", "actual_allele_ratio"],
+        variable_name="var",
+        value_name="allele_ratio",
+    ).with_columns(
+        type=pl.col("var").str.split("_").list.get(0),
     )
     mo.vstack(
         [
             lp.ggplot(_res, lp.aes(x="type", y="frac", color="type"))
-                + lp.geom_point(
-                    tooltips=lp.layer_tooltips(["hap1", "hap2", "type", "frac"]),
-                    position=lp.position_dodge(),
-                )
-                + lp.facet_grid(x="hap1", y="hap2")
-                + lp.labs(x="type", y="fraction unique")
-                + lp.ggsize(700, 700),
+            + lp.geom_point(
+                tooltips=lp.layer_tooltips(["hap1", "hap2", "type", "frac"]),
+                position=lp.position_dodge(),
+            )
+            + lp.facet_grid(x="hap1", y="hap2")
+            + lp.labs(x="type", y="fraction unique")
+            + lp.ggsize(700, 700),
             lp.ggplot(_res2, lp.aes(x="type", y="allele_ratio", color="type"))
-                + lp.geom_point(
-                    tooltips=lp.layer_tooltips(["hap1", "hap2", "type", "allele_ratio"]),
-                )
-                + lp.facet_grid(x="hap1", y="hap2")
-                + lp.labs(x="type", y="allele ratio")
-                + lp.ggsize(700, 700),
+            + lp.geom_point(
+                tooltips=lp.layer_tooltips(["hap1", "hap2", "type", "allele_ratio"]),
+            )
+            + lp.facet_grid(x="hap1", y="hap2")
+            + lp.labs(x="type", y="allele ratio")
+            + lp.ggsize(700, 700),
             pred_allele_unique,
         ]
     )
@@ -717,65 +548,57 @@ def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, mo, np, pl):
 
 
 @app.cell(hide_code=True)
-def _(
-    HAPLOTYPES,
-    gene_class_counts,
-    hap1,
-    hap2,
-    idata_ase,
-    lp,
-    n_classes,
-    np,
-    pl,
-):
+def _(gene_class_counts, hap1, hap2, idata_ase, lp, n_classes):
     def _():
         p = idata_ase["posterior"]["p"].values
         q = idata_ase["posterior"]["q"].values
         class_props = (
-            p[:, :, :, None] * q[:, :, hap1]
-            + (1 - p)[:, :, :, None] * q[:, :, hap2]
-        ).mean(axis=(0,1))
+            p[:, :, :, None] * q[:, :, hap1] + (1 - p)[:, :, :, None] * q[:, :, hap2]
+        ).mean(axis=(0, 1))
         # Compare predicted class props to homozygous class props
         # Homozygous directly informs class props without any inference of proportions
         # so we expect these to be close if there are a good number of homozygous
-        homo = (hap1 == hap2)
+        homo = hap1 == hap2
         temp = []
         for i in range(n_classes):
-            temp.append(pl.DataFrame({
-                "mouse_id": np.array(list(gene_class_counts.ids))[homo],
-                "hap": np.array(HAPLOTYPES)[hap1[homo]],
-                "class": i,
-                "actual_prop": gene_class_counts.counts[homo,i] / gene_class_counts.counts[homo,:].sum(axis=1),
-                "pred_prop": class_props[homo,i],
-            }))
+            temp.append(
+                pl.DataFrame(
+                    {
+                        "mouse_id": np.array(list(gene_class_counts.ids))[homo],
+                        "hap": np.array(HAPLOTYPES)[hap1[homo]],
+                        "class": i,
+                        "actual_prop": gene_class_counts.counts[homo, i]
+                        / gene_class_counts.counts[homo, :].sum(axis=1),
+                        "pred_prop": class_props[homo, i],
+                    }
+                )
+            )
         df = pl.concat(temp)
         return df
+
     _compat_with = {
         k: "".join(
-                hap2
-                for j, hap2 in enumerate(HAPLOTYPES)
-                if gene_class_counts.compat[k, j]
-            )
-            for k in range(n_classes)
+            hap2 for j, hap2 in enumerate(HAPLOTYPES) if gene_class_counts.compat[k, j]
+        )
+        for k in range(n_classes)
     }
     _df = (
         _()
         .group_by("hap", "class")
         .agg(
-            pl.col('actual_prop').mean(),
-            pl.col('pred_prop').mean(),
+            pl.col("actual_prop").mean(),
+            pl.col("pred_prop").mean(),
         )
         .with_columns(
             pl.col("class").replace_strict(_compat_with, return_dtype=str),
         )
     )
     (
-        lp.ggplot(
-            _df,
-            lp.aes("actual_prop", "pred_prop", color="class")
-        )
-        + lp.geom_point()
+        lp.ggplot(_df, lp.aes("actual_prop", "pred_prop", color="class"))
         + lp.geom_abline(intercept=1.0, slope=1, color="black", linestyle=2)
+        + lp.geom_point(
+            tooltips=lp.layer_tooltips(["class", "actual_prop", "pred_prop"])
+        )
         + lp.scale_x_log10()
         + lp.scale_y_log10()
         + lp.facet_wrap("hap")
@@ -787,7 +610,7 @@ def _(
 
 
 @app.cell
-def _(HAPLOTYPES, HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp, pl):
+def _(HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp):
     # Plot fit allele-unique bias rates
     def _():
         q = idata_ase["posterior"]["q"].values
@@ -797,29 +620,40 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp, pl):
                 h1_unique_classes = gene_class_counts.compat[:, i] & (
                     ~gene_class_counts.compat[:, j]
                 )
-                h1_u = q[...,i,h1_unique_classes].sum(axis=-1).mean(axis=(0,1))
+                h1_u = q[..., i, h1_unique_classes].sum(axis=-1).mean(axis=(0, 1))
 
-                # For comparison, the
                 h2_unique_classes = gene_class_counts.compat[:, j] & (
                     ~gene_class_counts.compat[:, i]
                 )
-                h2_u = q[...,j,h2_unique_classes].sum(axis=-1).mean(axis=(0,1))
-                temp.append({
-                    "source_hap": h1,
-                    "other_hap": h2,
-                    "frac_unique": h1_u,
-                    "reverse_frac_unique": h2_u,
-                    "allele_unique_bias": h1_u / h2_u,
-                })
+                h2_u = q[..., j, h2_unique_classes].sum(axis=-1).mean(axis=(0, 1))
+                temp.append(
+                    {
+                        "source_hap": h1,
+                        "other_hap": h2,
+                        "frac_unique": h1_u,
+                        "reverse_frac_unique": h2_u,
+                        "allele_unique_bias": h1_u / h2_u,
+                    }
+                )
         return pl.DataFrame(temp).filter(pl.col("source_hap") != pl.col("other_hap"))
+
     _df = _()
     (
         lp.ggplot(
-            _df,
-            lp.aes(x="frac_unique", y="reverse_frac_unique", color="source_hap")
+            _df, lp.aes(x="frac_unique", y="reverse_frac_unique", color="source_hap")
         )
-        + lp.geom_point(tooltips=lp.layer_tooltips(["source_hap", "other_hap", "frac_unique", "reverse_frac_unique", "allele_unique_bias"]))
-        + lp.geom_abline(intercept=0,slope=1)
+        + lp.geom_point(
+            tooltips=lp.layer_tooltips(
+                [
+                    "source_hap",
+                    "other_hap",
+                    "frac_unique",
+                    "reverse_frac_unique",
+                    "allele_unique_bias",
+                ]
+            )
+        )
+        + lp.geom_abline(intercept=0, slope=1)
         + lp.scale_color_manual(breaks=HAPLOTYPES, values=HAPLOTYPE_COLORS)
         + lp.ggtitle("Biases in rate of producing allele unique reads")
     )
@@ -827,7 +661,7 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp, pl):
 
 
 @app.cell
-def _(az, idata_ase):
+def _(idata_ase):
     az.plot_energy(idata_ase)
     return
 
@@ -841,141 +675,40 @@ def _(mo):
 
 
 @app.cell
-def _(allele_unique, gene_class_counts, gene_selector, pl):
-    gene_totals = pl.DataFrame(
-        {
-            "mouse_id": gene_class_counts.ids,
-            "total_reads": gene_class_counts.counts.sum(axis=1),
-        }
-    ).join(
-        allele_unique.filter(gene_id=gene_selector.value).select(
-            "mouse_id", "diplotype"
-        ),
-        "mouse_id",
-    )
-    gene_totals
+def _(gene_class_counts, gene_selector, diplotypes):
+    gene_totals = get_gene_totals(gene_selector.value, gene_class_counts, diplotypes)
     return (gene_totals,)
 
 
 @app.cell
-def _(gene_totals, pl, size_factors):
+def _(size_factors):
     # phenotypes were acquired from Dryad  and extracted from Rdata format:
     # https://datadryad.org/dataset/doi:10.5061/dryad.pj105
-    pheno = (
+    all_pheno = (
         pl.read_csv("phenotypes.csv.gz")
         .rename({"mouse.id": "mouse_id"})
         .with_columns(
-            pl.col("DOwave")
-            .cast(str)
-            .cast(pl.Enum([str(x) for x in range(1, 6)]))
+            pl.col("DOwave").cast(str).cast(pl.Enum([str(x) for x in range(1, 6)]))
         )
         .join(size_factors, "mouse_id")
-        .join(
-            gene_totals.select("mouse_id"), "mouse_id", maintain_order="right"
-        )
     )
-    return (pheno,)
+    return (all_pheno,)
 
 
 @app.cell
-def _(gene_annot, gene_selector, gene_totals, np, pl):
-    _chrom = gene_annot.filter(gene_id=gene_selector.value)["chrom"][0]
-    kinship = gene_totals.select("mouse_id").join(
-        pl.read_csv(f"geno/kinship/{_chrom}.txt", separator="\t").select(
-            "mouse_id", *gene_totals["mouse_id"]
-        ),
-        "mouse_id",
-        maintain_order="left",
-    )
-    assert (kinship["mouse_id"] == kinship.columns[1:]).all()
-    kinship_eigs = np.linalg.eigh(kinship.drop("mouse_id").to_numpy())
-    return
-
-
-@app.cell
-def _(
-    HAPLOTYPES,
-    HAP_TO_HAPNUM,
-    SEX_TO_NUM,
-    gene_class_counts,
-    gene_totals,
-    np,
-    pheno,
-    pl,
-    pm,
-):
-    def _():
-        total_model = pm.Model(
-            coords={
-                "haplotypes": HAPLOTYPES,
-                "samples": gene_class_counts.ids,
-                "DOwaves": sorted(pheno["DOwave"].unique()),
-            }
-        )
-        # Codings
-        hap1 = gene_totals.select(
-            pl.col("diplotype").str.slice(0, 1).replace_strict(HAP_TO_HAPNUM)
-        )["diplotype"].to_numpy()
-        hap2 = gene_totals.select(
-            pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM)
-        )["diplotype"].to_numpy()
-        my_pheno = gene_totals.select("mouse_id").join(
-            pheno, "mouse_id", how="left", maintain_order="left"
-        )
-        sex = my_pheno["sex"].replace_strict(SEX_TO_NUM).to_numpy()
-        DOwave = my_pheno["DOwave"].cast(str).cast(int).to_numpy() - 1
-        sf = np.log(my_pheno["size_factor"].to_numpy())
-        mean_expr = (
-            gene_totals["total_reads"] / my_pheno["size_factor"]
-        ).to_numpy().mean() / 2
-        with total_model:
-            intercept = pm.Normal("intercept", mu=np.log(mean_expr), sigma=3)
-            beta = pm.ZeroSumNormal("beta", sigma=2, dims="haplotypes")
-            beta_M = pm.Normal("beta_M", sigma=2)
-            beta_wave = pm.ZeroSumNormal(
-                "beta_wave", sigma=0.5, dims="DOwaves"
-            )
-            sigma_u = pm.HalfNormal("sigma_u", sigma=1)
-            # h = pm.Beta("h", alpha=1, beta=1) # heritability
-            # Compute square-root of sigma_u^2 (hK + (1-h)I) using K = QVQ^T, I = QQ^T
-            # sample_covar = sigma_u * kinship_eigs.eigenvectors * pt.sqrt(h * kinship_eigs.eigenvalues + (1-h))
-            # u_kinship = sample_covar @ pm.Normal("u_kinship", dims="samples")
-            # u_kinship = sigma_u * pm.Normal("u_kinship", dims="samples")
-            u_kinship = 0
-            log_disp = pm.Normal("log_disp", mu=np.log(0.01), sigma=2)
-            mu = pm.Deterministic(
-                "mu",
-                (pm.math.exp(beta[hap1]) + pm.math.exp(beta[hap2]))
-                * pm.math.exp(
-                    intercept
-                    + sex * beta_M
-                    + beta_wave[DOwave]
-                    + u_kinship
-                    + sf
-                ),
-                dims="samples",
-            )
-            total_reads = pm.NegativeBinomial(
-                "total_reads",
-                mu=mu,
-                alpha=1 / np.exp(log_disp),
-                observed=gene_totals["total_reads"].to_numpy(),
-                dims="samples",
-            )
-        return total_model
-
-    total_model = _()
+def _(gene_class_counts, gene_selector):
+    total_model = make_total_model(gene_selector.value, gene_class_counts)
     return (total_model,)
 
 
 @app.cell
-def _(mo, pm, total_model):
+def _(mo, total_model):
     mo.mermaid(pm.model_to_mermaid(total_model))
     return
 
 
 @app.cell
-def _(pm, time, total_model):
+def _(total_model):
     # Fit the total model
     _start = time.time()
     with total_model:
@@ -991,7 +724,7 @@ def _(pm, time, total_model):
 
 
 @app.cell
-def _(az, idata_totals):
+def _(idata_totals):
     az.plot_forest(
         idata_totals,
         var_names=["beta"],
@@ -1003,10 +736,8 @@ def _(az, idata_totals):
 
 
 @app.cell
-def _(az, idata_totals, pl):
-    pl.DataFrame(
-        az.summary(idata_totals, ["beta"], filter_vars="like").reset_index()
-    )
+def _(idata_totals):
+    pl.DataFrame(az.summary(idata_totals, ["beta"], filter_vars="like").reset_index())
     return
 
 
@@ -1027,71 +758,64 @@ def _(mo):
     return
 
 
-@app.cell
-def _(np, scipy):
-    def covariance_deming_regression(
-        b1, b2, V1, V2, grid=np.linspace(-2, 3, 2001)
-    ):
-        # Function written by Claude Opus 5 to perform Deming-like regression when we have
-        # two k-vectors beta_1 and beta_2 each with known covariance matrices V_1 and V_2
-        # We assume no cross-covariance between beta_1 and beta_2
-        # Model: beta_1 = theta + epsilon_1
-        #        beta_2 = lambda * theta + epsilon_2
-        #        epsilon_i ~ N(0, V_i)
-        # So theta is the underlying 'true' parameter vector and lambda is the scaling between the two
-        #
-        # Q(lambda) := d(lambda)^T S(lambda)^-1 d(lambda)
-        #   d(lambda) := beta_2 - lambda beta_1
-        #   S(lambda) := V_2 + lambda^2 V_1
-        # so Q(lambda) is profile deviance (theta is profiled out) given covariances.
-        # Our solution is then the value of lambda that minimizes Q.
-        p = len(b1)
-        assert len(b1) == len(b2)
-        # Cross-covariance between betas, assumed to be zero
-        C = np.zeros((p, p))
-        Cs = C + C.T
+@app.function
+def covariance_deming_regression(b1, b2, V1, V2, grid=np.linspace(-2, 3, 2001)):
+    # Function written by Claude Opus 5 to perform Deming-like regression when we have
+    # two k-vectors beta_1 and beta_2 each with known covariance matrices V_1 and V_2
+    # We assume no cross-covariance between beta_1 and beta_2
+    # Model: beta_1 = theta + epsilon_1
+    #        beta_2 = lambda * theta + epsilon_2
+    #        epsilon_i ~ N(0, V_i)
+    # So theta is the underlying 'true' parameter vector and lambda is the scaling between the two
+    #
+    # Q(lambda) := d(lambda)^T S(lambda)^-1 d(lambda)
+    #   d(lambda) := beta_2 - lambda beta_1
+    #   S(lambda) := V_2 + lambda^2 V_1
+    # so Q(lambda) is profile deviance (theta is profiled out) given covariances.
+    # Our solution is then the value of lambda that minimizes Q.
+    p = len(b1)
+    assert len(b1) == len(b2)
+    # Cross-covariance between betas, assumed to be zero
+    C = np.zeros((p, p))
+    Cs = C + C.T
 
-        def Q(lam):
-            # objective function
-            d = b2 - lam * b1
-            S = V2 + lam**2 * V1 - lam * Cs
-            e = np.linalg.eigh(S)
-            k = (
-                e.eigenvalues > np.max(e.eigenvalues) * 1e-8
-            )  # generalized inverse
-            return np.sum(
-                d[k].T
-                @ e.eigenvectors[:, k].T
-                @ e.eigenvectors[:, k]
-                @ d[k]
-                / e.eigenvalues[k]
-            )
+    def Q(lam):
+        # objective function
+        d = b2 - lam * b1
+        S = V2 + lam**2 * V1 - lam * Cs
+        e = np.linalg.eigh(S)
+        k = e.eigenvalues > np.max(e.eigenvalues) * 1e-8  # generalized inverse
+        return np.sum(
+            d[k].T
+            @ e.eigenvectors[:, k].T
+            @ e.eigenvectors[:, k]
+            @ d[k]
+            / e.eigenvalues[k]
+        )
 
-        # First minimize Q over a discrete grid
-        q = np.array([Q(lam) for lam in grid])
-        i = np.argmin(q)
-        # Then find the minimum by numeric search in the neighborhood of that grid point
-        start = grid[max(i - 1, 0)]
-        end = grid[min(i + 1, len(grid) - 1)]
-        opt = scipy.optimize.minimize(Q, x0=grid[i], bounds=[(start, end)])
-        # Now compute a profile confidence interval on lambda
-        keep = q <= opt.fun + scipy.stats.chi2.ppf(0.95, df=1)
-        r = np.linalg.matrix_rank(V1 + V2)
-        return {
-            "lambda": opt.x[0],
-            "Q": opt.fun,
-            "df": r - 1,
-            "p_gof": scipy.stats.chi2.sf(opt.fun, df=r - 1),
-            "lo": min(grid[keep]),
-            "hi": max(grid[keep]),
-            "bounded": not (keep[0] or keep[len(keep) - 1]),
-        }
-
-    return (covariance_deming_regression,)
+    # First minimize Q over a discrete grid
+    q = np.array([Q(lam) for lam in grid])
+    i = np.argmin(q)
+    # Then find the minimum by numeric search in the neighborhood of that grid point
+    start = grid[max(i - 1, 0)]
+    end = grid[min(i + 1, len(grid) - 1)]
+    opt = scipy.optimize.minimize(Q, x0=grid[i], bounds=[(start, end)])
+    # Now compute a profile confidence interval on lambda
+    keep = q <= opt.fun + scipy.stats.chi2.ppf(0.95, df=1)
+    r = np.linalg.matrix_rank(V1 + V2)
+    return {
+        "lambda": opt.x[0],
+        "Q": opt.fun,
+        "df": r - 1,
+        "p_gof": scipy.stats.chi2.sf(opt.fun, df=r - 1),
+        "lo": min(grid[keep]),
+        "hi": max(grid[keep]),
+        "bounded": not (keep[0] or keep[len(keep) - 1]),
+    }
 
 
 @app.cell
-def _(az, covariance_deming_regression, idata_ase, idata_totals, np):
+def _(idata_ase, idata_totals):
     # Measurment errors:
     beta_ase_draws = az.extract(idata_ase, "posterior")["beta"].to_numpy()
     beta_total_draws = az.extract(idata_totals, "posterior")["beta"].to_numpy()
@@ -1113,7 +837,6 @@ def _(buffering_res):
 
 @app.cell(hide_code=True)
 def _(
-    HAPLOTYPES,
     HAPLOTYPE_COLORS,
     beta_ase,
     beta_total,
@@ -1122,8 +845,6 @@ def _(
     cov_total,
     lp,
     mo,
-    np,
-    pl,
 ):
     def _():
         buff_factor = buffering_res["lambda"]
@@ -1155,16 +876,12 @@ def _(
                 alpha=0,
                 color="black",
             )  # ensure 0,0 is in view
-            + lp.labs(
-                x="beta (ASE, binomial GLM)", y="beta (total counts, NB GLM)"
-            )
+            + lp.labs(x="beta (ASE, binomial GLM)", y="beta (total counts, NB GLM)")
             + lp.scale_color_manual(
                 values=HAPLOTYPE_COLORS,
                 breaks=HAPLOTYPES,
             )
-            + lp.geom_abline(
-                slope=buff_factor, intercept=0, color="red", linetype=2
-            )
+            + lp.geom_abline(slope=buff_factor, intercept=0, color="red", linetype=2)
             + lp.geom_abline(slope=1, intercept=0, color="black", linetype=2)
             + lp.coord_fixed()
             + lp.xlim(*lims)
@@ -1196,18 +913,14 @@ def _(
     gene_annot,
     gene_selector,
     mo,
-    np,
-    pl,
-    scipy,
-    sparse_any,
-    transcripts,
     tx_annot,
 ):
     # Check multimapping across genes
-    def  _():
+    transcripts = list(tx_annot.filter(gene_id=gene_selector.value)["transcript_id"])
+
+    def _():
         temp = []
         for mouse_id, emase in all_compatibility_classes.items():
-            emase
             tx = np.isin(emase.lname, [tx.encode() for tx in transcripts])
             # 8 x n_classes array of compatibility with this gene
             gene_compat = np.array(
@@ -1219,36 +932,54 @@ def _(
             relevant_classes = sparse_any(gene_compat, axis=0)
             all_tx = np.array(
                 [
-                    sparse_any(scipy.sparse.csr_array(compat[:, relevant_classes]), axis=1)
+                    sparse_any(
+                        scipy.sparse.csr_array(compat[:, relevant_classes]), axis=1
+                    )
                     for compat in emase.haps.values()
                 ]
             ).any(axis=0)
             multimapper_tx = all_tx & (~tx)
             for mm_tx in np.where(multimapper_tx)[0]:
-                mm_compat =  np.array(
-                    [
-                        scipy.sparse.csr_array(compat)[mm_tx,:].todense()
-                        for compat in emase.haps.values()
-                    ]
-                ).any(axis=0) & relevant_classes
-                temp.append({
-                    "mouse_id": mouse_id,
-                    "transcript_id": emase.lname[mm_tx].decode(),
-                    "read_count": emase.count[mm_compat].sum()
-                })
-        return pl.DataFrame(temp, schema={"mouse_id": pl.Utf8, "transcript_id": pl.Utf8, "read_count": pl.Int32})
+                mm_compat = (
+                    np.array(
+                        [
+                            scipy.sparse.csr_array(compat)[mm_tx, :].todense()
+                            for compat in emase.haps.values()
+                        ]
+                    ).any(axis=0)
+                    & relevant_classes
+                )
+                temp.append(
+                    {
+                        "mouse_id": mouse_id,
+                        "transcript_id": emase.lname[mm_tx].decode(),
+                        "read_count": emase.count[mm_compat].sum(),
+                    }
+                )
+        return pl.DataFrame(
+            temp,
+            schema={
+                "mouse_id": pl.Utf8,
+                "transcript_id": pl.Utf8,
+                "read_count": pl.Int32,
+            },
+        )
+
     multimapper_tx_ids = _()
     multimapper_gene_ids = (
-        multimapper_tx_ids
-            .join(tx_annot.select('gene_id', 'transcript_id'), "transcript_id")
-            .join(gene_annot.select('gene_id', 'gene_name'), 'gene_id')
-            .join(allele_unique.filter(gene_id = gene_selector.value).select("mouse_id", "diplotype"), "mouse_id")
-            .sort("read_count")
+        multimapper_tx_ids.join(
+            tx_annot.select("gene_id", "transcript_id"), "transcript_id"
+        )
+        .join(gene_annot.select("gene_id", "gene_name"), "gene_id")
+        .join(
+            allele_unique.filter(gene_id=gene_selector.value).select(
+                "mouse_id", "diplotype"
+            ),
+            "mouse_id",
+        )
+        .sort("read_count")
     )
-    mo.vstack([
-        "List of gene multimapping reads",
-        multimapper_gene_ids
-    ])
+    mo.vstack(["List of gene multimapping reads", multimapper_gene_ids])
     return
 
 
@@ -1270,18 +1001,12 @@ def _():
         "--gene_id",
         help="which gene to run on (optional)",
     )
-    parser.add_argument(
-        "--backend",
-        help="which PYMC backend to use (numba or jax)",
-        default="numba",
-    )
     args = parser.parse_args()
     return (args,)
 
 
 @app.cell
-def _(args, ase_model_time, idata_ase, idata_totals, total_model_time):
-    print(f"PYMC backend = {args.backend}")
+def _(ase_model_time, idata_ase, idata_totals, total_model_time):
     print(f"ASE model time: {ase_model_time:0.2f}")
     print(f"{idata_ase.posterior.attrs=}")
     print(f"Total model time: {total_model_time:0.2f}")
@@ -1302,27 +1027,6 @@ def _(args, ase_model_time, idata_ase, idata_totals, total_model_time):
     import numba
 
     print(f"{numba.get_num_threads()=}")
-
-    import jax
-
-    # Print the active default backend ('cpu', 'gpu', or 'tpu')
-    print("JAX default backend:", jax.default_backend())
-    print("Available devices:", jax.devices())
-    return
-
-
-@app.cell(disabled=True)
-def _(model):
-    import timeit
-
-    f_numba = model.compile_dlogp(mode="NUMBA")
-    f_jax = model.compile_dlogp(mode="JAX")
-    ip = model.initial_point()
-
-    f_numba(ip)
-    f_jax(ip)  # warm up: JIT + XLA compile
-    print(timeit.timeit(lambda: f_numba(ip), number=1000) / 1000)
-    print(timeit.timeit(lambda: f_jax(ip), number=1000) / 1000)
     return
 
 
