@@ -217,6 +217,67 @@ wheels = [
 ]
 
 [[package]]
+name = "buffering-pipeline"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "h5py" },
+    { name = "lets-plot" },
+    { name = "marimo" },
+    { name = "numpy" },
+    { name = "nutpie", extra = ["pymc"] },
+    { name = "pandas" },
+    { name = "polars" },
+    { name = "polars-bio" },
+    { name = "pyabpoa" },
+    { name = "pydeseq2" },
+    { name = "pymc", extra = ["nutpie"] },
+    { name = "scipy" },
+    { name = "snakemake" },
+    { name = "snakemake-executor-plugin-lsf" },
+    { name = "statsmodels" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "h5py" },
+    { name = "ipython" },
+    { name = "numpy" },
+    { name = "python-lsp-server" },
+    { name = "ruff" },
+    { name = "websockets" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "h5py", specifier = ">=3.16.0" },
+    { name = "lets-plot", specifier = ">=4.11.0" },
+    { name = "marimo", specifier = ">=0.23.15" },
+    { name = "numpy", specifier = ">=2.5.1" },
+    { name = "nutpie", extras = ["pymc"], specifier = ">=0.16.11" },
+    { name = "pandas", specifier = ">=3.0.5" },
+    { name = "polars", specifier = ">=1.43.0" },
+    { name = "polars-bio", specifier = ">=0.33.1" },
+    { name = "pyabpoa", specifier = ">=1.5.6" },
+    { name = "pydeseq2", specifier = ">=0.5.4" },
+    { name = "pymc", extras = ["nutpie"], specifier = ">=6.3.2" },
+    { name = "scipy", specifier = ">=1.18.0" },
+    { name = "snakemake", specifier = ">=9.23.1" },
+    { name = "snakemake-executor-plugin-lsf", git = "ssh://git@github.com/tgbrooks/snakemake-executor-plugin-lsf.git?rev=3f792d70fd01f2a7eb45f23625e398b7dc0321e5" },
+    { name = "statsmodels", specifier = ">=0.14.6" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "h5py", specifier = ">=3.16.0" },
+    { name = "ipython", specifier = ">=9.15.0" },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "python-lsp-server", specifier = ">=1.15.0" },
+    { name = "ruff", specifier = ">=0.16.3" },
+    { name = "websockets", specifier = ">=17.0.1" },
+]
+
+[[package]]
 name = "cachetools"
 version = "6.2.6"
 source = { registry = "https://pypi.org/simple" }
@@ -499,67 +560,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/60/8b/32f9823da46cde7df2087faa08cd98d01b908f8dcab982cdba9c84e85355/decorator-5.3.1.tar.gz", hash = "sha256:4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82", size = 58084, upload-time = "2026-05-18T06:03:28.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/05/7f/798705f5296a58ca505d600456748d1be48078eac8a7050d8a98bc9edb89/decorator-5.3.1-py3-none-any.whl", hash = "sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c", size = 10365, upload-time = "2026-05-18T06:03:26.517Z" },
-]
-
-[[package]]
-name = "do-mice-pipeline"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "h5py" },
-    { name = "lets-plot" },
-    { name = "marimo" },
-    { name = "numpy" },
-    { name = "nutpie", extra = ["pymc"] },
-    { name = "pandas" },
-    { name = "polars" },
-    { name = "polars-bio" },
-    { name = "pyabpoa" },
-    { name = "pydeseq2" },
-    { name = "pymc", extra = ["nutpie"] },
-    { name = "scipy" },
-    { name = "snakemake" },
-    { name = "snakemake-executor-plugin-lsf" },
-    { name = "statsmodels" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "h5py" },
-    { name = "ipython" },
-    { name = "numpy" },
-    { name = "python-lsp-server" },
-    { name = "ruff" },
-    { name = "websockets" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "h5py", specifier = ">=3.16.0" },
-    { name = "lets-plot", specifier = ">=4.11.0" },
-    { name = "marimo", specifier = ">=0.23.15" },
-    { name = "numpy", specifier = ">=2.5.1" },
-    { name = "nutpie", extras = ["pymc"], specifier = ">=0.16.11" },
-    { name = "pandas", specifier = ">=3.0.5" },
-    { name = "polars", specifier = ">=1.43.0" },
-    { name = "polars-bio", specifier = ">=0.33.1" },
-    { name = "pyabpoa", specifier = ">=1.5.6" },
-    { name = "pydeseq2", specifier = ">=0.5.4" },
-    { name = "pymc", extras = ["nutpie"], specifier = ">=6.3.2" },
-    { name = "scipy", specifier = ">=1.18.0" },
-    { name = "snakemake", specifier = ">=9.23.1" },
-    { name = "snakemake-executor-plugin-lsf", git = "ssh://git@github.com/tgbrooks/snakemake-executor-plugin-lsf.git?rev=3f792d70fd01f2a7eb45f23625e398b7dc0321e5" },
-    { name = "statsmodels", specifier = ">=0.14.6" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "h5py", specifier = ">=3.16.0" },
-    { name = "ipython", specifier = ">=9.15.0" },
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "python-lsp-server", specifier = ">=1.15.0" },
-    { name = "ruff", specifier = ">=0.16.3" },
-    { name = "websockets", specifier = ">=17.0.1" },
 ]
 
 [[package]]

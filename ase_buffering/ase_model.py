@@ -103,3 +103,7 @@ def make_ase_model(
         pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
 
     return model
+
+
+def summarize_ase_model(idata):
+    """Summarizes the posterior distribution from data sampled from an ASE model"""

@@ -18,8 +18,8 @@ with app.setup:
 
     from util.compressed_emase import load_compressed_emase
     from util.compat_classes import get_gene_class_counts, get_gene_totals, sparse_any
-    from buffering.ASE_model import make_ase_model
-    from buffering.total_counts_model import make_total_model
+    from ase_buffering.ase_model import make_ase_model
+    from ase_buffering.total_counts_model import make_total_model
 
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     HAPLOTYPES = config["haplotypes"].split(",")
@@ -80,7 +80,7 @@ def _():
 
 
 @app.cell
-def _(jallele_unique):
+def _():
     allele_unique = pl.read_parquet("processed/Adipose/allele_unique_reads.parquet")
     allele_unique
     return (allele_unique,)
@@ -263,7 +263,7 @@ def _(ase_model, mo):
 
 
 @app.cell
-def _(args, ase_model):
+def _(ase_model):
     # Fit the model
     _start = time.time()
     with ase_model:
@@ -675,9 +675,9 @@ def _(mo):
 
 
 @app.cell
-def _(gene_class_counts, gene_selector, diplotypes):
+def _(diplotypes, gene_class_counts, gene_selector):
     gene_totals = get_gene_totals(gene_selector.value, gene_class_counts, diplotypes)
-    return (gene_totals,)
+    return
 
 
 @app.cell
@@ -696,8 +696,8 @@ def _(size_factors):
 
 
 @app.cell
-def _(gene_class_counts, gene_selector):
-    total_model = make_total_model(gene_selector.value, gene_class_counts)
+def _(all_pheno, diplotypes, gene_class_counts, gene_selector):
+    total_model = make_total_model(gene_selector.value, gene_class_counts, diplotypes, all_pheno)
     return (total_model,)
 
 
