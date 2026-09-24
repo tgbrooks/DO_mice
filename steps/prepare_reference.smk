@@ -112,7 +112,8 @@ rule make_bowtie_index:
 
 rule make_reference_gtf:
     input:
-        gtf = "gbrs_ref/v116/B.gtf.gz"
+        gtf = "gbrs_ref/v116/B.gtf.gz",
+        selected_transcripts = "gbrs_ref/v116/selected_transcripts.txt",
     output:
         gtf = "gbrs_ref/v116/reference.gtf.gz"
     resources:
