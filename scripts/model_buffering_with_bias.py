@@ -77,12 +77,11 @@ for gene_id in gene_ids:
             500,
             random_seed=100,
             nuts_sampler="nutpie",
+            # quiet=True,
         )
     _end = time.time()
     ase_model_time = _end - _start
-    ase_summary = pl.DataFrame(
-        az.summary(idata_ase, var_names="beta", filter_vars="like").reset_index()
-    )
+    ase_summary = pl.DataFrame(az.summary(idata_ase).reset_index())
 
     ###### TOTAL COUNTS MODEL
     pheno = all_pheno.with_columns(
@@ -95,6 +94,7 @@ for gene_id in gene_ids:
             500,
             random_seed=101,
             nuts_sampler="nutpie",
+            # quiet=True,
         )
     _end = time.time()
     total_model_time = _end - _start
