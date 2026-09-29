@@ -58,15 +58,17 @@ with (
                 if end >= len(seq):
                     continue
                 frag_seq = seq[start:end]
-                frag_fwd = rev_complement(frag_seq[:READ_LENGTH])
-                frag_rev = frag_seq[-READ_LENGTH:]
+                # dUTP-stranded pair, facing inward: R1 is antisense from the
+                # fragment's 3' end, R2 is sense from its 5' end
+                r1_seq = rev_complement(frag_seq[-READ_LENGTH:])
+                r2_seq = frag_seq[:READ_LENGTH]
 
                 R1.write(f"@{transcript}_{start}_{end}\n")
-                R1.write(frag_fwd + "\n")
+                R1.write(r1_seq + "\n")
                 R1.write("+\n")
                 R1.write(quals)
 
                 R2.write(f"@{transcript}_{start}_{end}\n")
-                R2.write(frag_rev + "\n")
+                R2.write(r2_seq + "\n")
                 R2.write("+\n")
                 R2.write(quals)
