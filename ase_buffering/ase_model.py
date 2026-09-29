@@ -7,7 +7,6 @@ from util.compat_classes import CompatClassesDf
 from util.pymc_helpers import (
     constrained_normal,
     antisymmetric_constraints,
-    masked_constraints,
 )
 
 
@@ -17,6 +16,7 @@ def make_ase_model(
     diplotypes: pl.DataFrame,
 ) -> pm.Model:
     """Create a PYMC model object for the ASE model"""
+
     gene_diplotypes = (
         diplotypes.filter(gene_id=gene_id)
         .select("diplotype", "mouse_id")
@@ -47,21 +47,14 @@ def make_ase_model(
             "hap_pairs": [f"pair_{i}" for i in range(n_pairs)],
         }
     )
-    # mask keeping classes which have some expression from any samples with that haplotype
-    # 1 = keep, 0 = drop
-    mask = np.array(
-        [
-            gene_class_counts.counts[hap1 == i].any(axis=0).astype(int)
-            | gene_class_counts.counts[hap2 == i].any(axis=0).astype(int)
-            for i in range(len(HAPLOTYPES))
-        ]
-    )
 
     # A naive estimation of the per-haplotype class frequencies
     # assuming no ASE, but generally very close.
     q_hat = estimate_class_proportions(gene_class_counts.counts, hap1, hap2, n_haps)
-    M = np.diag(q_hat.ravel()) - q_hat.ravel()[:, None] @ q_hat.ravel()[None, :]
-    Q, _ = np.linalg.qr(M)
+    # Information matrix of softmax-multinomial: proportional to diag(q) - q q^T
+    # we use the plugin estimate for q. Used to whiten the coordinates of q.
+    M = np.array([np.diag(row) - row[:, None] @ row[None, :] for row in q_hat])
+    eig_vals, eig_vecs = np.linalg.eigh(M)
 
     with model:
         _counts = pm.Data(
@@ -69,37 +62,18 @@ def make_ase_model(
         )
         _hap1 = pm.Data("hap1", hap1, dims="samples")
         _hap2 = pm.Data("hap2", hap2, dims="samples")
-        # _mask = pm.Data("mask", mask, dims=("haplotypes", "classes"))
         _nz = _counts > 0
 
         # Nuisance variables
         # Rates at which reads from a haplotype are assigned to each class
-        # these are softmaxed but we exclude never-expressed values by masking
-        # and we constrain them to sum to zero to improve sampling
-        q_logit_null = np.zeros((n_haps, n_haps, n_classes))
-        for g in range(n_haps):
-            # sum to zero all non-masked entries in a haplotype
-            # q_logit_null[g, g, :] = mask[g, :]
-            # Pin largest entry to zero
-            largest_entry = np.argmax(q_hat[g])
-            q_logit_null[g, g, largest_entry] = 0
-        q_logit_null = np.concat(
-            (
-                q_logit_null,
-                masked_constraints(mask),
-            )
-        )
-        q_logit = constrained_normal(
-            "q_logit", orthog_to=q_logit_null, sigma=3, dims=("haplotypes", "classes")
-        )
-
-        def masked_softmax(q, mask):
-            exp = pm.math.exp(q) * mask
-            norm = exp.sum(axis=1)[:, None]
-            return exp / norm
-
+        # log-scale q values, which get whitened according to M above
+        q_logit = pm.Normal("q_logit", sigma=2, dims=("haplotypes", "classes"))
         q = pm.Deterministic(
-            "q", masked_softmax(q_logit, mask), dims=("haplotypes", "classes")
+            "q",
+            pm.math.softmax(
+                np.log(q_hat) + (eig_vecs @ q_logit[:, :, None])[:, :, 0], axis=1
+            ),
+            dims=("haplotypes", "classes"),
         )
 
         # Haplotype effects
@@ -153,7 +127,7 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
     for g in range(n_haps):
         X[hap1 == g, g] += 1 / 2
         X[hap2 == g, g] += 1 / 2
-    q_hat, _, _, _ = np.linalg.lstsq(X, class_props[:, :])
+    q_hat, _, _, _ = np.linalg.lstsq(X, class_props[:, :], rcond=None)
     # Force non-negative and not too tiny to be conservative
     q_hat[q_hat < 1e-5] = 1e-5
     q_hat /= q_hat.sum(axis=1)[:, None]
