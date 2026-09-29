@@ -40,23 +40,16 @@ def _(pathlib, pl):
 
 
 @app.cell
-def _(pathlib, pl):
+def _(pl):
     # Load gene genotypes
-    def _():
-        temp = []
-        for file in pathlib.Path("geno/gbrs_genotypes").glob("*.tsv"):
-            mouse_id = file.name.split(".")[0]
-            temp.append(pl.read_csv(file, separator="\t").with_columns(mouse_id=pl.lit(mouse_id)))
-        return pl.concat(temp)
-    gene_geno = _().select(gene_id = "#Gene_ID", diplotype="Diplotype", mouse_id="mouse_id")
+    gene_geno = pl.read_parquet("processed/genotypes.parquet").rename({"genotype":"diplotype"})
     return (gene_geno,)
 
 
 @app.cell
-def _(pb, pl, yaml):
-    config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
+def _(pb, pl):
     annot = pb.scan_gtf("gbrs_ref/v116/reference.gtf.gz", attr_fields=["gene_id", "gene_name"]).filter(pl.col("type") == "gene").collect()
-    return annot, config
+    return (annot,)
 
 
 @app.cell
@@ -66,7 +59,8 @@ def _(pb, pl):
 
 
 @app.cell
-def _(config, lp):
+def _(lp, yaml):
+    config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     HAPLOTYPES = config["haplotypes"].split(",")
     HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette( len(HAPLOTYPES) )
     OUTLIER_MOUSE_IDS = config['outlier_ids']
@@ -130,6 +124,7 @@ def _(
         + lp.geom_vline(xintercept=gene_end, color="black")
         + lp.scale_color_manual(breaks=HAPLOTYPES, values=HAPLOTYPE_COLORS)
         + lp.scale_fill_manual(breaks=HAPLOTYPES, values=HAPLOTYPE_COLORS)
+        + lp.ggtb()
     )
     mo.vstack([
         "Plot of genotypes at markers near the selected gene in mice of a selected diplotype. Black lines denote the gene start/end locations.",

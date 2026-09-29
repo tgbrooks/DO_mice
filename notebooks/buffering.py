@@ -100,18 +100,8 @@ def _(HAPLOTYPES, pl):
 
 
 @app.cell
-def _(mouse_ids, pl):
-    def _():
-        temp = []
-        for mouse_id in mouse_ids:
-            temp.append(
-                pl.read_parquet(
-                    f"processed/Adipose/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet"
-                ).with_columns(mouse_id=pl.lit(mouse_id))
-            )
-        return pl.concat(temp)
-
-    allele_unique = _()
+def _(pl):
+    allele_unique = pl.read_parquet("processed/Adipose/allele_unique_reads.parquet")
     allele_unique
     return (allele_unique,)
 
