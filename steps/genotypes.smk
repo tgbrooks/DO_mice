@@ -10,6 +10,7 @@ genome of each mouse instead of one reconstructed from the RNA-seq itself.
     geno/genotyped_mice.txt                 mouse IDs present in the file
     geno/alleleprobs/{mouse}.tsv.gz         per-mouse founder probabilities
     geno/gbrs_genotypes/{mouse}.genotypes.tsv   per-gene diplotype calls for GBRS
+    geno/gbrs_genotypes/{mouse}.confidence.tsv  the calls with their confidence
 """
 
 GENO = config["genotypes"]
@@ -104,18 +105,20 @@ rule export_alleleprobs:
 rule genoprobs_to_gbrs:
     """Convert a mouse's founder probabilities into GBRS per-gene diplotypes.
 
-    Each gene is assigned the founder probabilities of its nearest genotyped
-    marker, which are then called as a homozygous or heterozygous diplotype
-    (e.g. `AA`, `CF`) in the format `gbrs quantify -G` expects.
+    Each gene is called from the markers spanning it (one flanking marker on
+    each side plus those within it) as a homozygous or heterozygous diplotype
+    (e.g. `AA`, `CF`) in the format `gbrs quantify -G` expects. The confidence
+    of each call, reflecting both disagreement between those markers and their
+    own uncertainty, goes to a separate file.
     """
     input:
         probs = "geno/alleleprobs/{mouse}.tsv.gz",
         markers = "geno/markers.tsv",
         grid = gbrs_file("genome_grid"),
-        gene_pos = gbrs_file("gene_pos"),
-        gene2transcripts = gbrs_file("gene2transcripts"),
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
-        "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
+        calls = "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
+        confidence = "geno/gbrs_genotypes/{mouse}.confidence.tsv",
     params:
         haplotypes = HAPLOTYPES,
         hom_threshold = GENO["hom_dosage_threshold"],
@@ -132,21 +135,21 @@ rule genoprobs_to_gbrs:
             --alleleprobs {input.probs} \
             --markers {input.markers} \
             --grid {input.grid} \
-            --gene-pos {input.gene_pos} \
-            --gene2transcripts {input.gene2transcripts} \
+            --gtf {input.gtf} \
             --haplotypes {params.haplotypes} \
             --hom-dosage-threshold {params.hom_threshold} \
             --min-call-prob {params.min_call_prob} \
             --marker-units {params.marker_units} \
             --sample {wildcards.mouse} \
-            --out {output}
+            --out {output.calls} \
+            --out-confidence {output.confidence}
         """
 
 rule combine_genotypes:
     """ Combine all mice genotypes into one file """
     input:
         geno = expand(
-            "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
+            "geno/gbrs_genotypes/{mouse}.confidence.tsv",
             mouse=ALL_MICE,
         ),
     output:

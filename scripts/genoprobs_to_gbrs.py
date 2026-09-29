@@ -9,19 +9,36 @@
 This script produces that file from array-based founder probabilities (exported
 from the genoprobs .RData file by scripts/export_genoprobs.R), so that RNA-seq
 can be quantified against each mouse's known genome instead of one reconstructed
-from the expression data.
+from the expression data. A second file (--out-confidence) gives each call's
+confidence and the number of markers behind it.
 
-Each gene is assigned the founder probabilities of its nearest genotyped marker.
-The probabilities are converted to founder dosages (summing to 2) and called as
-homozygous when the top founder's dosage reaches --hom-dosage-threshold, and as
-the heterozygous combination of the top two founders otherwise.
+Genes are placed in bp using --gtf, which must be on the same genome build as
+the marker positions (GRCm39). Each gene is called from a window of markers: the nearest marker
+upstream of the gene start, every marker within the gene, and the nearest marker
+downstream of the gene end.
 
-Positions are matched in whichever coordinate the GBRS gene position file uses
-(cM or bp, detected automatically). Marker coordinates come, in order of
-preference, from the GBRS genome grid (matching marker names), from the marker
-name itself when it encodes a position (e.g. `1_3000000`), or from the marker
-table written by export_genoprobs.R. cM positions for markers that are not in
-the grid are interpolated from the grid's own bp/cM columns.
+Each marker's founder probabilities are converted to founder dosages (summing
+to 2) and called as homozygous when the top founder's dosage reaches
+--hom-dosage-threshold, and as the heterozygous combination of the top two
+founders otherwise. The gene's call is the most common marker call in the
+window; ties go to the call that fits the window best (see below), then to the
+call of the marker nearest the gene midpoint.
+
+The confidence of a gene's call is the mean, over the window's markers, of how
+well that marker supports the call: the fraction of the marker's founder dosage
+that the called diplotype accounts for, sum_h min(dosage_h, call_dosage_h) / 2.
+A marker that is certainly FF supports FF with 1, AF with 0.5, and AB with 0; a
+marker at 75% F / 25% A supports FF with 0.75 and AF with 0.75. So the
+confidence is 1 only when every marker in the window is certain of the called
+diplotype, and falls with both disagreeing markers (e.g. a recombination within
+the window) and markers with intermediate probabilities.
+
+The GBRS gene position file is not used: its cM positions do not line up with
+the genome grid's genetic map closely enough to find a gene's nearest markers.
+
+Marker bp positions come, in order of preference, from the marker name when it
+encodes a position (e.g. `1_3000000`), from the GBRS genome grid (matching
+marker names), or from the marker table written by export_genoprobs.R.
 
 Only numpy is required, so this runs inside the GBRS container.
 """
@@ -30,11 +47,12 @@ import argparse
 import gzip
 import re
 import sys
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 
 import numpy as np
 
 MARKER_POS_RE = re.compile(r"^(?:chr)?([0-9]+|[XYMxym]|MT|mt)[_:.-]([0-9]+)$")
+GTF_GENE_ID_RE = re.compile(r'gene_id "([^"]+)"')
 
 
 def normalize_chrom(chrom: str) -> str:
@@ -77,15 +95,15 @@ def read_alleleprobs(path: str, haplotypes: list[str]):
     return np.array(markers), np.array(chroms), np.array(values, dtype=float)
 
 
-def read_grid(path: str):
-    """Read the GBRS genome grid.
+def read_grid_bp(path: str | None) -> dict[str, float]:
+    """Grid marker name -> bp position, from the GBRS genome grid.
 
-    Returns (by_name, by_chrom) where by_name maps a grid marker name to
-    (chrom, bp, cM) and by_chrom maps a chromosome to sorted (bp, cM) arrays for
-    interpolating positions of markers that are not in the grid.
+    Columns are marker, chr, pos, cM[, bp]; when a separate bp column is
+    absent, `pos` is the base-pair position.
     """
-    by_name: dict[str, tuple[str, float, float]] = {}
-    rows: dict[str, list[tuple[float, float]]] = {}
+    if not path:
+        return {}
+    positions: dict[str, float] = {}
     with open(path) as f:
         first = f.readline()
         if not first.lower().startswith(("marker", "#")):
@@ -94,21 +112,10 @@ def read_grid(path: str):
             if not line.strip() or line.startswith("#"):
                 continue
             fields = line.rstrip("\n").split("\t")
-            if len(fields) < 4:
+            if len(fields) < 3:
                 continue
-            name = fields[0]
-            chrom = normalize_chrom(fields[1])
-            cm = float(fields[3])
-            # Columns are marker, chr, pos, cM[, bp]; when a separate bp column
-            # is absent, `pos` is the base-pair position.
-            bp = float(fields[4]) if len(fields) > 4 else float(fields[2])
-            by_name[name] = (chrom, bp, cm)
-            rows.setdefault(chrom, []).append((bp, cm))
-    by_chrom = {}
-    for chrom, pairs in rows.items():
-        arr = np.array(sorted(pairs), dtype=float)
-        by_chrom[chrom] = (arr[:, 0], arr[:, 1])
-    return by_name, by_chrom
+            positions[fields[0]] = float(fields[4]) if len(fields) > 4 else float(fields[2])
+    return positions
 
 
 def read_marker_table(path: str | None):
@@ -150,56 +157,42 @@ def read_known_genes(path: str | None) -> set[str] | None:
     return genes
 
 
-def read_gene_positions(path: str):
-    """Read the GBRS gene position NPZ: chromosome -> (gene IDs, positions)."""
-    data = np.load(path, allow_pickle=False)
+def read_gtf_genes(path: str):
+    """Chromosome -> (gene IDs, starts, ends) from the `gene` lines of a GTF."""
+    opener = gzip.open if path.endswith(".gz") else open
+    rows: dict[str, list[tuple[str, float, float]]] = OrderedDict()
+    with opener(path, "rt") as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 9 or fields[2] != "gene":
+                continue
+            match = GTF_GENE_ID_RE.search(fields[8])
+            if not match:
+                continue
+            rows.setdefault(normalize_chrom(fields[0]), []).append(
+                (match.group(1), float(fields[3]), float(fields[4]))
+            )
     genes = OrderedDict()
-    for chrom in data.files:
-        entries = data[chrom]
-        ids = []
-        positions = []
-        for gene, pos in entries:
-            ids.append(gene.decode() if isinstance(gene, bytes) else str(gene))
-            positions.append(float(pos.decode() if isinstance(pos, bytes) else pos))
-        genes[normalize_chrom(chrom)] = (np.array(ids), np.array(positions, dtype=float))
+    for chrom, entries in rows.items():
+        ids, starts, ends = zip(*entries)
+        genes[chrom] = (np.array(ids), np.array(starts), np.array(ends))
     return genes
 
 
-def detect_gene_units(gene_positions) -> str:
-    """Guess whether gene positions are in bp or cM.
-
-    Chromosome-scale bp positions run to 10^8, genetic positions to ~10^2, so
-    the largest position separates the two unambiguously.
-    """
-    largest = max(
-        (positions.max() for _, positions in gene_positions.values() if positions.size),
-        default=0.0,
-    )
-    return "bp" if largest > 1e6 else "cM"
-
-
-def marker_coordinates(
-    markers: np.ndarray,
-    chroms: np.ndarray,
-    grid_by_name: dict,
-    grid_by_chrom: dict,
-    marker_table: dict,
-    marker_units: str,
-    units: str,
+def marker_bp(
+    markers: np.ndarray, grid_bp: dict, marker_table: dict, marker_units: str
 ) -> np.ndarray:
-    """Coordinate of every marker in `units` ('bp' or 'cM'); NaN when unknown."""
-    coords = np.full(len(markers), np.nan)
+    """bp position of every marker; NaN when unknown."""
     bp = np.full(len(markers), np.nan)
-    cm = np.full(len(markers), np.nan)
-
-    for i, (name, chrom) in enumerate(zip(markers, chroms)):
-        if name in grid_by_name:
-            _, marker_bp, marker_cm = grid_by_name[name]
-            bp[i], cm[i] = marker_bp, marker_cm
-            continue
+    for i, name in enumerate(markers):
         match = MARKER_POS_RE.match(name)
         if match:
             bp[i] = float(match.group(2))
+            continue
+        if name in grid_bp:
+            bp[i] = grid_bp[name]
             continue
         if name in marker_table:
             pos = marker_table[name]
@@ -207,54 +200,57 @@ def marker_coordinates(
                 bp[i] = pos
             elif marker_units == "Mbp":
                 bp[i] = pos * 1e6
-            elif marker_units == "cM":
-                cm[i] = pos
-            elif marker_units == "auto":
-                if pos > 1e6:
-                    bp[i] = pos
-                else:
-                    raise SystemExit(
-                        "Cannot tell whether the marker positions in the marker table "
-                        f"are Mbp or cM (largest value {pos}). Set genotypes: "
-                        "marker_units: to 'bp', 'Mbp', or 'cM' in config.yaml."
-                    )
-
-    if units == "bp":
-        coords = bp
-    else:
-        # Fill in cM for markers that only have bp, by interpolating the grid.
-        coords = cm
-        need = np.isnan(coords) & ~np.isnan(bp)
-        for chrom in np.unique(chroms[need]):
-            if chrom not in grid_by_chrom:
-                continue
-            grid_bp, grid_cm = grid_by_chrom[chrom]
-            sel = need & (chroms == chrom)
-            coords[sel] = np.interp(bp[sel], grid_bp, grid_cm)
-    return coords
+            elif pos > 1e6:
+                bp[i] = pos
+            else:
+                raise SystemExit(
+                    "Cannot tell whether the marker positions in the marker table "
+                    f"are bp or Mbp (value {pos}). Set genotypes: marker_units: to "
+                    "'bp' or 'Mbp' in config.yaml."
+                )
+    return bp
 
 
-def call_diplotype(probs: np.ndarray, haplotypes: list[str], hom_threshold: float):
-    """Call a diplotype from one marker's founder probabilities.
-
-    Returns (diplotype, probability of the call). Founders are ordered as in
-    `haplotypes`, matching the diplotype naming GBRS itself uses.
-    """
+def founder_dosages(probs: np.ndarray) -> np.ndarray | None:
+    """Founder dosages (summing to 2) from one marker's probabilities."""
     total = probs.sum()
     if total <= 0:
-        return None, 0.0
-    fractions = probs / total
-    dosage = 2.0 * fractions
+        return None
+    return 2.0 * probs / total
+
+
+def call_diplotype(dosage: np.ndarray, hom_threshold: float) -> tuple[int, int]:
+    """Call one marker's diplotype as a sorted pair of founder indices."""
     order = np.argsort(dosage)[::-1]
     top = int(order[0])
     if dosage[top] >= hom_threshold:
-        pair = (top, top)
-        confidence = float(fractions[top])
-    else:
-        second = int(order[1])
-        pair = tuple(sorted((top, second)))
-        confidence = float(fractions[top] + fractions[second])
-    return "".join(haplotypes[i] for i in pair), confidence
+        return (top, top)
+    return tuple(sorted((top, int(order[1]))))
+
+
+def support(dosage: np.ndarray, pair: tuple[int, int]) -> float:
+    """Fraction of a marker's founder dosage that a diplotype accounts for."""
+    call_dosage = np.zeros_like(dosage)
+    for i in pair:
+        call_dosage[i] += 1.0
+    return float(np.minimum(dosage, call_dosage).sum() / 2.0)
+
+
+def call_gene(
+    dosages: np.ndarray, marker_pos: np.ndarray, midpoint: float, hom_threshold: float
+):
+    """Call a gene from the dosages of the markers in its window.
+
+    Returns (founder index pair, confidence). See the module docstring.
+    """
+    marker_calls = [call_diplotype(d, hom_threshold) for d in dosages]
+    counts = Counter(marker_calls)
+    mean_support = {
+        pair: float(np.mean([support(d, pair) for d in dosages])) for pair in counts
+    }
+    central = marker_calls[int(np.argmin(np.abs(marker_pos - midpoint)))]
+    best = max(counts, key=lambda p: (counts[p], mean_support[p], p == central))
+    return best, mean_support[best]
 
 
 def main() -> None:
@@ -262,14 +258,20 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--alleleprobs", required=True, help="Per-mouse founder probability TSV")
-    parser.add_argument("--grid", required=True, help="GBRS genome grid TSV")
-    parser.add_argument("--gene-pos", required=True, help="GBRS gene position NPZ")
+    parser.add_argument(
+        "--gtf", required=True, help="GTF of the GBRS reference build, for gene positions"
+    )
+    parser.add_argument("--grid", help="GBRS genome grid TSV, for marker positions")
     parser.add_argument("--markers", help="Marker position table from export_genoprobs.R")
     parser.add_argument(
         "--gene2transcripts",
         help="EMASE gene-to-transcript file; restricts calls to the genes GBRS knows",
     )
-    parser.add_argument("--out", required=True, help="Output genotype calls TSV")
+    parser.add_argument("--out", required=True, help="Output genotype calls TSV, for GBRS")
+    parser.add_argument(
+        "--out-confidence",
+        help="Output TSV of each call's confidence and number of markers",
+    )
     parser.add_argument("--sample", default="", help="Sample name, for log messages")
     parser.add_argument("--haplotypes", default="A,B,C,D,E,F,G,H")
     parser.add_argument(
@@ -282,49 +284,30 @@ def main() -> None:
         "--min-call-prob",
         type=float,
         default=0.5,
-        help="Report how many calls fall below this probability",
+        help="Report how many calls have a confidence below this",
     )
     parser.add_argument(
         "--marker-units",
         default="auto",
-        choices=["auto", "bp", "Mbp", "cM"],
+        choices=["auto", "bp", "Mbp"],
         help="Units of positions in the --markers table (only used as a fallback)",
-    )
-    parser.add_argument(
-        "--gene-pos-units",
-        default="auto",
-        choices=["auto", "bp", "cM"],
-        help="Units of the GBRS gene positions (detected by default)",
     )
     args = parser.parse_args()
 
     haplotypes = args.haplotypes.split(",")
     markers, marker_chroms, probs = read_alleleprobs(args.alleleprobs, haplotypes)
-    grid_by_name, grid_by_chrom = read_grid(args.grid)
-    marker_table = read_marker_table(args.markers)
-    gene_positions = read_gene_positions(args.gene_pos)
+    coords = marker_bp(
+        markers, read_grid_bp(args.grid), read_marker_table(args.markers), args.marker_units
+    )
+    gtf_genes = read_gtf_genes(args.gtf)
     known_genes = read_known_genes(args.gene2transcripts)
 
-    units = args.gene_pos_units
-    if units == "auto":
-        units = detect_gene_units(gene_positions)
-    print(f"Matching genes to markers in {units}", file=sys.stderr)
-
-    coords = marker_coordinates(
-        markers,
-        marker_chroms,
-        grid_by_name,
-        grid_by_chrom,
-        marker_table,
-        args.marker_units,
-        units,
-    )
     known = ~np.isnan(coords)
     if not known.any():
         raise SystemExit(
             "None of the marker positions could be resolved. The marker names in the "
-            "genotype file match neither the GBRS genome grid nor a `chr_position` "
-            "pattern, and no usable marker table was given. Supply positions via the "
+            "genotype file match neither a `chr_position` pattern nor the GBRS genome "
+            "grid, and no usable marker table was given. Supply positions via the "
             "map object in the .RData file (see scripts/export_genoprobs.R)."
         )
     if not known.all():
@@ -334,74 +317,85 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    calls: list[tuple[str, str]] = []
-    n_low = 0
+    calls: list[tuple[str, str, float, int]] = []
     n_missing_chrom = 0
-    n_unknown_gene = 0
-    confidences: list[float] = []
     skipped_chroms: list[str] = []
+    found_genes: set[str] = set()
 
-    for chrom, (gene_ids, gene_pos) in gene_positions.items():
+    for chrom, (gene_ids, starts, ends) in gtf_genes.items():
+        if known_genes is not None:
+            keep = np.array([g in known_genes for g in gene_ids], dtype=bool)
+            gene_ids, starts, ends = gene_ids[keep], starts[keep], ends[keep]
+        if not len(gene_ids):
+            continue
+        found_genes.update(gene_ids)
         on_chrom = known & (marker_chroms == chrom)
         if not on_chrom.any():
             n_missing_chrom += len(gene_ids)
             skipped_chroms.append(chrom)
             continue
-        chrom_coords = coords[on_chrom]
-        chrom_probs = probs[on_chrom]
-        order = np.argsort(chrom_coords)
-        chrom_coords = chrom_coords[order]
-        chrom_probs = chrom_probs[order]
+        order = np.argsort(coords[on_chrom])
+        chrom_coords = coords[on_chrom][order]
+        chrom_probs = probs[on_chrom][order]
+        n_markers = len(chrom_coords)
 
-        # Nearest marker for each gene.
-        right = np.searchsorted(chrom_coords, gene_pos)
-        right = np.clip(right, 1, len(chrom_coords) - 1) if len(chrom_coords) > 1 else np.zeros_like(right)
-        left = np.maximum(right - 1, 0)
-        pick_left = np.abs(gene_pos - chrom_coords[left]) <= np.abs(chrom_coords[right] - gene_pos)
-        nearest = np.where(pick_left, left, right)
+        # Window: nearest marker before the start through nearest marker after
+        # the end (a marker exactly at either end is within the gene).
+        first = np.clip(np.searchsorted(chrom_coords, starts, side="left") - 1, 0, n_markers - 1)
+        last = np.clip(np.searchsorted(chrom_coords, ends, side="right"), 0, n_markers - 1)
 
-        for gene, idx in zip(gene_ids, nearest):
-            if known_genes is not None and gene not in known_genes:
-                n_unknown_gene += 1
+        for gene, start, end, lo, hi in zip(gene_ids, starts, ends, first, last):
+            window = [
+                (chrom_coords[i], d)
+                for i in range(lo, hi + 1)
+                if (d := founder_dosages(chrom_probs[i])) is not None
+            ]
+            if not window:
                 continue
-            diplotype, confidence = call_diplotype(
-                chrom_probs[idx], haplotypes, args.hom_dosage_threshold
+            positions = np.array([p for p, _ in window])
+            dosages = np.array([d for _, d in window])
+            pair, confidence = call_gene(
+                dosages, positions, (start + end) / 2.0, args.hom_dosage_threshold
             )
-            if diplotype is None:
-                continue
-            calls.append((gene, diplotype))
-            confidences.append(confidence)
-            if confidence < args.min_call_prob:
-                n_low += 1
+            diplotype = "".join(haplotypes[i] for i in pair)
+            calls.append((gene, diplotype, confidence, len(window)))
 
     if not calls:
         raise SystemExit("No genes could be genotyped; check the chromosome naming")
 
     with open(args.out, "w") as f:
         f.write("#Gene_ID\tDiplotype\n")
-        for gene, diplotype in calls:
+        for gene, diplotype, _, _ in calls:
             f.write(f"{gene}\t{diplotype}\n")
+    if args.out_confidence:
+        with open(args.out_confidence, "w") as f:
+            f.write("gene_id\tdiplotype\tconfidence\tn_markers\n")
+            for gene, diplotype, confidence, n in calls:
+                f.write(f"{gene}\t{diplotype}\t{confidence:.4f}\t{n}\n")
 
     label = args.sample or args.alleleprobs
+    confidences = np.array([c for _, _, c, _ in calls])
     print(
         f"{label}: called {len(calls)} genes "
-        f"(mean call probability {np.mean(confidences):.3f}, "
-        f"{n_low} below {args.min_call_prob})",
+        f"(mean confidence {confidences.mean():.3f}, "
+        f"{int((confidences < args.min_call_prob).sum())} below {args.min_call_prob}, "
+        f"{int((confidences < 0.99).sum())} below 0.99)",
         file=sys.stderr,
     )
-    if n_unknown_gene:
-        print(
-            f"{label}: {n_unknown_gene} genes are in the gene position file but not "
-            "in the gene-to-transcript file, and are omitted",
-            file=sys.stderr,
-        )
+    if known_genes is not None:
+        not_in_gtf = known_genes - found_genes
+        if not_in_gtf:
+            print(
+                f"WARNING: {label}: {len(not_in_gtf)} genes of the gene-to-transcript "
+                "file are not in the GTF and are omitted",
+                file=sys.stderr,
+            )
     if n_missing_chrom:
         # Genes on chromosomes with no genotype data (typically Y and MT) are
         # left out; gbrs quantify masks them out of the diploid quantification.
         print(
             f"{label}: {n_missing_chrom} genes on chromosome(s) "
-            f"{', '.join(skipped_chroms)} have no genotype data and are omitted; "
-            "they get zero expression in the diploid quantification",
+            f"{', '.join(skipped_chroms)} have no genotype data and are omitted",
             file=sys.stderr,
         )
 
