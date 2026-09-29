@@ -125,3 +125,28 @@ rule compute_coverage:
     shell:
         "python ../scripts/compute_coverage.py --R1 {input.R1} --R2 {input.R2} --emase {input.emase} --out {output}"
 
+
+def fragment_length_genotype_args(wildcards) -> str:
+    """Simulated 'mice' are one founder throughout; real mice use their genotypes."""
+    if wildcards.tissue == "simulated_reads":
+        return f"--homozygous-for {wildcards.mouse}"
+    return f"--genotypes geno/gbrs_genotypes/{wildcards.mouse}.confidence.tsv"
+
+rule fragment_lengths:
+    """ Estimate a sample's fragment length distribution from read pairs on
+    long, single-isoform transcripts of genes homozygous in that mouse """
+    input:
+        R1 = "processed/{tissue}/gbrs/{mouse}.R1.bam",
+        R2 = "processed/{tissue}/gbrs/{mouse}.R2.bam",
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
+        genotypes = lambda wildcards: [] if wildcards.tissue == "simulated_reads"
+            else f"geno/gbrs_genotypes/{wildcards.mouse}.confidence.tsv",
+    output:
+        out = "processed/{tissue}/frag_dist/{mouse}.json",
+    params:
+        genotype_args = fragment_length_genotype_args,
+    resources:
+        mem_mb = 24_000,
+        runtime = '6h',
+    shell:
+        "python scripts/fragment_lengths.py --R1 {input.R1} --R2 {input.R2} --gtf {input.gtf} {params.genotype_args} --out {output.out}"
