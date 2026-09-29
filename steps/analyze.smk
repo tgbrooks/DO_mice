@@ -113,6 +113,28 @@ rule collect_buffering_results:
             temp.append(data)
         pl.concat(temp).write_csv(output.results, separator="\t")
 
+rule model_buffering_with_bias:
+    """ Run bias-correcting ASE models and total count models """
+    input:
+        allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
+        size_factors = "processed/{tissue_real}/size_factors.txt",
+        phenotypes = "phenotypes.csv.gz",
+        chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
+    output:
+        outfile = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.txt"
+    params:
+        min_median_counts = config['MIN_MEDIAN_COUNTS'],
+        genes = get_chunk_genes,
+        outlier_ids = config['outlier_ids'], # Remove these mice
+    resources:
+        mem_mb = 24_000,
+        threads = 4,
+    container:
+        "images/rgeneral.sif"
+    script:
+        "../scripts/model_buffering_with_bias.py"
+
+
 rule compute_coverage:
     input:
         R1 = "processed/{tissue}/gbrs/{sample_id}.R1.bam",
