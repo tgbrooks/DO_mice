@@ -2,6 +2,8 @@ import polars as pl
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
+import arviz as az
+import scipy.optimize
 
 from util.compat_classes import CompatClassesDf
 from util.pymc_helpers import (
@@ -43,6 +45,7 @@ def make_ase_model(
             "haplotypes": HAPLOTYPES,
             "haplotypes2": HAPLOTYPES,
             "classes": [f"class_{i}" for i in range(n_classes)],
+            "q_coordinates": [f"comp_{i}" for i in range(n_classes)],
             "samples": gene_class_counts.ids,
             "hap_pairs": [f"pair_{i}" for i in range(n_pairs)],
         }
@@ -67,7 +70,7 @@ def make_ase_model(
         # Nuisance variables
         # Rates at which reads from a haplotype are assigned to each class
         # log-scale q values, which get whitened according to M above
-        q_logit = pm.Normal("q_logit", sigma=2, dims=("haplotypes", "classes"))
+        q_logit = pm.Normal("q_logit", sigma=2, dims=("haplotypes", "q_coordinates"))
         q = pm.Deterministic(
             "q",
             pm.math.softmax(
@@ -123,16 +126,73 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
     """
     class_props = class_counts / class_counts.sum(axis=1)[:, None]
     n_samples, n_classes = class_counts.shape
+    # inverse variance-weights
+    weight = np.sqrt(class_counts.sum(axis=1))
     X = np.zeros((n_samples, n_haps))
     for g in range(n_haps):
         X[hap1 == g, g] += 1 / 2
         X[hap2 == g, g] += 1 / 2
-    q_hat, _, _, _ = np.linalg.lstsq(X, class_props[:, :], rcond=None)
-    # Force non-negative and not too tiny to be conservative
+    q_hat = np.array(
+        [
+            scipy.optimize.nnls(weight[:, None] * X, weight * class_props[:, i])[0]
+            for i in range(n_classes)
+        ]
+    ).T
+    # Force not too tiny to be conservative
     q_hat[q_hat < 1e-5] = 1e-5
     q_hat /= q_hat.sum(axis=1)[:, None]
-    return q_hat
+    return q_hat  # n_haps x n_classes
+
+
+def _summary(idata, **kwargs):
+    return pl.DataFrame(az.summary(idata, **kwargs).reset_index(names="variable"))
 
 
 def summarize_ase_model(idata):
     """Summarizes the posterior distribution from data sampled from an ASE model"""
+
+    # Prioritize beta values since they're the values we actually care about
+    beta_summary = _summary(idata, var_names=["beta"])
+    # Secondarily important values
+    # We choose gamma_raw over gamma since gamma contains meaningless values like gamma[A,A]
+    core_summary = _summary(idata, var_names=["sigma_gamma", "sigma_u", "gamma_raw"])
+    # The rest are further less important.
+    q_summary = _summary(idata, var_names=["q"])
+    # Classes that are extremely rare aren't very interesting and tend to be poorly behaved
+    q_summary_important = q_summary.filter(pl.col("mean") > 5e-4)
+    u_summary = _summary(idata, var_names=["u_raw"])
+
+    return {
+        "beta": beta_summary.rows_by_key("variable", unique=True, named=True),
+        "core": core_summary.rows_by_key("variable", unique=True, named=True),
+        "diagnostic": {
+            "max_rhat_beta": beta_summary["r_hat"].max(),
+            "max_rhat_core": core_summary["r_hat"].max(),
+            "max_rhat_rest": max(
+                q_summary_important["r_hat"].max(),
+                u_summary["r_hat"].max(),
+            ),
+            "min_ess_bulk_beta": beta_summary["ess_bulk"].min(),
+            "min_ess_bulk_core": core_summary["ess_bulk"].min(),
+            "min_ess_bulk_rest": min(
+                q_summary_important["ess_bulk"].min(),
+                u_summary["ess_bulk"].min(),
+            ),
+            "min_ess_tail_beta": beta_summary["ess_tail"].min(),
+            "min_ess_tail_core": core_summary["ess_tail"].min(),
+            "min_ess_tail_rest": min(
+                q_summary_important["ess_tail"].min(),
+                u_summary["ess_tail"].min(),
+            ),
+        },
+        "info": {
+            "n_samples": idata["constant_data"]["counts"].shape[0],
+            "n_classes": idata["constant_data"]["counts"].shape[1],
+            "n_diverging": int(idata["sample_stats"]["diverging"].sum()),
+            "mean_tree_depth": float(idata["sample_stats"]["depth"].mean()),
+            "maxdepth_reached_fraction": float(
+                idata["sample_stats"]["maxdepth_reached"].mean()
+            ),
+            "sampling_time": idata["posterior"].attrs["sampling_time"],
+        },
+    }

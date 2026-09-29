@@ -55,12 +55,12 @@ def covariance_deming_regression(b1, b2, V1, V2, grid=np.linspace(-2, 3, 2001)):
     lrt_p = scipy.stats.chi2.sf(val_at_1 - val_at_MLE, df=1)
     r = np.linalg.matrix_rank(V1 + V2)
     return {
-        "lambda": opt.x[0],
-        "Q": opt.fun,
-        "lrt_p": lrt_p,
-        "df_gof": r - 1,
-        "p_gof": scipy.stats.chi2.sf(opt.fun, df=r - 1),
-        "lo": min(grid[keep]),
-        "hi": max(grid[keep]),
+        "lambda": float(opt.x[0]),
+        "Q": float(opt.fun),
+        "lrt_p": float(lrt_p),
+        "df_gof": int(r - 1),
+        "p_gof": float(scipy.stats.chi2.sf(opt.fun, df=r - 1)),
+        "lo": float(min(grid[keep])),
+        "hi": float(max(grid[keep])),
         "bounded": not (keep[0] or keep[len(keep) - 1]),
     }
