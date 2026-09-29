@@ -12,8 +12,8 @@ can be quantified against each mouse's known genome instead of one reconstructed
 from the expression data. A second file (--out-confidence) gives each call's
 confidence and the number of markers behind it.
 
-Genes are placed in bp using --gtf, which should be the Ensembl build of the
-GBRS reference. Each gene is called from a window of markers: the nearest marker
+Genes are placed in bp using --gtf, which must be on the same genome build as
+the marker positions (GRCm39). Each gene is called from a window of markers: the nearest marker
 upstream of the gene start, every marker within the gene, and the nearest marker
 downstream of the gene end.
 

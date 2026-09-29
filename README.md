@@ -126,8 +126,8 @@ The pipeline:
    `scripts/genoprobs_to_gbrs.py`, the `#Gene_ID<TAB>Diplotype` format that
    `gbrs quantify -G` expects.
 
-The conversion places each gene by its coordinates in the `gtf` from
-`config.yaml` and calls it from the markers spanning it: the nearest marker on
+The conversion places each gene by its coordinates in
+`gbrs_ref/v116/reference.gtf.gz` (every gene in it is called) and calls it from the markers spanning it: the nearest marker on
 each side plus any within it. Each marker's founder probabilities are converted
 to dosages (summing to 2) and called homozygous when the top founder reaches
 `hom_dosage_threshold` (1.5 by default) or heterozygous between the top two
@@ -140,11 +140,12 @@ The cM positions in the GBRS gene position file are not used, since they do not
 line up with the genome grid's genetic map closely enough to find a gene's
 nearest markers. Marker positions come from the marker name when it encodes
 one (`1_3000000`), from the GBRS genome grid when the names match it, or from a
-map object in the `.RData` file; if none of those work the run stops with an explanation rather than guessing. Calls are
-restricted to the genes in the EMASE gene-to-transcript file, since `gbrs
-quantify` errors out on a gene it doesn't know. Genes on chromosomes with no
-genotype data (typically Y and MT) are left out, so they get zero expression in
-the diploid quantification — the log says how many.
+map object in the `.RData` file; if none of those work the run stops with an
+explanation rather than guessing. Genes on chromosomes with no genotype data
+(typically Y and MT) are left out — the log says how many. (`gbrs quantify -G`
+reads only the first two columns of the genotype file, and would need the calls
+restricted to the genes of its gene-to-transcript file, which
+`--gene2transcripts` does.)
 
 ## Running
 

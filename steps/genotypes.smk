@@ -115,8 +115,7 @@ rule genoprobs_to_gbrs:
         probs = "geno/alleleprobs/{mouse}.tsv.gz",
         markers = "geno/markers.tsv",
         grid = gbrs_file("genome_grid"),
-        gene2transcripts = gbrs_file("gene2transcripts"),
-        gtf = config["gtf"],
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
         calls = "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
         confidence = "geno/gbrs_genotypes/{mouse}.confidence.tsv",
@@ -136,7 +135,6 @@ rule genoprobs_to_gbrs:
             --alleleprobs {input.probs} \
             --markers {input.markers} \
             --grid {input.grid} \
-            --gene2transcripts {input.gene2transcripts} \
             --gtf {input.gtf} \
             --haplotypes {params.haplotypes} \
             --hom-dosage-threshold {params.hom_threshold} \
