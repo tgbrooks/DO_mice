@@ -266,9 +266,9 @@ def _(lp, np, pl):
             )
         )
         return (
-            lp.ggplot(msa, lp.aes(xmin = "start", xmax="end", ymin = "hap_bottom", ymax="hap_top",fill="type", color="type"))
-            + lp.geom_rect()
-            + lp.geom_rect(data=any_variant)
+            lp.ggplot(msa, lp.aes(xmin = "start", xmax="end", ymin = "hap_bottom", ymax="hap_top",fill="type"))
+            + lp.geom_rect(linetype=0)
+            + lp.geom_rect(data=any_variant,linetype=0)
             + lp.scale_y_continuous(breaks = [x+0.45 for x in hap_num.values()], labels=list(hap_num.keys()))
             + lp.scale_color_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "gold"])
             + lp.scale_fill_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "gold"])
