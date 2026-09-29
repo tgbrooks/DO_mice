@@ -121,7 +121,7 @@ rule model_buffering_with_bias:
         phenotypes = "phenotypes.csv.gz",
         chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
     output:
-        outfile = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.txt"
+        outfile = "processed/{tissue_real}/buffering_with_bias/{chromosome}.{chunk_num}.txt"
     params:
         min_median_counts = config['MIN_MEDIAN_COUNTS'],
         genes = get_chunk_genes,
@@ -168,7 +168,34 @@ rule fragment_lengths:
     params:
         genotype_args = fragment_length_genotype_args,
     resources:
-        mem_mb = 24_000,
+        mem_mb = 18_000,
         runtime = '6h',
     shell:
         "python scripts/fragment_lengths.py --R1 {input.R1} --R2 {input.R2} --gtf {input.gtf} {params.genotype_args} --out {output.out}"
+
+rule gather_fragment_lengths:
+    """ Fragment length distribution of all samples """
+    input:
+        frag_dist = lambda w: expand(
+            "processed/{{tissue}}/frag_dist/{mouse}.json",
+            mouse=MICE[w.tissue],
+        ),
+    output:
+        out = "processed/{tissue}/frag_dist.txt",
+    run:
+        import json
+        import pathlib
+        temp = []
+        for f in input.frag_dist:
+            f = pathlib.Path(f)
+            mouse_id = f.name.split(".")[0]
+            with open(f) as frag_dist:
+                data = json.load(frag_dist)
+            temp.append({
+                "mouse_id": mouse_id,
+                "frag_len_mean": data['mean'],
+                "frag_len_sd": data['sd'],
+                "frag_len_q0.01": data['quantiles']["0.01"],
+                "frag_len_q0.99": data['quantiles']["0.99"],
+            })
+        pl.DataFrame(temp).write_csv(output.out, separator="\t")
