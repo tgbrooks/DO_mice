@@ -16,8 +16,11 @@ The probabilities are converted to founder dosages (summing to 2) and called as
 homozygous when the top founder's dosage reaches --hom-dosage-threshold, and as
 the heterozygous combination of the top two founders otherwise.
 
-Positions are matched in whichever coordinate the GBRS gene position file uses
-(cM or bp, detected automatically). Marker coordinates come, in order of
+Genes are placed at their bp midpoints from --gtf (the GBRS reference build's
+annotation) and matched to markers in bp. Without --gtf, positions are matched
+in whichever coordinate the GBRS gene position file uses (cM or bp, detected
+automatically); the gene cM values in that file need not agree with the grid's
+genetic map, which can assign a gene to a marker well to one side of it. Marker coordinates come, in order of
 preference, from the GBRS genome grid (matching marker names), from the marker
 name itself when it encodes a position (e.g. `1_3000000`), or from the marker
 table written by export_genoprobs.R. cM positions for markers that are not in
@@ -165,6 +168,56 @@ def read_gene_positions(path: str):
     return genes
 
 
+GTF_GENE_ID_RE = re.compile(r'gene_id "([^"]+)"')
+
+
+def read_gtf_gene_midpoints(path: str) -> dict[str, tuple[str, float]]:
+    """Gene ID -> (chromosome, midpoint in bp) from the `gene` lines of a GTF."""
+    opener = gzip.open if path.endswith(".gz") else open
+    midpoints: dict[str, tuple[str, float]] = {}
+    with opener(path, "rt") as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 9 or fields[2] != "gene":
+                continue
+            match = GTF_GENE_ID_RE.search(fields[8])
+            if not match:
+                continue
+            gene = match.group(1).split(".")[0]
+            midpoints[gene] = (
+                normalize_chrom(fields[0]),
+                (float(fields[3]) + float(fields[4])) / 2.0,
+            )
+    return midpoints
+
+
+def gene_positions_from_gtf(gene_positions, gtf_midpoints):
+    """Replace the GBRS gene positions with GTF midpoints (bp).
+
+    The set of genes is still taken from the GBRS gene position file. Returns
+    (positions by chromosome, IDs of genes not found in the GTF).
+    """
+    by_chrom: dict[str, tuple[list[str], list[float]]] = OrderedDict()
+    missing: list[str] = []
+    for gene_ids, _ in gene_positions.values():
+        for gene in gene_ids:
+            hit = gtf_midpoints.get(gene.split(".")[0])
+            if hit is None:
+                missing.append(gene)
+                continue
+            chrom, midpoint = hit
+            ids, positions = by_chrom.setdefault(chrom, ([], []))
+            ids.append(gene)
+            positions.append(midpoint)
+    result = OrderedDict(
+        (chrom, (np.array(ids), np.array(positions, dtype=float)))
+        for chrom, (ids, positions) in by_chrom.items()
+    )
+    return result, missing
+
+
 def detect_gene_units(gene_positions) -> str:
     """Guess whether gene positions are in bp or cM.
 
@@ -266,6 +319,12 @@ def main() -> None:
     parser.add_argument("--gene-pos", required=True, help="GBRS gene position NPZ")
     parser.add_argument("--markers", help="Marker position table from export_genoprobs.R")
     parser.add_argument(
+        "--gtf",
+        help="GTF of the GBRS reference build. When given, genes are placed at their "
+        "bp midpoints from it and matched to markers in bp, instead of using the "
+        "positions in --gene-pos",
+    )
+    parser.add_argument(
         "--gene2transcripts",
         help="EMASE gene-to-transcript file; restricts calls to the genes GBRS knows",
     )
@@ -305,9 +364,19 @@ def main() -> None:
     gene_positions = read_gene_positions(args.gene_pos)
     known_genes = read_known_genes(args.gene2transcripts)
 
-    units = args.gene_pos_units
-    if units == "auto":
-        units = detect_gene_units(gene_positions)
+    n_not_in_gtf = 0
+    if args.gtf:
+        gene_positions, not_in_gtf = gene_positions_from_gtf(
+            gene_positions, read_gtf_gene_midpoints(args.gtf)
+        )
+        if known_genes is not None:
+            not_in_gtf = [g for g in not_in_gtf if g in known_genes]
+        n_not_in_gtf = len(not_in_gtf)
+        units = "bp"
+    else:
+        units = args.gene_pos_units
+        if units == "auto":
+            units = detect_gene_units(gene_positions)
     print(f"Matching genes to markers in {units}", file=sys.stderr)
 
     coords = marker_coordinates(
@@ -393,6 +462,12 @@ def main() -> None:
         print(
             f"{label}: {n_unknown_gene} genes are in the gene position file but not "
             "in the gene-to-transcript file, and are omitted",
+            file=sys.stderr,
+        )
+    if n_not_in_gtf:
+        print(
+            f"WARNING: {label}: {n_not_in_gtf} genes are not in the GTF and are "
+            "omitted; they get zero expression in the diploid quantification",
             file=sys.stderr,
         )
     if n_missing_chrom:

@@ -114,6 +114,7 @@ rule genoprobs_to_gbrs:
         grid = gbrs_file("genome_grid"),
         gene_pos = gbrs_file("gene_pos"),
         gene2transcripts = gbrs_file("gene2transcripts"),
+        gtf = config["gtf"],
     output:
         "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
     params:
@@ -134,6 +135,7 @@ rule genoprobs_to_gbrs:
             --grid {input.grid} \
             --gene-pos {input.gene_pos} \
             --gene2transcripts {input.gene2transcripts} \
+            --gtf {input.gtf} \
             --haplotypes {params.haplotypes} \
             --hom-dosage-threshold {params.hom_threshold} \
             --min-call-prob {params.min_call_prob} \

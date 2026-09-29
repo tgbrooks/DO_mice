@@ -130,8 +130,11 @@ The conversion assigns each gene the founder probabilities of its nearest
 genotyped marker, converts them to founder dosages (summing to 2), and calls the
 marker homozygous when the top founder reaches `hom_dosage_threshold` (1.5 by
 default) or heterozygous between the top two founders otherwise. Genes are
-matched to markers in whichever coordinate the GBRS gene position file uses (cM
-or bp — detected automatically). Marker coordinates come from the GBRS genome
+placed at their midpoints in the `gtf` from `config.yaml` (which should be the
+Ensembl build of the GBRS reference) and matched to markers in bp. The cM
+positions in the GBRS gene position file are not used, since they need not
+agree with the genome grid's genetic map and can shift a gene onto markers to
+one side of it. Marker coordinates come from the GBRS genome
 grid when the marker names match it, from the marker name itself when it encodes
 a position (`1_3000000`), or from a map object in the `.RData` file; if none of
 those work the run stops with an explanation rather than guessing. Calls are
