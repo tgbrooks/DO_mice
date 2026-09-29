@@ -126,18 +126,21 @@ The pipeline:
    `scripts/genoprobs_to_gbrs.py`, the `#Gene_ID<TAB>Diplotype` format that
    `gbrs quantify -G` expects.
 
-The conversion assigns each gene the founder probabilities of its nearest
-genotyped marker, converts them to founder dosages (summing to 2), and calls the
-marker homozygous when the top founder reaches `hom_dosage_threshold` (1.5 by
-default) or heterozygous between the top two founders otherwise. Genes are
-placed at their midpoints in the `gtf` from `config.yaml` (which should be the
-Ensembl build of the GBRS reference) and matched to markers in bp. The cM
-positions in the GBRS gene position file are not used, since they need not
-agree with the genome grid's genetic map and can shift a gene onto markers to
-one side of it. Marker coordinates come from the GBRS genome
-grid when the marker names match it, from the marker name itself when it encodes
-a position (`1_3000000`), or from a map object in the `.RData` file; if none of
-those work the run stops with an explanation rather than guessing. Calls are
+The conversion places each gene by its coordinates in the `gtf` from
+`config.yaml` and calls it from the markers spanning it: the nearest marker on
+each side plus any within it. Each marker's founder probabilities are converted
+to dosages (summing to 2) and called homozygous when the top founder reaches
+`hom_dosage_threshold` (1.5 by default) or heterozygous between the top two
+founders otherwise; the gene gets the most common call. Its confidence (in
+`geno/gbrs_genotypes/{mouse}.confidence.tsv` and the combined
+`processed/genotypes.parquet`) is the mean, over those markers, of the fraction
+of each marker's founder dosage that the call accounts for: 1 when all of them
+are certain of the call, lower when they disagree or are uncertain themselves.
+The cM positions in the GBRS gene position file are not used, since they do not
+line up with the genome grid's genetic map closely enough to find a gene's
+nearest markers. Marker positions come from the marker name when it encodes
+one (`1_3000000`), from the GBRS genome grid when the names match it, or from a
+map object in the `.RData` file; if none of those work the run stops with an explanation rather than guessing. Calls are
 restricted to the genes in the EMASE gene-to-transcript file, since `gbrs
 quantify` errors out on a gene it doesn't know. Genes on chromosomes with no
 genotype data (typically Y and MT) are left out, so they get zero expression in

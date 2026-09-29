@@ -13,9 +13,11 @@ for mouse, path in zip(mice, paths):
     df = pl.read_csv(path, separator="\t")
     temp.append(
         df.select(
-            pl.col("#Gene_ID").alias("gene_id"),
+            "gene_id",
             mouse_id=pl.lit(mouse),
-            genotype=pl.col("Diplotype"),
+            genotype=pl.col("diplotype"),
+            genotype_confidence=pl.col("confidence"),
+            genotype_n_markers=pl.col("n_markers"),
         )
     )
 

@@ -76,7 +76,7 @@ genotypes:
   ## Founder-dosage (0-2) at or above which a marker is called homozygous.
   ## Below this the top two founders are called as a heterozygous diplotype.
   hom_dosage_threshold: 1.5
-  ## Warn if the called diplotype's probability is below this (0-1).
+  ## Report how many genes have a call confidence below this (0-1).
   min_call_prob: 0.5
   ## Units of the marker positions if they have to be taken from a map object
   ## in the .RData file rather than matched to the GBRS genome grid:
