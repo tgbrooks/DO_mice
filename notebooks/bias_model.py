@@ -18,7 +18,7 @@ with app.setup:
 
     from util.compressed_emase import load_compressed_emase
     from util.compat_classes import get_gene_class_counts, get_gene_totals, sparse_any
-    from ase_buffering.ase_model import make_ase_model
+    from ase_buffering.ase_model import make_ase_model, summarize_read_classes
     from ase_buffering.total_counts_model import make_total_model
 
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
@@ -378,32 +378,8 @@ def _(gene_class_counts, idata_ase, lp, n_classes):
 
 @app.cell
 def _(gene_class_counts, idata_ase, lp):
-    class_summaries = (
-        idata_ase["posterior"]["q"].values @ gene_class_counts.compat
-    ).mean(axis=(0, 1))
-    leak_outs = np.array(
-        [
-            (
-                idata_ase["posterior"]["q"].values[:, :, i, :]
-                @ ((~gene_class_counts.compat[:, i, None]) & gene_class_counts.compat)
-            ).mean(axis=(0, 1))
-            for i in range(len(HAPLOTYPES))
-        ]
-    )
-    max_leak = leak_outs.max()
-    class_summaries = pl.concat(
-        [
-            pl.DataFrame(
-                {
-                    "source_hap": hap,
-                    "out_class": class_summaries[i],
-                    "leak_to": leak_outs[i],
-                    "out_hap": HAPLOTYPES,
-                }
-            )
-            for i, hap in enumerate(HAPLOTYPES)
-        ]
-    )
+    class_summaries = summarize_read_classes(idata_ase, gene_class_counts)
+    max_leak = class_summaries['leak_to'].max()
     lp.gggrid(
         [
             (
