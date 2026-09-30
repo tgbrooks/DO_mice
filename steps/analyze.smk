@@ -146,7 +146,7 @@ rule fragment_lengths:
     params:
         genotype_args = fragment_length_genotype_args,
     resources:
-        mem_mb = 24_000,
+        mem_mb = 4_000,
         runtime = '6h',
     shell:
         "python scripts/fragment_lengths.py --R1 {input.R1} --R2 {input.R2} --gtf {input.gtf} {params.genotype_args} --out {output.out}"
