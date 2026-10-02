@@ -131,3 +131,17 @@ rule make_transcript_info_file:
     script:
         "../scripts/make_transcript_info_file.py"
 
+rule make_salmon_index:
+    """ Make 8x founders transcriptome reference for salmon """
+    input:
+        fasta = "gbrs_ref/v116/all_haps.cdna.fa"
+    output:
+        outdir = directory("gbrs_ref/v116/salmon_all_haps/")
+    threads: 8
+    resources:
+        mem_mb = 42_000,
+        runtime = "24h",
+    container:
+        "docker://combinelab/salmon:2.8.0"
+    shell:
+        "salmon index -t {input.fasta} -i {output.outdir} -k 31 -p {threads}"

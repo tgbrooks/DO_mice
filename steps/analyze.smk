@@ -201,3 +201,33 @@ rule gather_fragment_lengths:
                 "frag_len_q0.99": data['quantiles']["0.99"],
             })
         pl.DataFrame(temp).write_csv(output.out, separator="\t")
+
+rule salmon:
+    """ Run salmon on the 8x founders transcriptome reference - to get effective lengths of transcripts """
+    input:
+        R1 = "processed/{tissue}/fastq/{mouse}_R1.fastq.gz",
+        R2 = "processed/{tissue}/fastq/{mouse}_R2.fastq.gz",
+        index = "gbrs_ref/v116/salmon_all_haps/",
+    output:
+        outdir = directory("processed/{tissue}/salmon/{mouse}"),
+    threads: 6
+    resources:
+        mem_mb = 6000,
+        runtime = '3h',
+    container:
+        "docker://combinelab/salmon:2.8.0"
+    shell:
+        """ salmon quant --index {input.index} -1 {input.R1} -2 {input.R2} --output {output.outdir} -p {threads} --seqBias --gcBias --posBias """
+
+rule gather_effective_lengths:
+    input:
+        data_dirs = lambda w: expand("processed/{{tissue}}/salmon/{mouse}", mouse=MICE[w.tissue]),
+        index = "gbrs_ref/v116/salmon_all_haps/",
+        geno = "processed/genotypes.parquet",
+        gtf = "gbrs_ref/v116/reference.gtf.gz",
+    output:
+        "processed/{tissue}/effective_lengths.parquet"
+    resources:
+        mem_mb=24_000
+    script:
+        "../scripts/gather_effective_lengths.py"
