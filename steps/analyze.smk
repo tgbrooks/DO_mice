@@ -168,7 +168,7 @@ rule fragment_lengths:
     params:
         genotype_args = fragment_length_genotype_args,
     resources:
-        mem_mb = 18_000,
+        mem_mb = 36_000,
         runtime = '6h',
     shell:
         "python scripts/fragment_lengths.py --R1 {input.R1} --R2 {input.R2} --gtf {input.gtf} {params.genotype_args} --out {output.out}"
@@ -184,6 +184,7 @@ rule gather_fragment_lengths:
         out = "processed/{tissue}/frag_dist.txt",
     run:
         import json
+        import polars as pl
         import pathlib
         temp = []
         for f in input.frag_dist:
@@ -194,6 +195,7 @@ rule gather_fragment_lengths:
             temp.append({
                 "mouse_id": mouse_id,
                 "frag_len_mean": data['mean'],
+                "frag_len_median": data['median'],
                 "frag_len_sd": data['sd'],
                 "frag_len_q0.01": data['quantiles']["0.01"],
                 "frag_len_q0.99": data['quantiles']["0.99"],

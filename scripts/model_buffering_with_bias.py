@@ -28,59 +28,56 @@ gene_ids = [
     "ENSMUSG00000040548",  # Tex2
 ]
 gene_ids = [  # randomly chosen genes with > 50 median total reads
-    "ENSMUSG00000006576",
-    "ENSMUSG00000000938",
-    "ENSMUSG00000047045",
-    "ENSMUSG00000024691",
-    "ENSMUSG00000018585",
-    "ENSMUSG00000005102",
-    "ENSMUSG00000028690",
-    "ENSMUSG00000037204",
-    "ENSMUSG00000023027",
-    "ENSMUSG00000070520",
-    "ENSMUSG00000019969",
-    "ENSMUSG00000045045",
-    "ENSMUSG00000060679",
-    "ENSMUSG00000067722",
-    "ENSMUSG00000030036",
-    "ENSMUSG00000034892",
-    "ENSMUSG00000002102",
-    "ENSMUSG00000032298",
-    "ENSMUSG00000036309",
-    "ENSMUSG00000024163",
-    "ENSMUSG00000057551",
-    "ENSMUSG00000025592",
-    "ENSMUSG00000041354",
-    "ENSMUSG00000040952",
-    "ENSMUSG00000030602",
+    "ENSMUSG00000038429",
+    "ENSMUSG00000060121",
+    "ENSMUSG00000060002",
+    "ENSMUSG00000030605",
+    "ENSMUSG00000032498",
+    "ENSMUSG00000047037",
+    "ENSMUSG00000003617",
+    "ENSMUSG00000071648",
+    "ENSMUSG00000001173",
+    "ENSMUSG00000079508",
+    "ENSMUSG00000042717",
+    "ENSMUSG00000025155",
+    "ENSMUSG00000026072",
+    "ENSMUSG00000020078",
+    "ENSMUSG00000032412",
+    "ENSMUSG00000055912",
+    "ENSMUSG00000022312",
+    "ENSMUSG00000033900",
+    "ENSMUSG00000001576",
+    "ENSMUSG00000063052",
+    "ENSMUSG00000053110",
+    "ENSMUSG00000039485",
+    "ENSMUSG00000021702",
+    "ENSMUSG00000051864",
+    "ENSMUSG00000034958",
+    "ENSMUSG00000053012",
     "ENSMUSG00000036246",
-    "ENSMUSG00000044795",
-    "ENSMUSG00000032609",
-    "ENSMUSG00000033184",
-    "ENSMUSG00000031672",
-    "ENSMUSG00000038766",
-    "ENSMUSG00000042079",
-    "ENSMUSG00000073176",
-    "ENSMUSG00000059436",
-    "ENSMUSG00000026096",
-    "ENSMUSG00000075318",
-    "ENSMUSG00000025940",
-    "ENSMUSG00000013465",
-    "ENSMUSG00000022897",
-    "ENSMUSG00000039285",
-    "ENSMUSG00000035944",
-    "ENSMUSG00000033701",
-    "ENSMUSG00000037119",
-    "ENSMUSG00000026211",
-    "ENSMUSG00000004661",
-    "ENSMUSG00000001865",
-    "ENSMUSG00000006906",
-    "ENSMUSG00000069844",
-    "ENSMUSG00000020608",
-    "ENSMUSG00000034602",
+    "ENSMUSG00000001366",
+    "ENSMUSG00000025184",
+    "ENSMUSG00000005881",
+    "ENSMUSG00000023143",
+    "ENSMUSG00000042694",
+    "ENSMUSG00000074754",
+    "ENSMUSG00000035642",
+    "ENSMUSG00000059288",
+    "ENSMUSG00000027309",
+    "ENSMUSG00000020513",
+    "ENSMUSG00000085793",
+    "ENSMUSG00000026924",
+    "ENSMUSG00000032578",
+    "ENSMUSG00000035697",
+    "ENSMUSG00000037270",
+    "ENSMUSG00000009207",
+    "ENSMUSG00000030214",
+    "ENSMUSG00000004035",
+    "ENSMUSG00000025782",
+    "ENSMUSG00000000184",
+    "ENSMUSG00000051331",
+    "ENSMUSG00000044968",
 ]
-# expr = allele_unique.group_by("gene_id").agg(pl.col("total_reads").median())
-# expr.filter(pl.col("total_reads") > 50)
 
 size_factors = pl.read_csv(f"processed/{TISSUE}/size_factors.txt", separator="\t")
 
@@ -143,10 +140,15 @@ for gene_id in gene_ids:
     ase_model_time = _end - _start
 
     ###### TOTAL COUNTS MODEL
-    pheno = all_pheno.with_columns(
+    sample_info = all_pheno.with_columns(
         pl.col("DOwave").cast(str).cast(pl.Enum([str(x) for x in range(1, 6)]))
     ).join(size_factors, "mouse_id")
-    total_model = make_total_model(gene_id, gene_class_counts, diplotypes, pheno)
+    total_model = make_total_model(
+        gene_id,
+        gene_class_counts,
+        diplotypes,
+        sample_info,
+    )
     _start = time.time()
     with total_model:
         idata_total = pm.sample(
@@ -170,7 +172,7 @@ for gene_id in gene_ids:
     )
 
     # Report results
-    ase_summary = summarize_ase_model(idata_ase)
+    ase_summary = summarize_ase_model(idata_ase, gene_class_counts)
     ase_summary["runtime"] = ase_model_time
     total_summary = summarize_total_model(idata_total)
     ase_summary["runtime"] = total_model_time

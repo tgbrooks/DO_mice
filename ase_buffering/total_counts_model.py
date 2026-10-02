@@ -13,29 +13,31 @@ def make_total_model(
     gene_id: str,
     gene_class_counts: CompatClassesDf,
     diplotypes: pl.DataFrame,
-    pheno: pl.DataFrame,
+    sample_info: pl.DataFrame,
+    gene_length: int,
 ) -> pm.Model:
     """Create a model of the total counts
 
     diplotypes should have columns mouse_id and diplotype (eg: "AB" or "EE")
-    pheno should have columns mouse_id (str), sex (M/F), DO_wave (1,2,...),
-        and size_factor (float, DESeq2-style library size factors).
+    sample_info should have columns mouse_id (str), sex (M/F), DO_wave (1,2,...),
+        size_factor (float, DESeq2-style library size factors), and
+        frag_len_mean.
     """
 
     gene_totals = get_gene_totals(gene_id, gene_class_counts, diplotypes)
 
-    pheno = pheno.join(
+    sample_info = sample_info.join(
         gene_totals.select("mouse_id"),
         "mouse_id",
         maintain_order="right",
-    )
+    ).with_columns(effective_length=gene_length - pl.col("frag_len_mean"))
     HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(gene_class_counts.haplotypes)}
 
     total_model = pm.Model(
         coords={
             "haplotypes": gene_class_counts.haplotypes,
             "samples": gene_class_counts.ids,
-            "DO_waves": sorted(pheno["DOwave"].unique()),
+            "DO_waves": sorted(sample_info["DOwave"].unique()),
         }
     )
     # Codings
@@ -45,14 +47,15 @@ def make_total_model(
     hap2 = gene_totals.select(
         pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM)
     )["diplotype"].to_numpy()
-    my_pheno = gene_totals.select("mouse_id").join(
-        pheno, "mouse_id", how="left", maintain_order="left"
+    my_sample_info = gene_totals.select("mouse_id").join(
+        sample_info, "mouse_id", how="left", maintain_order="left"
     )
-    sex = my_pheno["sex"].replace_strict(SEX_TO_NUM).to_numpy()
-    DO_wave = my_pheno["DOwave"].cast(str).cast(int).to_numpy() - 1
-    sf = np.log(my_pheno["size_factor"].to_numpy())
+    sex = my_sample_info["sex"].replace_strict(SEX_TO_NUM).to_numpy()
+    DO_wave = my_sample_info["DOwave"].cast(str).cast(int).to_numpy() - 1
+    sf = np.log(my_sample_info["size_factor"].to_numpy())
+    effective_length = my_sample_info["effective_length"].to_numpy()
     mean_expr = (
-        gene_totals["total_reads"] / my_pheno["size_factor"]
+        gene_totals["total_reads"] / my_sample_info["size_factor"]
     ).to_numpy().mean() / 2
     with total_model:
         _hap1 = pm.Data("hap1", hap1, dims="samples")
@@ -61,6 +64,7 @@ def make_total_model(
             "totals", gene_totals["total_reads"].to_numpy(), dims="samples"
         )
         _mean_expr = pm.Data("mean_expr", mean_expr)
+        _effective_length = pm.Data("effective_length", effective_length)
 
         intercept = pm.Normal("intercept", mu=np.log(_mean_expr), sigma=3)
         beta = pm.ZeroSumNormal("beta", sigma=2, dims="haplotypes")

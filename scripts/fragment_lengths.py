@@ -47,7 +47,7 @@ parser.add_argument(
 parser.add_argument("--min-transcript-length", type=int, default=2000)
 parser.add_argument("--min-genotype-confidence", type=float, default=0.99)
 parser.add_argument("--out", required=True, help="output JSON")
-parser.add_argument("--first-n", type=int, help="maximum number of alignments to read", default=200_000_000)
+parser.add_argument("--first-n", type=int, help="maximum number of alignments to read", default=100_000_000)
 args = parser.parse_args()
 if (args.genotypes is None) == (args.homozygous_for is None):
     parser.error("give exactly one of --genotypes and --homozygous-for")

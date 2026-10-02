@@ -18,7 +18,7 @@ with app.setup:
 
     from util.compressed_emase import load_compressed_emase
     from util.compat_classes import get_gene_class_counts, get_gene_totals, sparse_any
-    from ase_buffering.ase_model import make_ase_model, summarize_read_classes
+    from ase_buffering.ase_model import make_ase_model, summarize_read_classes, summarize_bias_rates
     from ase_buffering.total_counts_model import make_total_model
 
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
@@ -588,32 +588,7 @@ def _(gene_class_counts, hap1, hap2, idata_ase, lp, n_classes):
 @app.cell
 def _(HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp):
     # Plot fit allele-unique bias rates
-    def _():
-        q = idata_ase["posterior"]["q"].values
-        temp = []
-        for i, h1 in enumerate(HAPLOTYPES):
-            for j, h2 in enumerate(HAPLOTYPES):
-                h1_unique_classes = gene_class_counts.compat[:, i] & (
-                    ~gene_class_counts.compat[:, j]
-                )
-                h1_u = q[..., i, h1_unique_classes].sum(axis=-1).mean(axis=(0, 1))
-
-                h2_unique_classes = gene_class_counts.compat[:, j] & (
-                    ~gene_class_counts.compat[:, i]
-                )
-                h2_u = q[..., j, h2_unique_classes].sum(axis=-1).mean(axis=(0, 1))
-                temp.append(
-                    {
-                        "source_hap": h1,
-                        "other_hap": h2,
-                        "frac_unique": h1_u,
-                        "reverse_frac_unique": h2_u,
-                        "allele_unique_bias": h1_u / h2_u,
-                    }
-                )
-        return pl.DataFrame(temp).filter(pl.col("source_hap") != pl.col("other_hap"))
-
-    _df = _()
+    _df = summarize_bias_rates(idata_ase, gene_class_counts)
     (
         lp.ggplot(
             _df, lp.aes(x="frac_unique", y="reverse_frac_unique", color="source_hap")

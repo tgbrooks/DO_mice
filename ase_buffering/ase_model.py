@@ -163,12 +163,15 @@ def summarize_ase_model(idata, gene_class_counts):
     u_summary = _summary(idata, var_names=["u_raw"])
 
     read_classes = summarize_read_classes(idata, gene_class_counts)
+    bias_rates = summarize_bias_rates(idata, gene_class_counts)
 
     return {
         "beta": beta_summary.rows_by_key("variable", unique=True, named=True),
         "core": core_summary.rows_by_key("variable", unique=True, named=True),
         "read_classes": read_classes.to_dicts(),
         "max_leak": read_classes["leak_to"].max(),
+        "bias_rates": bias_rates.to_dicts(),
+        "max_bias_rate": bias_rates["allele_unique_bias"].max(),
         "diagnostic": {
             "max_rhat_beta": beta_summary["r_hat"].max(),
             "max_rhat_core": core_summary["r_hat"].max(),
@@ -240,3 +243,42 @@ def summarize_read_classes(idata, gene_class_counts: CompatClassesDf) -> pl.Data
         ]
     )
     return class_summaries
+
+
+def summarize_bias_rates(idata_ase, gene_class_counts: CompatClassesDf) -> pl.DataFrame:
+    """
+    Summarize the bias rates per diplotype in the fraction of allele-unique reads generated
+    by each haplotype.
+
+    Columns:
+        source_hap: haplotype that is the source of these reads
+        other_hap: second haplotype in the diplotype
+        frac_unique: fraction of reads from source_hap that do not align to other_hap
+        reverse_frac_unique: fraction of reads from other_hap that do not align to source_hap
+        allele_unique_bias: bias ratio of frac_unique / reverse_frac_unique
+            1 means no bias, higher values means source_hap is over represented in unique reads.
+    """
+    HAPLOTYPES = gene_class_counts.haplotypes
+    q = idata_ase["posterior"]["q"].values
+    temp = []
+    for i, h1 in enumerate(HAPLOTYPES):
+        for j, h2 in enumerate(HAPLOTYPES):
+            h1_unique_classes = gene_class_counts.compat[:, i] & (
+                ~gene_class_counts.compat[:, j]
+            )
+            h1_u = q[..., i, h1_unique_classes].sum(axis=-1).mean(axis=(0, 1))
+
+            h2_unique_classes = gene_class_counts.compat[:, j] & (
+                ~gene_class_counts.compat[:, i]
+            )
+            h2_u = q[..., j, h2_unique_classes].sum(axis=-1).mean(axis=(0, 1))
+            temp.append(
+                {
+                    "source_hap": h1,
+                    "other_hap": h2,
+                    "frac_unique": h1_u,
+                    "reverse_frac_unique": h2_u,
+                    "allele_unique_bias": h1_u / h2_u,
+                }
+            )
+    return pl.DataFrame(temp).filter(pl.col("source_hap") != pl.col("other_hap"))
