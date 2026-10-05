@@ -80,6 +80,9 @@ gene_ids = [  # randomly chosen genes with > 50 median total reads
 ]
 
 size_factors = pl.read_csv(f"processed/{TISSUE}/size_factors.txt", separator="\t")
+effective_lengths = pl.read_parquet(
+    f"processed/{TISSUE}/effective_lengths.by_gene.parquet"
+)
 
 gene_annot = (
     pb.scan_gtf(
@@ -125,6 +128,9 @@ for gene_id in gene_ids:
         tx_annot,
         all_compatibility_classes,
     )
+    gene_effective_lengths = effective_lengths.filter(gene_id=gene_id).select(
+        "mouse_id", "effective_length"
+    )
 
     ###### ASE MODEL
     ase_model = make_ase_model(gene_id, gene_class_counts, diplotypes)
@@ -148,6 +154,7 @@ for gene_id in gene_ids:
         gene_class_counts,
         diplotypes,
         sample_info,
+        gene_effective_lengths,
     )
     _start = time.time()
     with total_model:

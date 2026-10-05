@@ -9,7 +9,7 @@ import polars_bio as pb
 import pathlib
 
 tissue = "Adipose"
-tissue = salmon.wildcards.tissue
+tissue = snakemake.wildcards.tissue
 
 geno = (
     pl.scan_parquet("processed/genotypes.parquet")
@@ -23,7 +23,8 @@ geno = (
 
 tx_annot = (
     pb.scan_gtf(
-        "gbrs_ref/v116/reference.gtf.gz", attr_fields=["gene_id", "transcript_id"]
+        "gbrs_ref/v116/reference.gtf.gz",
+        attr_fields=["gene_id", "transcript_id", "tag"],
     )
     .filter(pl.col("type") == "transcript")
     .collect()
@@ -94,10 +95,25 @@ for salmon_dir in pathlib.Path(f"processed/{tissue}/salmon/").glob("*"):
     temp.append(quants)
 
 results = pl.concat(temp).select(
-    pl.col("mouse_id").cast(pl.Categorical),
-    pl.col("gene_id").cast(pl.Categorical),
-    pl.col("transcript_id").cast(pl.Categorical),
-    pl.col("haplotype").cast(pl.Enum(HAPLOTYPES)),
+    "mouse_id",
+    "gene_id",
+    "transcript_id",
+    "haplotype",
     "effective_length",
 )
 results.write_parquet(f"processed/{tissue}/effective_lengths.parquet")
+
+# Gather by gene
+# We just use the canonical transcript's length and average over both of the haplotypes
+# for simplicity and to avoid circularity of needing to estimate allele-specific expression
+# in order to estimate effective lengths.
+by_gene = (
+    results.join(
+        tx_annot.filter(pl.col("tag").str.contains("Ensembl_canonical")),
+        "gene_id",
+        how="inner",
+    )
+    .group_by(["mouse_id", "gene_id"])
+    .agg(pl.col("effective_length").mean())  # mean over haplotypes
+)
+by_gene.write_parquet(f"processed/{tissue}/effective_lengths.by_gene.parquet")

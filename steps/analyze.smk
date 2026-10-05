@@ -24,15 +24,17 @@ rule gene_annot:
 rule compute_size_factors:
     """ Compute DESeq2 size factors for each library """
     input:
-        counts = "processed/{tissue}/allele_unique_reads.parquet"
+        counts = "processed/{tissue}/allele_unique_reads.parquet",
+        effective_lengths = "processed/{tissue}/effective_lengths.by_gene.parquet",
     output:
         outfile = "processed/{tissue}/size_factors.txt",
+        out_normfile = "processed/{tissue}/normalization_factors.txt",
     resources:
         mem_mb = 6_000
     container:
         "images/rgeneral.sif"
-    script:
-        "../scripts/compute_size_factors.R"
+    shell:
+        "Rscript scripts/compute_size_factors.R {input.counts} {input.effective_lengths} {output.outfile} {output.out_normfile}"
 
 checkpoint chunk_chromosomes:
     """ Break each chromosome into 100-gene chunks """

@@ -14,23 +14,27 @@ def make_total_model(
     gene_class_counts: CompatClassesDf,
     diplotypes: pl.DataFrame,
     sample_info: pl.DataFrame,
-    gene_length: int,
+    gene_effective_lengths: pl.DataFrame,
 ) -> pm.Model:
     """Create a model of the total counts
 
     diplotypes should have columns mouse_id and diplotype (eg: "AB" or "EE")
     sample_info should have columns mouse_id (str), sex (M/F), DO_wave (1,2,...),
-        size_factor (float, DESeq2-style library size factors), and
-        frag_len_mean.
+        and size_factor (float, tximport+DESeq2-style library size factors).
+    gene_effective_lengths should have mouse_id and effective_length (Salmon-style)
+        columns.
     """
 
     gene_totals = get_gene_totals(gene_id, gene_class_counts, diplotypes)
 
     sample_info = sample_info.join(
+        gene_effective_lengths,
+        "mouse_id",
+    ).join(
         gene_totals.select("mouse_id"),
         "mouse_id",
         maintain_order="right",
-    ).with_columns(effective_length=gene_length - pl.col("frag_len_mean"))
+    )
     HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(gene_class_counts.haplotypes)}
 
     total_model = pm.Model(
@@ -52,7 +56,7 @@ def make_total_model(
     )
     sex = my_sample_info["sex"].replace_strict(SEX_TO_NUM).to_numpy()
     DO_wave = my_sample_info["DOwave"].cast(str).cast(int).to_numpy() - 1
-    sf = np.log(my_sample_info["size_factor"].to_numpy())
+    sf = my_sample_info["size_factor"].to_numpy()
     effective_length = my_sample_info["effective_length"].to_numpy()
     mean_expr = (
         gene_totals["total_reads"] / my_sample_info["size_factor"]
@@ -60,13 +64,14 @@ def make_total_model(
     with total_model:
         _hap1 = pm.Data("hap1", hap1, dims="samples")
         _hap2 = pm.Data("hap2", hap2, dims="samples")
+        _sf = pm.Data("size_factor", sf, dims="samples")
+        _effective_length = pm.Data("effective_length", effective_length)
         _totals = pm.Data(
             "totals", gene_totals["total_reads"].to_numpy(), dims="samples"
         )
         _mean_expr = pm.Data("mean_expr", mean_expr)
-        _effective_length = pm.Data("effective_length", effective_length)
 
-        intercept = pm.Normal("intercept", mu=np.log(_mean_expr), sigma=3)
+        intercept = pm.Normal("intercept", mu=np.log(_mean_expr), sigma=2)
         beta = pm.ZeroSumNormal("beta", sigma=2, dims="haplotypes")
         beta_male = pm.Normal("beta_male", sigma=2)
         beta_DO_wave = pm.ZeroSumNormal("beta_DO_wave", sigma=0.5, dims="DO_waves")
@@ -74,7 +79,13 @@ def make_total_model(
         mu = pm.Deterministic(
             "mu",
             (pm.math.exp(beta[_hap1]) + pm.math.exp(beta[_hap2]))
-            * pm.math.exp(intercept + sex * beta_male + beta_DO_wave[DO_wave] + sf),
+            * pm.math.exp(
+                intercept
+                + sex * beta_male
+                + beta_DO_wave[DO_wave]
+                + pm.math.log(_sf)
+                + pm.math.log(_effective_length)
+            ),
             dims="samples",
         )
         pm.NegativeBinomial(
