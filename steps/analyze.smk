@@ -30,7 +30,7 @@ rule compute_size_factors:
         outfile = "processed/{tissue}/size_factors.txt",
         out_normfile = "processed/{tissue}/normalization_factors.txt",
     resources:
-        mem_mb = 6_000
+        mem_mb = 12_000
     container:
         "images/rgeneral.sif"
     shell:
@@ -86,19 +86,21 @@ rule model_buffering:
     script:
         "../scripts/model_buffering.R"
 
-def get_all_model_chunk_results(wildcards):
-    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue).output.outdir)
-    temp = []
-    for file in chunkdir.glob("*.genes.txt"):
-        chromosome, chunk_num, *_ = file.name.split(".")
-        if chromosome == "X":
-            continue
-        temp.append(f"processed/{wildcards.tissue}/buffering/{chromosome}.{chunk_num}.txt")
-    return temp
+def get_all_model_chunk_results(dir):
+    def inner(wildcards):
+        chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue).output.outdir)
+        temp = []
+        for file in chunkdir.glob("*.genes.txt"):
+            chromosome, chunk_num, *_ = file.name.split(".")
+            if chromosome == "X":
+                continue
+            temp.append(f"processed/{wildcards.tissue}/{dir}/{chromosome}.{chunk_num}.txt")
+        return temp
+    return inner
 
 rule collect_buffering_results:
     input:
-        results = get_all_model_chunk_results,
+        results = get_all_model_chunk_results("buffering"),
     output:
         results = "results/{tissue}/buffering.txt"
     resources:
@@ -121,6 +123,7 @@ rule model_buffering_with_bias:
         allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
         size_factors = "processed/{tissue_real}/size_factors.txt",
         phenotypes = "phenotypes.csv.gz",
+        effective_lengths = "processed/{tissue_real}/effective_lengths.by_gene.parquet",
         chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
     output:
         outfile = "processed/{tissue_real}/buffering_with_bias/{chromosome}.{chunk_num}.txt"
@@ -128,14 +131,29 @@ rule model_buffering_with_bias:
         min_median_counts = config['MIN_MEDIAN_COUNTS'],
         genes = get_chunk_genes,
         outlier_ids = config['outlier_ids'], # Remove these mice
+    threads: 4
     resources:
         mem_mb = 24_000,
-        threads = 4,
-    container:
-        "images/rgeneral.sif"
     script:
         "../scripts/model_buffering_with_bias.py"
 
+rule collect_buffering_with_bias_results:
+    input:
+        results = get_all_model_chunk_results("buffering_with_bias"),
+    output:
+        results = "results/{tissue}/buffering_with_bias.json"
+    resources:
+        mem_mb = 6_000
+    run:
+        import json
+        temp = []
+        for r in input.results:
+            try:
+                data = json.load(open(r))
+                temp.append(data)
+            except FileNotFoundError:
+                print(f"Skipping {r} - file not found")
+        json.dump(temp, open(output.results, "wt"))
 
 rule compute_coverage:
     input:
@@ -160,7 +178,7 @@ rule gather_fragment_lengths:
         out = "processed/{tissue}/frag_dist.txt",
     run:
         import polars as pl
-        import numpy
+        import numpy as np
         import gzip
         import pathlib
         temp = []
@@ -205,7 +223,8 @@ rule gather_effective_lengths:
         geno = "processed/genotypes.parquet",
         gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
-        "processed/{tissue}/effective_lengths.parquet"
+        "processed/{tissue}/effective_lengths.parquet",
+        "processed/{tissue}/effective_lengths.by_gene.parquet",
     resources:
         mem_mb=24_000
     script:

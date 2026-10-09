@@ -24,7 +24,15 @@ counts_mat <- pivot_wider(
     as.matrix()
 storage.mode(counts_mat) <- "integer"
 
-effective_lengths <- read_parquet(effective_lengths_file)
+# Average effective lengths over both haplotypes
+# We don't know ASE yet so we don't have much choice.
+# But this should average out over the whole genome to a minimal difference
+effective_lengths <- read_parquet(effective_lengths_file) |>
+    group_by(mouse_id, gene_id) |>
+    summarize(
+        effective_length = mean(effective_length),
+        .groups="drop",
+    )
 effective_lengths_mat <- effective_lengths |>
     pivot_wider(
         id_cols = all_of("gene_id"),
@@ -58,7 +66,9 @@ tibble(
 ) |> write_tsv(outfile)
 
 # Per-sample, per-gene normalization factors
-nf |> rownames_to_column("gene_id") |>
+nf |>
+    as.data.frame() |>
+    rownames_to_column("gene_id") |>
     pivot_longer(
         cols = all_of(colnames(nf)),
         names_to = "mouse_id",

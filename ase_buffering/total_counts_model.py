@@ -22,18 +22,39 @@ def make_total_model(
     sample_info should have columns mouse_id (str), sex (M/F), DO_wave (1,2,...),
         and size_factor (float, tximport+DESeq2-style library size factors).
     gene_effective_lengths should have mouse_id and effective_length (Salmon-style)
-        columns.
+        and haplotype columns. Only haplotypes in each mouse's diplotype are needed.
     """
 
     gene_totals = get_gene_totals(gene_id, gene_class_counts, diplotypes)
 
-    sample_info = sample_info.join(
-        gene_effective_lengths,
-        "mouse_id",
-    ).join(
-        gene_totals.select("mouse_id"),
-        "mouse_id",
-        maintain_order="right",
+    sample_info = (
+        sample_info.join(
+            diplotypes.filter(gene_id=gene_id),
+            "mouse_id",
+        )
+        .with_columns(
+            hap1=pl.col("diplotype").str.slice(0, 1),
+            hap2=pl.col("diplotype").str.slice(1, 1),
+        )
+        .join(
+            gene_effective_lengths.select(
+                "mouse_id", "haplotype", eff_len1="effective_length"
+            ),
+            left_on=["mouse_id", "hap1"],
+            right_on=["mouse_id", "haplotype"],
+        )
+        .join(
+            gene_effective_lengths.select(
+                "mouse_id", "haplotype", eff_len2="effective_length"
+            ),
+            left_on=["mouse_id", "hap2"],
+            right_on=["mouse_id", "haplotype"],
+        )
+        .join(
+            gene_totals.select("mouse_id"),
+            "mouse_id",
+            maintain_order="right",
+        )
     )
     HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(gene_class_counts.haplotypes)}
 
@@ -57,7 +78,9 @@ def make_total_model(
     sex = my_sample_info["sex"].replace_strict(SEX_TO_NUM).to_numpy()
     DO_wave = my_sample_info["DOwave"].cast(str).cast(int).to_numpy() - 1
     sf = my_sample_info["size_factor"].to_numpy()
-    effective_length = my_sample_info["effective_length"].to_numpy()
+    # haplotype-specific effective lengths
+    eff_len1 = my_sample_info["eff_len1"].to_numpy()
+    eff_len2 = my_sample_info["eff_len2"].to_numpy()
     mean_expr = (
         gene_totals["total_reads"] / my_sample_info["size_factor"]
     ).to_numpy().mean() / 2
@@ -65,7 +88,8 @@ def make_total_model(
         _hap1 = pm.Data("hap1", hap1, dims="samples")
         _hap2 = pm.Data("hap2", hap2, dims="samples")
         _sf = pm.Data("size_factor", sf, dims="samples")
-        _effective_length = pm.Data("effective_length", effective_length)
+        _eff_len1 = pm.Data("eff_len1", eff_len1)
+        _eff_len2 = pm.Data("eff_len2", eff_len2)
         _totals = pm.Data(
             "totals", gene_totals["total_reads"].to_numpy(), dims="samples"
         )
@@ -78,13 +102,12 @@ def make_total_model(
         log_disp = pm.Normal("log_disp", mu=np.log(0.01), sigma=2)
         mu = pm.Deterministic(
             "mu",
-            (pm.math.exp(beta[_hap1]) + pm.math.exp(beta[_hap2]))
+            (
+                pm.math.exp(beta[_hap1] + pm.math.log(_eff_len1))
+                + pm.math.exp(beta[_hap2] + pm.math.log(_eff_len2))
+            )
             * pm.math.exp(
-                intercept
-                + sex * beta_male
-                + beta_DO_wave[DO_wave]
-                + pm.math.log(_sf)
-                + pm.math.log(_effective_length)
+                intercept + sex * beta_male + beta_DO_wave[DO_wave] + pm.math.log(_sf)
             ),
             dims="samples",
         )

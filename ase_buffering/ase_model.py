@@ -16,8 +16,14 @@ def make_ase_model(
     gene_id: str,
     gene_class_counts: CompatClassesDf,
     diplotypes: pl.DataFrame,
+    gene_effective_lengths: pl.DataFrame,
 ) -> pm.Model:
-    """Create a PYMC model object for the ASE model"""
+    """
+    Create a PYMC model object for the ASE model
+
+    gene_effective_lengths should have mouse_id and effective_length (Salmon-style)
+        and haplotype columns. Only haplotypes in each mouse's diplotype are needed.
+    """
 
     gene_diplotypes = (
         diplotypes.filter(gene_id=gene_id)
@@ -27,16 +33,36 @@ def make_ase_model(
             "mouse_id",
             maintain_order="right",
         )
+        .with_columns(
+            hap1=pl.col("diplotype").str.slice(0, 1),
+            hap2=pl.col("diplotype").str.slice(1, 1),
+        )
+        .join(
+            gene_effective_lengths.select(
+                "mouse_id", "haplotype", eff_len1="effective_length"
+            ),
+            left_on=["mouse_id", "hap1"],
+            right_on=["mouse_id", "haplotype"],
+            maintain_order="left",
+        )
+        .join(
+            gene_effective_lengths.select(
+                "mouse_id", "haplotype", eff_len2="effective_length"
+            ),
+            left_on=["mouse_id", "hap2"],
+            right_on=["mouse_id", "haplotype"],
+            maintain_order="left",
+        )
     )
     HAPLOTYPES = gene_class_counts.haplotypes
     HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
 
-    hap1 = gene_diplotypes.select(
-        pl.col("diplotype").str.slice(0, 1).replace_strict(HAP_TO_HAPNUM)
-    )["diplotype"].to_numpy()
-    hap2 = gene_diplotypes.select(
-        pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM)
-    )["diplotype"].to_numpy()
+    hap1 = gene_diplotypes.select(pl.col("hap1").replace_strict(HAP_TO_HAPNUM))[
+        "hap1"
+    ].to_numpy()
+    hap2 = gene_diplotypes.select(pl.col("hap2").replace_strict(HAP_TO_HAPNUM))[
+        "hap2"
+    ].to_numpy()
     n_classes = int(gene_class_counts.compat.shape[0])
     n_haps = len(HAPLOTYPES)
     n_pairs = (n_haps * (n_haps - 1)) // 2
@@ -50,6 +76,8 @@ def make_ase_model(
             "hap_pairs": [f"pair_{i}" for i in range(n_pairs)],
         }
     )
+    eff_len1 = gene_diplotypes["eff_len1"]
+    eff_len2 = gene_diplotypes["eff_len2"]
 
     # A naive estimation of the per-haplotype class frequencies
     # assuming no ASE, but generally very close.
@@ -65,6 +93,8 @@ def make_ase_model(
         )
         _hap1 = pm.Data("hap1", hap1, dims="samples")
         _hap2 = pm.Data("hap2", hap2, dims="samples")
+        _eff_len1 = pm.Data("eff_len1", eff_len1, dims="samples")
+        _eff_len2 = pm.Data("eff_len2", eff_len2, dims="samples")
         _nz = _counts > 0
 
         # Nuisance variables
@@ -104,7 +134,12 @@ def make_ase_model(
         p = pm.Deterministic(
             "p",
             pm.math.sigmoid(
-                beta[_hap1] - beta[_hap2] + sigma_gamma * gamma[_hap1, _hap2] + u
+                beta[_hap1]
+                - beta[_hap2]
+                + pm.math.log(_eff_len1)
+                - pm.math.log(_eff_len2)
+                + sigma_gamma * gamma[_hap1, _hap2]
+                + u
             ),
             dims=("samples"),
         )
@@ -124,7 +159,7 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
 
     c_ji proportional to (q_{g1,i} + q_{g2,i})/2
     """
-    class_props = class_counts / class_counts.sum(axis=1)[:, None]
+    class_props = class_counts / (class_counts.sum(axis=1)[:, None] + 1e-9)
     n_samples, n_classes = class_counts.shape
     # inverse variance-weights
     weight = np.sqrt(class_counts.sum(axis=1))
@@ -176,7 +211,8 @@ def summarize_ase_model(idata, gene_class_counts):
             "max_rhat_beta": beta_summary["r_hat"].max(),
             "max_rhat_core": core_summary["r_hat"].max(),
             "max_rhat_rest": max(
-                q_summary_important["r_hat"].max(),
+                q_summary_important["r_hat"].max()
+                or 1.0,  # if no classes, all are well-behaved
                 u_summary["r_hat"].max(),
             ),
             "min_ess_bulk_beta": beta_summary["ess_bulk"].min(),
@@ -278,7 +314,7 @@ def summarize_bias_rates(idata_ase, gene_class_counts: CompatClassesDf) -> pl.Da
                     "other_hap": h2,
                     "frac_unique": h1_u,
                     "reverse_frac_unique": h2_u,
-                    "allele_unique_bias": h1_u / h2_u,
+                    "allele_unique_bias": (h1_u + 1e-9) / (h2_u + 1e-9),
                 }
             )
     return pl.DataFrame(temp).filter(pl.col("source_hap") != pl.col("other_hap"))

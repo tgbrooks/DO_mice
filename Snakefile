@@ -48,6 +48,7 @@ def default_targets() -> list[str]:
         #)
         targets += [
             f"results/{tissue}/buffering.txt",
+            f"results/{tissue}/buffering_with_bias.json",
             f"processed/{tissue}/frag_dist.txt",
         ]
         targets += [f"processed/{tissue}/gbrs/{mouse}.compressed.h5" for mouse in mice]

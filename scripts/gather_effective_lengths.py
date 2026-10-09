@@ -104,16 +104,10 @@ results = pl.concat(temp).select(
 results.write_parquet(f"processed/{tissue}/effective_lengths.parquet")
 
 # Gather by gene
-# We just use the canonical transcript's length and average over both of the haplotypes
-# for simplicity and to avoid circularity of needing to estimate allele-specific expression
-# in order to estimate effective lengths.
-by_gene = (
-    results.join(
-        tx_annot.filter(pl.col("tag").str.contains("Ensembl_canonical")),
-        "gene_id",
-        how="inner",
-    )
-    .group_by(["mouse_id", "gene_id"])
-    .agg(pl.col("effective_length").mean())  # mean over haplotypes
+# We just use the canonical transcript's length for each haplotype.
+by_gene = results.join(
+    tx_annot.filter(pl.col("tag").str.contains("Ensembl_canonical")),
+    "transcript_id",
+    how="inner",
 )
 by_gene.write_parquet(f"processed/{tissue}/effective_lengths.by_gene.parquet")

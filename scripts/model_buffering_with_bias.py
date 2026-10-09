@@ -16,6 +16,9 @@ from ase_buffering.covariance_deming_regression import covariance_deming_regress
 
 TISSUE = "Adipose"
 OUTFILE = "temp.json"
+TISSUE = snakemake.wildcards.tissue_real
+OUTFILE = snakemake.output.outfile
+gene_ids = snakemake.params.genes
 
 config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
 HAPLOTYPES = config["haplotypes"].split(",")
@@ -23,61 +26,61 @@ HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
 SEX_TO_NUM = {"F": 0, "M": 1}
 OUTLIER_MOUSE_IDS = config["outlier_ids"]
 
-gene_ids = [
-    "ENSMUSG00000053062",  # Jam2
-    "ENSMUSG00000040548",  # Tex2
-]
-gene_ids = [  # randomly chosen genes with > 50 median total reads
-    "ENSMUSG00000038429",
-    "ENSMUSG00000060121",
-    "ENSMUSG00000060002",
-    "ENSMUSG00000030605",
-    "ENSMUSG00000032498",
-    "ENSMUSG00000047037",
-    "ENSMUSG00000003617",
-    "ENSMUSG00000071648",
-    "ENSMUSG00000001173",
-    "ENSMUSG00000079508",
-    "ENSMUSG00000042717",
-    "ENSMUSG00000025155",
-    "ENSMUSG00000026072",
-    "ENSMUSG00000020078",
-    "ENSMUSG00000032412",
-    "ENSMUSG00000055912",
-    "ENSMUSG00000022312",
-    "ENSMUSG00000033900",
-    "ENSMUSG00000001576",
-    "ENSMUSG00000063052",
-    "ENSMUSG00000053110",
-    "ENSMUSG00000039485",
-    "ENSMUSG00000021702",
-    "ENSMUSG00000051864",
-    "ENSMUSG00000034958",
-    "ENSMUSG00000053012",
-    "ENSMUSG00000036246",
-    "ENSMUSG00000001366",
-    "ENSMUSG00000025184",
-    "ENSMUSG00000005881",
-    "ENSMUSG00000023143",
-    "ENSMUSG00000042694",
-    "ENSMUSG00000074754",
-    "ENSMUSG00000035642",
-    "ENSMUSG00000059288",
-    "ENSMUSG00000027309",
-    "ENSMUSG00000020513",
-    "ENSMUSG00000085793",
-    "ENSMUSG00000026924",
-    "ENSMUSG00000032578",
-    "ENSMUSG00000035697",
-    "ENSMUSG00000037270",
-    "ENSMUSG00000009207",
-    "ENSMUSG00000030214",
-    "ENSMUSG00000004035",
-    "ENSMUSG00000025782",
-    "ENSMUSG00000000184",
-    "ENSMUSG00000051331",
-    "ENSMUSG00000044968",
-]
+# gene_ids = [
+#    "ENSMUSG00000053062",  # Jam2
+#    "ENSMUSG00000040548",  # Tex2
+# ]
+# gene_ids = [  # randomly chosen genes with > 50 median total reads
+#    "ENSMUSG00000038429",
+#    "ENSMUSG00000060121",
+#    "ENSMUSG00000060002",
+#    "ENSMUSG00000030605",
+#    "ENSMUSG00000032498",
+#    "ENSMUSG00000047037",
+#    "ENSMUSG00000003617",
+#    "ENSMUSG00000071648",
+#    "ENSMUSG00000001173",
+#    "ENSMUSG00000079508",
+#    "ENSMUSG00000042717",
+#    "ENSMUSG00000025155",
+#    "ENSMUSG00000026072",
+#    "ENSMUSG00000020078",
+#    "ENSMUSG00000032412",
+#    "ENSMUSG00000055912",
+#    "ENSMUSG00000022312",
+#    "ENSMUSG00000033900",
+#    "ENSMUSG00000001576",
+#    "ENSMUSG00000063052",
+#    "ENSMUSG00000053110",
+#    "ENSMUSG00000039485",
+#    "ENSMUSG00000021702",
+#    "ENSMUSG00000051864",
+#    "ENSMUSG00000034958",
+#    "ENSMUSG00000053012",
+#    "ENSMUSG00000036246",
+#    "ENSMUSG00000001366",
+#    "ENSMUSG00000025184",
+#    "ENSMUSG00000005881",
+#    "ENSMUSG00000023143",
+#    "ENSMUSG00000042694",
+#    "ENSMUSG00000074754",
+#    "ENSMUSG00000035642",
+#    "ENSMUSG00000059288",
+#    "ENSMUSG00000027309",
+#    "ENSMUSG00000020513",
+#    "ENSMUSG00000085793",
+#    "ENSMUSG00000026924",
+#    "ENSMUSG00000032578",
+#    "ENSMUSG00000035697",
+#    "ENSMUSG00000037270",
+#    "ENSMUSG00000009207",
+#    "ENSMUSG00000030214",
+#    "ENSMUSG00000004035",
+#    "ENSMUSG00000025782",
+#    "ENSMUSG00000000184",
+#    "ENSMUSG00000051331",
+#    "ENSMUSG00000044968",
+# ]
 
 size_factors = pl.read_csv(f"processed/{TISSUE}/size_factors.txt", separator="\t")
 effective_lengths = pl.read_parquet(
@@ -122,18 +125,27 @@ quiet = len(gene_ids) > 1
 results = []
 for gene_id in gene_ids:
     _gene_start = time.time()
-    print(f"Modelling {gene_id}")
+    print(f"Modelling {gene_id}", flush=True)
     gene_class_counts = get_gene_class_counts(
         gene_id,
         tx_annot,
         all_compatibility_classes,
     )
     gene_effective_lengths = effective_lengths.filter(gene_id=gene_id).select(
-        "mouse_id", "effective_length"
+        "mouse_id", "haplotype", "effective_length"
     )
+    median_expr = np.median(gene_class_counts.counts.sum(axis=1))
+    if median_expr < 50:
+        print(f"Skipping {gene_id} - median expression too low")
+        continue
 
     ###### ASE MODEL
-    ase_model = make_ase_model(gene_id, gene_class_counts, diplotypes)
+    ase_model = make_ase_model(
+        gene_id,
+        gene_class_counts,
+        diplotypes,
+        gene_effective_lengths,
+    )
     _start = time.time()
     with ase_model:
         idata_ase = pm.sample(
