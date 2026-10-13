@@ -17,6 +17,7 @@ def make_ase_model(
     gene_class_counts: CompatClassesDf,
     diplotypes: pl.DataFrame,
     gene_effective_lengths: pl.DataFrame,
+    config: dict | None = None,
 ) -> pm.Model:
     """
     Create a PYMC model object for the ASE model
@@ -24,6 +25,19 @@ def make_ase_model(
     gene_effective_lengths should have mouse_id and effective_length (Salmon-style)
         and haplotype columns. Only haplotypes in each mouse's diplotype are needed.
     """
+
+    default_config = {
+        "sigma_u_sd": 1.0,
+        "sigma_gamma_sd": 1.0,
+        "beta_sd": 2.0,
+        "q_logit_sd": 2.0,
+        "u_centered": True,
+        "use_eta": False,
+        "gamma_centered": True,
+    }
+    if config is not None:
+        default_config.update(config)
+    config = default_config
 
     gene_diplotypes = (
         diplotypes.filter(gene_id=gene_id)
@@ -100,7 +114,11 @@ def make_ase_model(
         # Nuisance variables
         # Rates at which reads from a haplotype are assigned to each class
         # log-scale q values, which get whitened according to M above
-        q_logit = pm.Normal("q_logit", sigma=2, dims=("haplotypes", "q_coordinates"))
+        q_logit = pm.Normal(
+            "q_logit",
+            sigma=config["q_logit_sd"],
+            dims=("haplotypes", "q_coordinates"),
+        )
         q = pm.Deterministic(
             "q",
             pm.math.softmax(
@@ -110,39 +128,61 @@ def make_ase_model(
         )
 
         # Haplotype effects
-        beta = pm.ZeroSumNormal("beta", sigma=2.0, dims="haplotypes")
+        beta = pm.ZeroSumNormal("beta", sigma=config["beta_sd"], dims="haplotypes")
 
         # Diplotype effects
         # Deviations from additive haplotype effects, constrained to be orthogonal
         # to the additive effect
-        sigma_gamma = pm.HalfNormal("sigma_gamma", sigma=1.0)
+        sigma_gamma = pm.HalfNormal("sigma_gamma", sigma=config["sigma_gamma_sd"])
         # Orthogonal to the beta's
         orthog_to_beta = np.zeros((n_haps, n_haps, n_haps))
         for i in range(n_haps):
             orthog_to_beta[i, i, :] += 1
             orthog_to_beta[i, :, i] -= 1
         gamma_null = np.concat((orthog_to_beta, antisymmetric_constraints(n_haps)))
-        gamma = constrained_normal(
-            "gamma", orthog_to=gamma_null, sigma=1.0, dims=("haplotypes", "haplotypes2")
-        )
+        if config["gamma_centered"]:
+            gamma = constrained_normal(
+                "gamma",
+                orthog_to=gamma_null,
+                sigma=1.0,
+                dims=("haplotypes", "haplotypes2"),
+            )
+            _gamma = sigma_gamma * gamma
+        else:
+            gamma = constrained_normal(
+                "gamma",
+                orthog_to=gamma_null,
+                sigma=sigma_gamma,
+                dims=("haplotypes", "haplotypes2"),
+            )
+            _gamma = gamma
 
+        lin = (
+            beta[_hap1]
+            - beta[_hap2]
+            + pm.math.log(_eff_len1)
+            - pm.math.log(_eff_len2)
+            + _gamma[_hap1, _hap2]
+        )
         # Random per-sample effects
-        sigma_u = pm.HalfNormal("sigma_u", 1.0)
-        u_raw = pm.Normal("u_raw", 0, 1, dims="samples")
-        u = sigma_u * u_raw
+        sigma_u = pm.HalfNormal("sigma_u", config["sigma_u_sd"])
+        if config["use_eta"]:
+            eta = pm.Normal("eta", mu=lin, sigma=sigma_u, dims="samples")
+            u = pm.Deterministic("u", eta - lin, dims="samples")
+        else:
+            if config["u_centered"]:
+                u_raw = pm.Normal("u_raw", 0, 1, dims="samples")
+                u = sigma_u * u_raw
+            else:
+                u = pm.Normal("u", 0, sigma=sigma_u, dims="samples")
+            eta = lin + u
 
         p = pm.Deterministic(
             "p",
-            pm.math.sigmoid(
-                beta[_hap1]
-                - beta[_hap2]
-                + pm.math.log(_eff_len1)
-                - pm.math.log(_eff_len2)
-                + sigma_gamma * gamma[_hap1, _hap2]
-                + u
-            ),
+            pm.math.sigmoid(eta),
             dims=("samples"),
         )
+
         class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
 
         # Log-likelihood - used instaed of pm.Multinomial since its a bit faster
@@ -195,7 +235,10 @@ def summarize_ase_model(idata, gene_class_counts):
     q_summary = _summary(idata, var_names=["q"])
     # Classes that are extremely rare aren't very interesting and tend to be poorly behaved
     q_summary_important = q_summary.filter(pl.col("mean") > 5e-4)
-    u_summary = _summary(idata, var_names=["u_raw"])
+    if "u_raw" in idata["posterior"].keys():
+        u_summary = _summary(idata, var_names=["u_raw"])  # centered version
+    else:
+        u_summary = _summary(idata, var_names=["u"])  # non-centered version
 
     read_classes = summarize_read_classes(idata, gene_class_counts)
     bias_rates = summarize_bias_rates(idata, gene_class_counts)
@@ -229,9 +272,13 @@ def summarize_ase_model(idata, gene_class_counts):
             ),
         },
         "info": {
+            "n_chains": len(idata["sample_stats"]["chain"]),
             "n_samples": idata["constant_data"]["counts"].shape[0],
             "n_classes": idata["constant_data"]["counts"].shape[1],
             "n_diverging": int(idata["sample_stats"]["diverging"].sum()),
+            "n_diverging_chains": int(
+                idata["sample_stats"]["diverging"].any(axis=1).sum(axis=0)
+            ),
             "mean_tree_depth": float(idata["sample_stats"]["depth"].mean()),
             "maxdepth_reached_fraction": float(
                 idata["sample_stats"]["maxdepth_reached"].mean()

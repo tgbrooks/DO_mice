@@ -87,6 +87,14 @@ def _():
 
 
 @app.cell
+def _():
+    effective_lengths = pl.read_parquet(
+        f"processed/Adipose/effective_lengths.by_gene.parquet"
+    )
+    return (effective_lengths,)
+
+
+@app.cell
 def _(allele_unique):
     diplotypes = allele_unique.select("mouse_id", "gene_id", "diplotype")
     return (diplotypes,)
@@ -223,13 +231,53 @@ def _(allele_unique, args, gene_annot, mo):
     return (gene_selector,)
 
 
-@app.cell
-def _(all_compatibility_classes, diplotypes, gene_selector, tx_annot):
-    gene_class_counts = get_gene_class_counts(
-        gene_selector.value, tx_annot, all_compatibility_classes
+@app.function
+def threshold_class_counts(class_counts, min_tot_reads):
+    import util.compat_classes
+    counts = class_counts.counts.sum(axis=0)
+    selected = counts >= min_tot_reads
+    return util.compat_classes.CompatClassesDf(
+        compat = class_counts.compat[selected],
+        counts = class_counts.counts[:,selected],
+        ids = class_counts.ids,
+        haplotypes = class_counts.haplotypes,
     )
-    ase_model = make_ase_model(gene_selector.value, gene_class_counts, diplotypes)
-    return ase_model, gene_class_counts
+
+
+@app.cell
+def _(all_compatibility_classes, effective_lengths, gene_selector, tx_annot):
+    gene_class_counts_raw =  get_gene_class_counts(
+            gene_selector.value, tx_annot, all_compatibility_classes
+    )
+    gene_class_counts = gene_class_counts_raw
+    #gene_class_counts = threshold_class_counts(
+    #    gene_class_counts_raw,
+    #    min_tot_reads = 500,
+    #)
+    gene_effective_lengths = effective_lengths.filter(gene_id=gene_selector.value).select(
+        "mouse_id", "haplotype", "effective_length"
+    )
+    return gene_class_counts, gene_effective_lengths
+
+
+@app.cell
+def _(diplotypes, gene_class_counts, gene_effective_lengths, gene_selector):
+    ase_model = make_ase_model(
+        gene_selector.value,
+        gene_class_counts,
+        diplotypes,
+        gene_effective_lengths,
+        config=dict(
+            sigma_u_sd=1.0,
+            sigma_gamma_sd=1.0,
+            q_logit_sd=1e-9,
+            beta_sd = 2.0,
+            u_centered = False,
+            use_eta = True,
+            gamma_centered = False,
+        ),
+    )
+    return (ase_model,)
 
 
 @app.cell
@@ -268,8 +316,10 @@ def _(ase_model):
     _start = time.time()
     with ase_model:
         idata_ase = pm.sample(
-            300,
-            random_seed=101,
+            500,
+            chains=12,
+            cores=6,
+            random_seed=100,
             nuts_sampler="nutpie",
         )
     _end = time.time()
@@ -324,6 +374,12 @@ def _(idata_ase, lp, n_haps):
 @app.cell
 def _(idata_ase):
     az.summary(idata_ase, var_names="beta", filter_vars="like")
+    return
+
+
+@app.cell
+def _(idata_ase):
+    az.summary(idata_ase, var_names=["sigma_u", "sigma_gamma"])
     return
 
 

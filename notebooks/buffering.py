@@ -13,6 +13,7 @@ def _():
     import statsmodels.api as sm
     import numpy as np
     import yaml
+    import json
     import scipy.sparse
 
     return lp, mo, np, pb, pl, scipy, yaml
@@ -784,6 +785,152 @@ def _(buffering, good_genes5, lp, mo, np, pl):
             + lp.geom_abline(intercept=0, slope=1, color='red')
             + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
         ]) + lp.ggsize(900, 400)
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Bias model results
+    """)
+    return
+
+
+@app.cell
+def _(pl):
+    buffering_all2 = pl.read_ndjson("results/Adipose/buffering_with_bias.ndjson")
+    return (buffering_all2,)
+
+
+@app.cell
+def _(pl):
+    def extract_field(field_str):
+        entries = field_str.split(".")
+        temp = pl.col(entries[0])
+        for entry in entries[1:]:
+            temp = temp.struct.field(entry)
+        return temp
+
+    return (extract_field,)
+
+
+@app.cell
+def _(HAPLOTYPES, buffering_all2, extract_field, pl):
+    buffering2 = (
+        buffering_all2
+        .select(
+            "gene_id",
+            buffering_factor = pl.col("buffering").struct.field("lambda"),
+            buffering_factor_ci_lo = pl.col("buffering").struct.field("lo"),
+            buffering_factor_ci_hi = pl.col("buffering").struct.field("hi"),
+            deming_Q = pl.col("buffering").struct.field("Q"),
+            deming_p_gof = pl.col("buffering").struct.field("p_gof"),
+            **{f"effect_{hap}": extract_field(f"ase_model.beta.beta[{hap}].mean")
+               for hap in HAPLOTYPES},
+            **{f"effect_{hap}_se": extract_field(f"ase_model.beta.beta[{hap}].sd")
+               for hap in HAPLOTYPES},
+            **{f"total_{hap}": extract_field(f"total_model.beta.beta[{hap}].mean")
+               for hap in HAPLOTYPES},
+            **{f"total_{hap}_se": extract_field(f"total_model.beta.beta[{hap}].sd")
+               for hap in HAPLOTYPES},
+            ase_max_rhat_beta = extract_field("ase_model.diagnostic.max_rhat_beta"),
+            ase_max_rhat_core = extract_field("ase_model.diagnostic.max_rhat_core"),
+            ase_max_rhat_rest = extract_field("ase_model.diagnostic.max_rhat_rest"),
+            ase_min_ess_bulk_beta = extract_field("ase_model.diagnostic.min_ess_bulk_beta"),
+            ase_min_ess_bulk_core = extract_field("ase_model.diagnostic.min_ess_bulk_core"),
+            ase_min_ess_bulk_rest = extract_field("ase_model.diagnostic.min_ess_bulk_rest"),
+            ase_n_diverging = extract_field("ase_model.info.n_diverging"),
+            total_max_rhat_beta = extract_field("total_model.diagnostic.max_rhat_beta"),
+            total_max_rhat_core = extract_field("total_model.diagnostic.max_rhat_core"),
+            total_max_rhat_rest = extract_field("total_model.diagnostic.max_rhat_rest"),
+            total_min_ess_bulk_beta = extract_field("total_model.diagnostic.min_ess_bulk_beta"),
+            total_min_ess_bulk_core = extract_field("total_model.diagnostic.min_ess_bulk_core"),
+            total_min_ess_bulk_rest = extract_field("total_model.diagnostic.min_ess_bulk_rest"),
+            total_n_diverging = extract_field("total_model.info.n_diverging"),
+        ).with_columns(
+            ase_success = (
+                (pl.col("ase_n_diverging") < 3)
+                & (pl.col("ase_max_rhat_beta") < 1.01)
+                & (pl.col("ase_max_rhat_core") < 1.05)
+                & (pl.col("ase_min_ess_bulk_beta") > 400)
+            ),
+            total_success = (
+                (pl.col("total_n_diverging") < 3)
+                & (pl.col("total_max_rhat_beta") < 1.01)
+                & (pl.col("total_max_rhat_core") < 1.05)
+                & (pl.col("total_min_ess_bulk_beta") > 400)
+            ),
+        )
+    )
+    buffering2
+    return (buffering2,)
+
+
+@app.cell
+def _(buffering2, mo):
+    _ase_success = buffering2['ase_success'].sum()
+    _ase_success_pct = buffering2['ase_success'].mean()
+    _total_success = buffering2['total_success'].sum()
+    _total_success_pct = buffering2['total_success'].mean()
+    _both_success = (buffering2['ase_success'] & buffering2['total_success']).sum()
+    _both_success_pct = (buffering2['ase_success'] & buffering2['total_success']).mean()
+    mo.vstack([
+       f"Num ase_model success: {_ase_success} ({_ase_success_pct:0.2%})",
+       f"Num total_model success: {_total_success} ({_total_success_pct:0.2%})",
+       f"Num both success: {_both_success} ({_both_success_pct:0.2%})",
+    ])
+    return
+
+
+@app.cell
+def _(
+    HAPLOTYPES,
+    OUTLIER_MOUSE_IDS,
+    allele_unique,
+    buffering2,
+    buffering_all,
+    genotypes,
+    good_genes5,
+    mo,
+    np,
+    pl,
+):
+    # Find correlates with ase_success
+    _good = buffering2.select('gene_id', 'ase_success', good_gene5 = pl.col("gene_id").is_in(good_genes5))
+    _binom = buffering2.select('gene_id', 'ase_success').join(
+        buffering_all.select(
+            'gene_id',
+            pl.col('convergence_code_binom') > 0,
+            'n_samples_binom', 'dispersion', 'buffering_factor',
+            max_ase_beta = pl.max_horizontal([pl.col(f"effect_{hap}").abs() for hap in HAPLOTYPES]),
+        ),
+        "gene_id"
+    )
+    _au = buffering2.select('gene_id', 'ase_success').join(
+        allele_unique.group_by("gene_id").agg(median_expr = pl.col("total_reads").median()),
+        'gene_id'
+    )
+    hom_genos = genotypes.filter(pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS).not_(), pl.col("genotype").is_in([f'{h}{h}' for h in HAPLOTYPES])) \
+        .group_by(["gene_id"]) \
+        .agg(n_homozygous_genos = pl.col("genotype").n_unique())
+    hom_genos
+    _hom = buffering2.select('gene_id', 'ase_success').join(
+        hom_genos,
+        'gene_id',
+    ).with_columns(missing_hom = pl.col("n_homozygous_genos") < 8)
+    mo.vstack([
+        "ase_success correlations with:",
+        f"good_gene5: {np.corrcoef(_good["ase_success"], _good["good_gene5"])[0,1]:0.2f}",
+        f"covergence_binom: {np.corrcoef(_binom['ase_success'], _binom['convergence_code_binom'])[0,1]:0.2e}",
+        f"n_samples_binom: {np.corrcoef(_binom['ase_success'], _binom['n_samples_binom'])[0,1]:0.2f}",
+        f"dispersion: {np.corrcoef(_binom['ase_success'], _binom['dispersion'])[0,1]:0.2f}",
+        f"dispersion: {np.corrcoef(_binom['ase_success'], _binom['dispersion'])[0,1]:0.2f}",
+        f"buffering_factor: {np.corrcoef(_binom['ase_success'], _binom['buffering_factor'])[0,1]:0.2f}",
+        f"max_ase_beta: {np.corrcoef(_binom['ase_success'], _binom['max_ase_beta'])[0,1]:0.2f}",
+        f"median_expr: {np.corrcoef(_au['ase_success'], _au['median_expr'])[0,1]:0.2f}",
+        f"n_homozogyous_genos: {np.corrcoef(_hom['ase_success'], _hom['n_homozygous_genos'])[0,1]:0.2f}",
+        f"missing_hom: {np.corrcoef(_hom['ase_success'], _hom['missing_hom'])[0,1]:0.2f}",
     ])
     return
 

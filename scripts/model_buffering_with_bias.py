@@ -4,6 +4,7 @@ import numpy as np
 import pymc as pm
 import arviz as az
 
+import argparse
 import time
 import yaml
 import json
@@ -14,11 +15,30 @@ from ase_buffering.ase_model import make_ase_model, summarize_ase_model
 from ase_buffering.total_counts_model import make_total_model, summarize_total_model
 from ase_buffering.covariance_deming_regression import covariance_deming_regression
 
+parser = argparse.ArgumentParser("Run the models on the given genes")
+parser.add_argument("--tissue", help="which tissue to use")
+parser.add_argument("--outfile", help="which file to write json output to")
+parser.add_argument("--gene_ids_file", help="file with one gene id per line")
+parser.add_argument("--cores", type=int, help="how many cores to use", default=4)
+parser.add_argument("--chains", type=int, help="how many chains to make", default=4)
+parser.add_argument(
+    "--ase_config",
+    type=str,
+    help="json dict as string of ASE model config",
+    default=None,
+)
+args = parser.parse_args()
+
 TISSUE = "Adipose"
 OUTFILE = "temp.json"
-TISSUE = snakemake.wildcards.tissue_real
-OUTFILE = snakemake.output.outfile
-gene_ids = snakemake.params.genes
+TISSUE = args.tissue
+OUTFILE = args.outfile
+CORES = args.cores
+CHAINS = args.chains
+ASE_CONFIG = json.loads(args.ase_config) if args.ase_config else None
+
+gene_ids = [x.strip() for x in open(args.gene_ids_file).read().splitlines()]
+print(f"Running on {len(gene_ids)} genes (gene_ids={gene_ids[:5]}...")
 
 config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
 HAPLOTYPES = config["haplotypes"].split(",")
@@ -145,11 +165,14 @@ for gene_id in gene_ids:
         gene_class_counts,
         diplotypes,
         gene_effective_lengths,
+        config=ASE_CONFIG,
     )
     _start = time.time()
     with ase_model:
         idata_ase = pm.sample(
             500,
+            cores=CORES,
+            chains=CHAINS,
             random_seed=100,
             nuts_sampler="nutpie",
             quiet=quiet,
@@ -172,6 +195,8 @@ for gene_id in gene_ids:
     with total_model:
         idata_total = pm.sample(
             500,
+            cores=CORES,
+            chains=CHAINS,
             random_seed=101,
             nuts_sampler="nutpie",
             quiet=quiet,
@@ -203,6 +228,7 @@ for gene_id in gene_ids:
             "total_model": total_summary,
             "buffering": buffering_res,
             "runtime": time.time() - _gene_start,
+            "config": config,
         }
     )
 

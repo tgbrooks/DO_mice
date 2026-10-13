@@ -117,6 +117,9 @@ rule collect_buffering_results:
             temp.append(data)
         pl.concat(temp).write_csv(output.results, separator="\t")
 
+def get_chunk_fle(wildcards):
+    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir)
+    return chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt"
 rule model_buffering_with_bias:
     """ Run bias-correcting ASE models and total count models """
     input:
@@ -124,36 +127,34 @@ rule model_buffering_with_bias:
         size_factors = "processed/{tissue_real}/size_factors.txt",
         phenotypes = "phenotypes.csv.gz",
         effective_lengths = "processed/{tissue_real}/effective_lengths.by_gene.parquet",
-        chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
+        gene_list = get_chunk_file
     output:
         outfile = "processed/{tissue_real}/buffering_with_bias/{chromosome}.{chunk_num}.txt"
-    params:
-        min_median_counts = config['MIN_MEDIAN_COUNTS'],
-        genes = get_chunk_genes,
-        outlier_ids = config['outlier_ids'], # Remove these mice
     threads: 4
     resources:
         mem_mb = 24_000,
     script:
-        "../scripts/model_buffering_with_bias.py"
+        "python scripts/model_buffering_with_bias.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list}"
 
 rule collect_buffering_with_bias_results:
     input:
         results = get_all_model_chunk_results("buffering_with_bias"),
     output:
-        results = "results/{tissue}/buffering_with_bias.json"
+        results = "results/{tissue}/buffering_with_bias.ndjson"
     resources:
         mem_mb = 6_000
     run:
         import json
-        temp = []
-        for r in input.results:
-            try:
-                data = json.load(open(r))
-                temp.append(data)
-            except FileNotFoundError:
-                print(f"Skipping {r} - file not found")
-        json.dump(temp, open(output.results, "wt"))
+        with open(output.results, "wt") as ndjson:
+            for r in input.results:
+                try:
+                    data = json.load(open(r))
+                except FileNotFoundError:
+                    print(f"Skipping {r} - file not found")
+                    continue
+                for gene in data:
+                    json.dump(gene, ndjson)
+                    ndjson.write("\n")
 
 rule compute_coverage:
     input:
@@ -162,10 +163,11 @@ rule compute_coverage:
         emase = "processed/{tissue}/gbrs/{sample_id}.compressed.h5",
     output:
         out = "processed/{tissue}/cov/{sample_id}.cov.parquet",
+    threads: 8
     resources:
-        mem_mb = 24_000,
+        mem_mb = 48_000,
     shell:
-        "python ../scripts/compute_coverage.py --R1 {input.R1} --R2 {input.R2} --emase {input.emase} --out {output}"
+        "python scripts/compute_coverage.py --R1 {input.R1} --R2 {input.R2} --emase {input.emase} --out {output}"
 
 rule gather_fragment_lengths:
     """ Fragment length distribution of all samples from Salmon """
