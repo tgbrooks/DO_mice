@@ -252,9 +252,9 @@ def _(lp, np, pl):
             .select("pos", "type")
             .unique()
             .sort("pos")
-            # NOTE: this RLE isn't really working
+            # NOTE: this RLE isn't completely working, some things don't merge that should
             .with_columns(
-                rle_id = pl.col("pos").rle_id().over("type")
+                rle_id = pl.col("pos").diff().shift(-1).rle_id().over("type")
             ).group_by(
                 ["rle_id", "type"]
             ).agg(
@@ -265,11 +265,19 @@ def _(lp, np, pl):
                 hap_top = pl.when(pl.col("type") == "gap").then(-0.25).otherwise(-0.5),
             )
         )
+        bg =  pl.DataFrame({
+            "start": [msa_raw['pos'].min()],
+            "end": [msa_raw['pos'].max()],
+            "hap_bottom": -0.75,
+            "hap_top": -0.25,
+            "type": "match",
+        })
         return (
             lp.ggplot(msa, lp.aes(xmin = "start", xmax="end", ymin = "hap_bottom", ymax="hap_top",fill="type"))
             + lp.geom_rect(linetype=0)
+            + lp.geom_rect(data=bg,linetype=0,color="black")
             + lp.geom_rect(data=any_variant,linetype=0)
-            + lp.scale_y_continuous(breaks = [x+0.45 for x in hap_num.values()], labels=list(hap_num.keys()))
+            + lp.scale_y_continuous(breaks = [-0.5] +[x+0.45 for x in hap_num.values()], labels=["Sum"] +list(hap_num.keys()))
             + lp.scale_color_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "gold"])
             + lp.scale_fill_manual(breaks=["match", "mismatch", "gap"], values=["black", "red", "gold"])
             + lp.ggsize(900, 500)
