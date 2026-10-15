@@ -1,9 +1,11 @@
 import polars as pl
+import scipy.special
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import arviz as az
 import scipy.optimize
+import formulaic
 
 from util.compat_classes import CompatClassesDf
 from util.pymc_helpers import (
@@ -29,9 +31,13 @@ def make_ase_model(
     default_config = {
         "sigma_u_sd": 1.0,
         "sigma_gamma_sd": 1.0,
+        "sigma_v_sd": 1.0,
+        "dirichlet_scale_sd": 3.0,
+        "dirichlet_scale_mu": np.log(1e3),
         "beta_sd": 2.0,
         "q_logit_sd": 2.0,
-        "u_centered": True,
+        "u_centered": True,  # Note: terminology reversed, True = N(0,1)*sigma (non-centered) TODO: fix
+        "v_centered": True,
         "use_eta": False,
         "gamma_centered": True,
     }
@@ -80,6 +86,7 @@ def make_ase_model(
     n_classes = int(gene_class_counts.compat.shape[0])
     n_haps = len(HAPLOTYPES)
     n_pairs = (n_haps * (n_haps - 1)) // 2
+    n_samples = len(gene_class_counts.ids)
     model = pm.Model(
         coords={
             "haplotypes": HAPLOTYPES,
@@ -100,6 +107,13 @@ def make_ase_model(
     # we use the plugin estimate for q. Used to whiten the coordinates of q.
     M = np.array([np.diag(row) - row[:, None] @ row[None, :] for row in q_hat])
     eig_vals, eig_vecs = np.linalg.eigh(M)
+    # Estimate alphas
+    _var_fit, alpha = estimate_class_alpha(
+        gene_class_counts,
+        q_hat,
+        hap1,
+        hap2,
+    )
 
     with model:
         _counts = pm.Data(
@@ -109,15 +123,18 @@ def make_ase_model(
         _hap2 = pm.Data("hap2", hap2, dims="samples")
         _eff_len1 = pm.Data("eff_len1", eff_len1, dims="samples")
         _eff_len2 = pm.Data("eff_len2", eff_len2, dims="samples")
+        _alpha = pm.Data("alpha", alpha, dims=("samples", "classes"))
         _nz = _counts > 0
 
         # Nuisance variables
         # Rates at which reads from a haplotype are assigned to each class
         # log-scale q values, which get whitened according to M above
-        q_logit = pm.Normal(
-            "q_logit",
-            sigma=config["q_logit_sd"],
-            dims=("haplotypes", "q_coordinates"),
+        q_logit = (
+            pm.Normal(
+                "q_logit",
+                dims=("haplotypes", "q_coordinates"),
+            )
+            * config["q_logit_sd"]
         )
         q = pm.Deterministic(
             "q",
@@ -133,7 +150,7 @@ def make_ase_model(
         # Diplotype effects
         # Deviations from additive haplotype effects, constrained to be orthogonal
         # to the additive effect
-        sigma_gamma = pm.HalfNormal("sigma_gamma", sigma=config["sigma_gamma_sd"])
+        sigma_gamma = pm.HalfNormal("sigma_gamma") * config["sigma_gamma_sd"]
         # Orthogonal to the beta's
         orthog_to_beta = np.zeros((n_haps, n_haps, n_haps))
         for i in range(n_haps):
@@ -165,7 +182,7 @@ def make_ase_model(
             + _gamma[_hap1, _hap2]
         )
         # Random per-sample effects
-        sigma_u = pm.HalfNormal("sigma_u", config["sigma_u_sd"])
+        sigma_u = pm.HalfNormal("sigma_u") * config["sigma_u_sd"]
         if config["use_eta"]:
             eta = pm.Normal("eta", mu=lin, sigma=sigma_u, dims="samples")
             u = pm.Deterministic("u", eta - lin, dims="samples")
@@ -183,11 +200,84 @@ def make_ase_model(
             dims=("samples"),
         )
 
-        class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
+        # # Try adding log-normal noise to each class
+        # # TODO: log or logit here?
+        # log_mu = pm.math.log(p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2])
+        # sigma_v = pm.HalfNormal("sigma_v", sigma=config["sigma_v_sd"])
+        # # v = pm.Normal("v", mu=class_props, sigma=sigma_v, dims=("samples", "classes"))
+        # # Split whether we do centered or non-centered v by counts for efficiency
+        # counts_np = gene_class_counts.counts
+        # hi = counts_np >= 50  # roughly: centered when count * sigma_v**2 >~ 1
+        # i_hi, i_lo = np.nonzero(hi), np.nonzero(~hi)
+        # v_hi = pm.Normal("v_hi", mu=log_mu[i_hi], sigma=sigma_v, shape=int(hi.sum()))
+        # z_lo = pm.Normal("z_lo", 0, 1, shape=int((~hi).sum()))
+        # v = pt.zeros_like(log_mu)
+        # v = pt.set_subtensor(v[i_hi], v_hi)
+        # v = pt.set_subtensor(v[i_lo], log_mu[i_lo] + sigma_v * z_lo)
 
+        # Original
+        # class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
+        # pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
+
+        # Dirichlet multinomial version
         # Log-likelihood - used instaed of pm.Multinomial since its a bit faster
         # We drop the constant terms that don't depend upon class_props
-        pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
+        # pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
+        # class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
+        # dirichlet_scale = pm.Normal(
+        #    "dirichlet_scale",
+        #    mu=config["dirichlet_scale_mu"],
+        #    sigma=config["dirichlet_scale_sd"],
+        # )
+        # pm.DirichletMultinomial(
+        #    "dm_counts",
+        #    n=pt.sum(_counts, axis=1),
+        #    a=class_props * np.exp(dirichlet_scale),
+        #    dims=("samples", "classes"),
+        #    observed=_counts,
+        # )
+
+        # Normal
+        class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
+        totals = gene_class_counts.counts.sum(axis=1, keepdims=True)
+        # sigma_final_coeffs = pm.Normal("sigma_final_coeffs", 0.0, 2.0, shape=B.shape[1])
+        # pm.Normal(
+        #     "y",
+        #     mu=np.log(totals * class_props + 1),
+        #     sigma=pt.exp(B @ sigma_final_coeffs).reshape((n_samples, n_classes)),
+        #     observed=np.log(_counts + 1),
+        #     dims=("samples", "classes"),
+        # )
+
+        # Negative-binomial option
+        # kappa = pm.LogNormal("kappa", 0.0, 1.0)
+        # alpha_final_coeffs = pm.Normal("alpha_final_coeffs", 0.0, 2.0, shape=B.shape[1])
+        # pm.NegativeBinomial(
+        #    "y",
+        #    mu=totals * class_props,
+        #    alpha=alpha,
+        #    # alpha=np.exp(B @ alpha_final_coeffs).reshape((n_samples, n_classes)),
+        #    observed=_counts,
+        #    dims=("samples", "classes"),
+        # )
+
+        # Negative-binomial as a potential - samples much faster for unclear reasons
+        mu = totals * class_props
+        nb_const = (
+            pt.gammaln(_alpha + gene_class_counts.counts)
+            - pt.gammaln(gene_class_counts.counts + 1)
+            - pt.gammaln(_alpha)
+        )
+        pm.Potential(
+            "ll",
+            pt.sum(
+                nb_const
+                # Equivalent to: log[ (alpha / (alpha + mu))^alpha (mu / (alpha + mu))^counts ]
+                # but slightly more numerically stable for very large alpha (i.e., near Poisson)
+                - _alpha * pt.log1p(mu / _alpha)
+                + _counts * (pt.log(mu) - pt.log(_alpha + mu))
+            ),
+        )
 
     return model
 
@@ -217,6 +307,65 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
     q_hat[q_hat < 1e-5] = 1e-5
     q_hat /= q_hat.sum(axis=1)[:, None]
     return q_hat  # n_haps x n_classes
+
+
+def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
+    """
+    Compute a trend line of variance over class proportion
+    Use that to compute alpha (1/dispersion) for each class's counts
+
+    q_hat from estimate_class_proportions()
+    """
+    temp = []
+    haps = pl.DataFrame({"mouse_id": gene_class_counts.ids, "hap1": hap1, "hap2": hap2})
+    # NOTE: this works best if diplotypes are always sorted (AB not BA), which they are in
+    # our dataset but may not be in general (e.g., simulated). Estimate is just noisier otherwise.
+    for (h1, h2), dat in haps.group_by(["hap1", "hap2"]):
+        these_mice = dat["mouse_id"]
+        these_mice_ids = np.where(np.isin(gene_class_counts.ids, these_mice))
+        if len(these_mice) < 4:
+            # Variance too high in this diplotype, ignore
+            continue
+        these_counts = gene_class_counts.counts[these_mice_ids]
+        tots = np.sum(these_counts, axis=1)
+        q_hat_close = np.abs(np.log(q_hat[h1] / q_hat[h2])) < 0.5
+        with np.errstate(divide="ignore", invalid="ignore"):
+            props = these_counts / np.sum(these_counts, axis=1, keepdims=True)
+            mprops = np.mean(props, axis=0)
+            true_var = props.var(axis=0, ddof=1)
+        temp.append(
+            pl.DataFrame(
+                {
+                    "hap1": h1,
+                    "hap2": h2,
+                    "var": true_var,
+                    "mean_T": np.mean(tots),
+                    "mean_inv_T": np.mean(1 / tots),
+                    "q_hat_close": q_hat_close,
+                    "log_prop": np.log(mprops),
+                    "n_samples": len(these_mice),
+                    "class_num": np.arange(mprops.shape[0]),
+                }
+            )
+        )
+    df = pl.concat(temp)
+    _df = df.filter("q_hat_close", pl.col("log_prop").is_finite())
+    # Fit trend curve
+    X = formulaic.Formula(
+        "~ bs(log_prop, df=4, extrapolation='clip')"
+    ).get_model_matrix(_df)
+    y = np.log(_df["var"])
+    var_coeffs, _, _, _ = np.linalg.lstsq(X.to_numpy(), y)
+    # Now get sample-level trend-curve values
+    q_hat_mean = (q_hat[hap1] + q_hat[hap2]) / 2
+    X2 = X.model_spec.get_model_matrix(
+        pl.DataFrame({"log_prop": np.log(q_hat_mean.ravel())})
+    )
+    var_fit = np.exp(X2 @ var_coeffs).reshape(q_hat_mean.shape)
+    mean_T_inv = np.mean(1 / gene_class_counts.counts.sum(axis=1, keepdims=True))
+    alpha = q_hat_mean**2 / (var_fit - q_hat_mean * mean_T_inv)
+    alpha[alpha < 0] = 1e3  # Poisson-like fit -> high alpha -> low dispersion
+    return var_fit, alpha
 
 
 def _summary(idata, **kwargs):
