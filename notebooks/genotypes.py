@@ -157,22 +157,27 @@ def _(pb, pl):
 
 
 @app.cell
-def _(gene_selector, lp, plot_msa, transcripts, tx_annot):
+def _(gene_selector, lp, mo, pl, plot_msa, transcripts, tx_annot):
     import pyabpoa as pa
     gene_transcripts = tx_annot.filter(gene_id = gene_selector.value)['transcript_id']
-    _temp = []
-    for transcript_id in gene_transcripts:
-        _dat = transcripts.filter(transcript_id = transcript_id)
-        a = pa.msa_aligner()
-        seqs=list(_dat['sequence'])
-        a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment 
-        _temp.append(plot_msa(a_res, _dat['haplotype']) + lp.ggtitle(transcript_id))
-    lp.gggrid(_temp, ncol=1) + lp.ggsize(900, 250*len(_temp)) + lp.ggtb()
-    return gene_transcripts, pa
+    max_len = transcripts.filter(pl.col('transcript_id').is_in(list(gene_transcripts)))['sequence'].str.len_bytes().max()
+    print(max_len)
+    if max_len < 10_000:
+        _temp = []
+        for transcript_id in gene_transcripts:
+            _dat = transcripts.filter(transcript_id = transcript_id)
+            a = pa.msa_aligner()
+            seqs=list(_dat['sequence'])
+            a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment 
+            _temp.append(plot_msa(a_res, _dat['haplotype']) + lp.ggtitle(transcript_id))
+        lp.gggrid(_temp, ncol=1) + lp.ggsize(900, 250*len(_temp)) + lp.ggtb()
+    else:
+        mo.md(f"Skipping very long gene: {max_len}bp")
+    return gene_transcripts, max_len, pa
 
 
 @app.cell(hide_code=True)
-def _(HAPLOTYPES, gene_transcripts, lp, np, pa, pl, transcripts):
+def _(HAPLOTYPES, gene_transcripts, lp, max_len, np, pa, pl, transcripts):
     def _():
         num_unique = []
         for transcript_id in gene_transcripts:
@@ -204,7 +209,8 @@ def _(HAPLOTYPES, gene_transcripts, lp, np, pa, pl, transcripts):
                 + lp.geom_tile(tooltips=lp.layer_tooltips(["hap1", "hap2", "num_unique", "seq1_unique", "seq2_unique"]))
                 + lp.ggtitle("Number of unique nucleotide positions")
         )
-    _()
+    if max_len < 10_000:
+        _()
     return
 
 
@@ -287,7 +293,7 @@ def _(lp, np, pl):
     return (plot_msa,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(gene_selector, lp, mo, pa, pl, plot_msa, transcripts, tx_annot):
     def _():
         gene_transcripts = tx_annot.filter(gene_id = gene_selector.value)['transcript_id']
