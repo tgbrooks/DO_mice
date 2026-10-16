@@ -475,6 +475,30 @@ def _(MAX_INCOMPATIBLE_MICE, good_genes4, mo, num_incompat_by_gene, pl):
     return (good_genes5,)
 
 
+@app.cell
+def _(genotypes, lp, mo, pl):
+    # Check genotyping confidence
+    geno_summary = (
+        genotypes
+            .group_by("gene_id")
+            .agg(
+                over_095 = (pl.col("genotype_confidence") < 0.95).sum(),
+                over_09 = (pl.col("genotype_confidence") < 0.9).sum(),
+                over_08 = (pl.col("genotype_confidence") < 0.8).sum(),
+            )
+            .unpivot(on=["over_095", "over_09", "over_08"], index="gene_id", value_name="n_samples_failing", variable_name="threshold")
+    )
+    mo.vstack([
+        "Genotyping calls are made at multiple markers and involves uncertainty. We defined 'confidence' of the call by averaging over all markers overlapping the gene and one up and downstream of it. 1 confidence indicates all markers completely agree with the assigned genotype, 0 means complete disagreement. Here we investigate what fraction of samples would pass various thresholds.",
+        (
+             lp.ggplot(geno_summary, lp.aes("n_samples_failing", color="threshold", fill="threshold"))
+                + lp.stat_ecdf()
+                + lp.labs(x = "number samples failing", y="fraction of genes")
+        )
+    ])
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
