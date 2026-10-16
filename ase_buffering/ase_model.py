@@ -35,11 +35,13 @@ def make_ase_model(
         "dirichlet_scale_sd": 3.0,
         "dirichlet_scale_mu": np.log(1e3),
         "beta_sd": 2.0,
+        "use_q_logit": True,
         "q_logit_sd": 2.0,
         "u_centered": True,  # Note: terminology reversed, True = N(0,1)*sigma (non-centered) TODO: fix
         "v_centered": True,
         "use_eta": False,
         "gamma_centered": True,
+        "min_genotype_confidence": 0.95,
     }
     if config is not None:
         default_config.update(config)
@@ -47,10 +49,15 @@ def make_ase_model(
 
     gene_diplotypes = (
         diplotypes.filter(gene_id=gene_id)
+        .filter(
+            pl.col("genotype_confidence") > config["min_genotype_confidence"],
+            pl.col("mouse_id").is_in(gene_class_counts.ids),
+        )
         .select("diplotype", "mouse_id")
         .join(
             pl.DataFrame({"mouse_id": gene_class_counts.ids}),
             "mouse_id",
+            how="left",
             maintain_order="right",
         )
         .with_columns(
@@ -74,6 +81,10 @@ def make_ase_model(
             maintain_order="left",
         )
     )
+    gene_class_counts = gene_class_counts.subset_samples(
+        list(gene_diplotypes["mouse_id"])
+    )
+
     HAPLOTYPES = gene_class_counts.haplotypes
     HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
 
@@ -86,15 +97,23 @@ def make_ase_model(
     n_classes = int(gene_class_counts.compat.shape[0])
     n_haps = len(HAPLOTYPES)
     n_pairs = (n_haps * (n_haps - 1)) // 2
+    pairs = [(a, b) for a in range(n_haps) for b in range(a + 1, n_haps)]
+    pair_index = {pr: k for k, pr in enumerate(pairs)}
+    hap_het_pairs = [f"pair_{HAPLOTYPES[h1]}{HAPLOTYPES[h2]}" for h1, h2 in pairs]
+    class_names = [
+        "".join(h for j, h in enumerate(HAPLOTYPES) if gene_class_counts.compat[i, j])
+        for i in range(n_classes)
+    ]
+
     n_samples = len(gene_class_counts.ids)
     model = pm.Model(
         coords={
             "haplotypes": HAPLOTYPES,
             "haplotypes2": HAPLOTYPES,
-            "classes": [f"class_{i}" for i in range(n_classes)],
+            "classes": class_names,
             "q_coordinates": [f"comp_{i}" for i in range(n_classes)],
             "samples": gene_class_counts.ids,
-            "hap_pairs": [f"pair_{i}" for i in range(n_pairs)],
+            "hap_pairs": hap_het_pairs,
         }
     )
     eff_len1 = gene_diplotypes["eff_len1"]
@@ -115,6 +134,32 @@ def make_ase_model(
         hap2,
     )
 
+    # For delta: these are the beta and gamma components of delta
+    Bm = np.zeros((len(pairs), n_haps))
+    for k, (a, b) in enumerate(pairs):
+        Bm[k, a], Bm[k, b] = 1.0, -1.0
+    P_B = Bm @ Bm.T / n_haps
+    P_G = np.eye(len(pairs)) - P_B
+
+    # per-mouse lookup: homozygotes contribute 0; handle BA ordering with a sign flip
+    idx = np.zeros(n_samples, dtype=int)
+    sign = np.zeros(n_samples)
+    for j, (a, b) in enumerate(zip(hap1, hap2)):
+        if a != b:
+            idx[j] = pair_index[(min(a, b), max(a, b))]
+            sign[j] = 1.0 if a < b else -1.0
+
+    # In order to know whether to use centered or noncentered, we need to know
+    # how informative a class is. For high expressed classes, centered works better.
+    # for low expressed, non-centered. Each gene may have some of both.
+    est_hap_total_counts = np.array(
+        [
+            (gene_class_counts.counts[(hap1 == i) | (hap2 == i)].sum(axis=0)) / 2
+            for i in range(n_haps)
+        ]
+    )
+    est_hap_class_counts = est_hap_total_counts * q_hat
+
     with model:
         _counts = pm.Data(
             "counts", gene_class_counts.counts, dims=("samples", "classes")
@@ -124,75 +169,146 @@ def make_ase_model(
         _eff_len1 = pm.Data("eff_len1", eff_len1, dims="samples")
         _eff_len2 = pm.Data("eff_len2", eff_len2, dims="samples")
         _alpha = pm.Data("alpha", alpha, dims=("samples", "classes"))
+        _q_hat = pm.Data("q_hat", q_hat, dims=("haplotypes", "classes"))
         _nz = _counts > 0
 
         # Nuisance variables
         # Rates at which reads from a haplotype are assigned to each class
         # log-scale q values, which get whitened according to M above
-        q_logit = (
-            pm.Normal(
-                "q_logit",
-                dims=("haplotypes", "q_coordinates"),
+        if config["q_mode"] == "eig_vecs":
+            q_logit = (
+                pm.Normal(
+                    "q_logit",
+                    dims=("haplotypes", "q_coordinates"),
+                )
+                * config["q_logit_sd"]
             )
-            * config["q_logit_sd"]
-        )
-        q = pm.Deterministic(
-            "q",
-            pm.math.softmax(
-                np.log(q_hat) + (eig_vecs @ q_logit[:, :, None])[:, :, 0], axis=1
-            ),
-            dims=("haplotypes", "classes"),
-        )
+            q = pm.Deterministic(
+                "q",
+                pm.math.softmax(
+                    np.log(_q_hat) + (eig_vecs @ q_logit[:, :, None])[:, :, 0], axis=1
+                ),
+                dims=("haplotypes", "classes"),
+            )
+        elif config["q_mode"] == "q_hat":  # just use the plugin value
+            q_logit = pm.Deterministic(
+                "q_logit", pt.zeros((n_haps, n_classes)), dims=("haplotypes", "classes")
+            )
+            q = pm.Deterministic(
+                "q",
+                _q_hat,
+                dims=("haplotypes", "classes"),
+            )
+        elif config["q_mode"] == "centered":
+            sigma_q = pm.HalfNormal("sigma_q", sigma=config["sigma_q_sd"])
+            q_logit = pm.ZeroSumNormal(
+                "q_logit", sigma=sigma_q, dims=("haplotypes", "classes")
+            )
+            q = pm.Deterministic(
+                "q",
+                pm.math.softmax(np.log(_q_hat) + q_logit, axis=1),
+                dims=("haplotypes", "classes"),
+            )
+        elif config["q_mode"] == "noncentered":
+            sigma_q = pm.HalfNormal("sigma_q", sigma=config["sigma_q_sd"])
+            q_logit = pm.ZeroSumNormal(
+                "q_logit", sigma=1, dims=("haplotypes", "classes")
+            )
+            q = pm.Deterministic(
+                "q",
+                pm.math.softmax(np.log(_q_hat) + sigma_q * q_logit, axis=1),
+                dims=("haplotypes", "classes"),
+            )
+        elif config["q_mode"] == "adaptive_centered":
+            # Center high expressers only
+            threshold = 50
+            center = est_hap_class_counts > threshold
+            # Pin the highest class of each haplotype to 0
+            pin_idx = np.argmax(est_hap_class_counts, axis=1)
+            pin = np.arange(n_classes)[None, :] == pin_idx[:, None]
+            # Separate out the tiny classes where the q_hat estimate is unreliable
+            tiny = q_hat < 2e-5
+            sigma_q = pm.HalfNormal("sigma_q", sigma=config["sigma_q_sd"])
+            sigma_q_tiny = pm.HalfNormal("sigma_q_tiny", sigma=config["sigma_q_sd"])
+            sigmas = pt.ones(center.shape)
+            sigmas = pt.set_subtensor(sigmas[center & (~tiny)], sigma_q)
+            sigmas = pt.set_subtensor(sigmas[center & tiny], sigma_q_tiny)
+            q_logit = pm.Normal("q_logit", sigma=sigmas, dims=("haplotypes", "classes"))
+            noncenter_sigmas = pt.ones(center.shape)
+            noncenter_sigmas = pt.set_subtensor(sigmas[~center & (~tiny)], sigma_q)
+            noncenter_sigmas = pt.set_subtensor(sigmas[~center & (tiny)], sigma_q_tiny)
+            q_logit_final = (noncenter_sigmas * q_logit) * (~pin)
+            q = pm.Deterministic(
+                "q",
+                pm.math.softmax(np.log(_q_hat) + q_logit_final, axis=1),
+                dims=("haplotypes", "classes"),
+            )
+        else:
+            raise ValueError("Unrecognized 'q_mode'")
 
-        # Haplotype effects
-        beta = pm.ZeroSumNormal("beta", sigma=config["beta_sd"], dims="haplotypes")
+        # # Haplotype effects
+        # beta = pm.ZeroSumNormal("beta", sigma=config["beta_sd"], dims="haplotypes")
 
-        # Diplotype effects
-        # Deviations from additive haplotype effects, constrained to be orthogonal
-        # to the additive effect
+        # # Diplotype effects
+        # # Deviations from additive haplotype effects, constrained to be orthogonal
+        # # to the additive effect
+        # sigma_gamma = pm.HalfNormal("sigma_gamma") * config["sigma_gamma_sd"]
+        # # Orthogonal to the beta's
+        # orthog_to_beta = np.zeros((n_haps, n_haps, n_haps))
+        # for i in range(n_haps):
+        #     orthog_to_beta[i, i, :] += 1
+        #     orthog_to_beta[i, :, i] -= 1
+        # gamma_null = np.concat((orthog_to_beta, antisymmetric_constraints(n_haps)))
+        # if config["gamma_centered"]:
+        #     gamma = constrained_normal(
+        #         "gamma",
+        #         orthog_to=gamma_null,
+        #         sigma=1.0,
+        #         dims=("haplotypes", "haplotypes2"),
+        #     )
+        #     _gamma = sigma_gamma * gamma
+        # else:
+        #     gamma = constrained_normal(
+        #         "gamma",
+        #         orthog_to=gamma_null,
+        #         sigma=sigma_gamma,
+        #         dims=("haplotypes", "haplotypes2"),
+        #     )
+        #     _gamma = gamma
+
+        ## Delta: union of gamma and beta, one variable per hap pair (hets only)
         sigma_gamma = pm.HalfNormal("sigma_gamma") * config["sigma_gamma_sd"]
-        # Orthogonal to the beta's
-        orthog_to_beta = np.zeros((n_haps, n_haps, n_haps))
-        for i in range(n_haps):
-            orthog_to_beta[i, i, :] += 1
-            orthog_to_beta[i, :, i] -= 1
-        gamma_null = np.concat((orthog_to_beta, antisymmetric_constraints(n_haps)))
-        if config["gamma_centered"]:
-            gamma = constrained_normal(
-                "gamma",
-                orthog_to=gamma_null,
-                sigma=1.0,
-                dims=("haplotypes", "haplotypes2"),
-            )
-            _gamma = sigma_gamma * gamma
-        else:
-            gamma = constrained_normal(
-                "gamma",
-                orthog_to=gamma_null,
-                sigma=sigma_gamma,
-                dims=("haplotypes", "haplotypes2"),
-            )
-            _gamma = gamma
-
-        lin = (
-            beta[_hap1]
-            - beta[_hap2]
-            + pm.math.log(_eff_len1)
-            - pm.math.log(_eff_len2)
-            + _gamma[_hap1, _hap2]
+        delta_cov = n_haps * config["beta_sd"] ** 2 * P_B + sigma_gamma**2 * P_G
+        delta = pm.MvNormal(
+            "delta", mu=np.zeros(len(pairs)), cov=delta_cov, dims="hap_pairs"
         )
-        # Random per-sample effects
+        beta = pm.Deterministic("beta", Bm.T @ delta / n_haps, dims="haplotypes")
+        gamma_raw = pm.Deterministic("gamma_raw", P_G @ delta, dims="hap_pairs")
+
         sigma_u = pm.HalfNormal("sigma_u") * config["sigma_u_sd"]
-        if config["use_eta"]:
-            eta = pm.Normal("eta", mu=lin, sigma=sigma_u, dims="samples")
-            u = pm.Deterministic("u", eta - lin, dims="samples")
-        else:
-            if config["u_centered"]:
-                u_raw = pm.Normal("u_raw", 0, 1, dims="samples")
-                u = sigma_u * u_raw
-            else:
-                u = pm.Normal("u", 0, sigma=sigma_u, dims="samples")
-            eta = lin + u
+        lin = sign * delta[idx] + pm.math.log(_eff_len1) - pm.math.log(_eff_len2)
+        eta = pm.Normal("eta", mu=lin, sigma=sigma_u, dims="samples")
+        u = pm.Deterministic("u", eta - lin, dims="samples")
+
+        # lin = (
+        #    beta[_hap1]
+        #    - beta[_hap2]
+        #    + pm.math.log(_eff_len1)
+        #    - pm.math.log(_eff_len2)
+        #    + _gamma[_hap1, _hap2]
+        # )
+        # # Random per-sample effects
+        # sigma_u = pm.HalfNormal("sigma_u") * config["sigma_u_sd"]
+        # if config["use_eta"]:
+        #    eta = pm.Normal("eta", mu=lin, sigma=sigma_u, dims="samples")
+        #    u = pm.Deterministic("u", eta - lin, dims="samples")
+        # else:
+        #    if config["u_centered"]:
+        #        u_raw = pm.Normal("u_raw", 0, 1, dims="samples")
+        #        u = sigma_u * u_raw
+        #    else:
+        #        u = pm.Normal("u", 0, sigma=sigma_u, dims="samples")
+        #    eta = lin + u
 
         p = pm.Deterministic(
             "p",
@@ -291,17 +407,12 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
     """
     class_props = class_counts / (class_counts.sum(axis=1)[:, None] + 1e-9)
     n_samples, n_classes = class_counts.shape
-    # inverse variance-weights
-    weight = np.sqrt(class_counts.sum(axis=1))
     X = np.zeros((n_samples, n_haps))
     for g in range(n_haps):
         X[hap1 == g, g] += 1 / 2
         X[hap2 == g, g] += 1 / 2
     q_hat = np.array(
-        [
-            scipy.optimize.nnls(weight[:, None] * X, weight * class_props[:, i])[0]
-            for i in range(n_classes)
-        ]
+        [scipy.optimize.nnls(X, class_props[:, i])[0] for i in range(n_classes)]
     ).T
     # Force not too tiny to be conservative
     q_hat[q_hat < 1e-5] = 1e-5
@@ -386,8 +497,10 @@ def summarize_ase_model(idata, gene_class_counts):
     q_summary_important = q_summary.filter(pl.col("mean") > 5e-4)
     if "u_raw" in idata["posterior"].keys():
         u_summary = _summary(idata, var_names=["u_raw"])  # centered version
-    else:
+    elif "u" in idata["posterior"].keys():
         u_summary = _summary(idata, var_names=["u"])  # non-centered version
+    else:
+        u_summary = _summary(idata, var_names=["eta"])  # non-centered version
 
     read_classes = summarize_read_classes(idata, gene_class_counts)
     bias_rates = summarize_bias_rates(idata, gene_class_counts)

@@ -26,6 +26,21 @@ class CompatClassesDf:
     ids: list[str]  # n_samples ids list
     haplotypes: list[str]  # n_haplotypes
 
+    def subset_samples(self, samples: list[str]) -> "CompatClassesDf":
+        matches = np.array(self.ids)[None, :] == np.array(samples)[:, None]
+        matched = matches.any(axis=1)
+        if any(~matched):
+            raise ValueError(
+                f"Some samples where not in ids: eg: {np.array(samples)[~matched][:10]}"
+            )
+        idxs = np.argmax(matches, axis=1)
+        return CompatClassesDf(
+            compat=self.compat,
+            counts=self.counts[idxs, :],
+            ids=list(np.array(self.ids)[idxs]),
+            haplotypes=self.haplotypes,
+        )
+
 
 # Now uniformize it: all samples to have the *same* compatibility classes
 def uniformize_compat_classes(
