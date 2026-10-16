@@ -18,13 +18,17 @@ with app.setup:
 
     from util.compressed_emase import load_compressed_emase
     from util.compat_classes import get_gene_class_counts, get_gene_totals, sparse_any
-    from ase_buffering.ase_model import make_ase_model, summarize_read_classes, summarize_bias_rates
+    from ase_buffering.ase_model import make_ase_model, summarize_read_classes, summarize_bias_rates, estimate_class_proportions, estimate_class_alpha
     from ase_buffering.total_counts_model import make_total_model
 
+
+@app.cell
+def _():
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     HAPLOTYPES = config["haplotypes"].split(",")
     HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
     SEX_TO_NUM = {"F": 0, "M": 1}
+    return HAPLOTYPES, HAP_TO_HAPNUM, config
 
 
 @app.cell
@@ -42,13 +46,13 @@ def _():
 
 
 @app.cell
-def _():
+def _(config):
     OUTLIER_MOUSE_IDS = config["outlier_ids"]
     return (OUTLIER_MOUSE_IDS,)
 
 
 @app.cell
-def _(lp):
+def _(HAPLOTYPES, lp):
     HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette(len(HAPLOTYPES))
     return (HAPLOTYPE_COLORS,)
 
@@ -95,9 +99,9 @@ def _():
 
 
 @app.cell
-def _(allele_unique):
-    diplotypes = allele_unique.select("mouse_id", "gene_id", "diplotype")
-    return (diplotypes,)
+def _():
+    genotypes = pl.read_parquet("processed/genotypes.parquet")
+    return (genotypes,)
 
 
 @app.cell
@@ -184,7 +188,7 @@ def _(mo):
 
 
 @app.cell
-def _(OUTLIER_MOUSE_IDS, mouse_ids):
+def _(HAPLOTYPES, OUTLIER_MOUSE_IDS, mouse_ids):
     # Load ALL the read compatibility data form all the mice
     all_compatibility_classes = {}
     for mouse_id in mouse_ids:
@@ -261,47 +265,52 @@ def _(all_compatibility_classes, effective_lengths, gene_selector, tx_annot):
 
 
 @app.cell
-def _(diplotypes, gene_class_counts, gene_effective_lengths, gene_selector):
+def _(gene_class_counts, gene_effective_lengths, gene_selector, genotypes):
     ase_model = make_ase_model(
         gene_selector.value,
         gene_class_counts,
-        diplotypes,
+        genotypes.select('gene_id', 'mouse_id', 'genotype_confidence', diplotype='genotype'),
         gene_effective_lengths,
         config=dict(
-            sigma_u_sd=1.0,
+            sigma_u_sd=0.3,
+            sigma_v_sd=0.5,
+            dirichlet_scale_sd=3.0,
+            dirichlet_sclae_mu=np.log(1e4),
             sigma_gamma_sd=1.0,
-            q_logit_sd=1e-9,
-            beta_sd = 2.0,
+            q_mode="adaptive_centered",
+            sigma_q_sd=0.5,
+            q_logit_sd=1,
+            beta_sd = 0.5,
             u_centered = False,
             use_eta = True,
-            gamma_centered = False,
+            gamma_centered = True,
+            min_genotype_confidence = 0.8,
         ),
     )
     return (ase_model,)
 
 
 @app.cell
-def _(allele_unique, gene_class_counts, gene_selector):
+def _(HAPLOTYPES, HAP_TO_HAPNUM, gene_class_counts, gene_selector, genotypes):
     # For plotting
     n_samples = int(gene_class_counts.counts.shape[0])
     n_classes = int(gene_class_counts.compat.shape[0])
     n_haps = len(HAPLOTYPES)
     gene_diplotypes = (
-        allele_unique.filter(gene_id=gene_selector.value)
-        .select("diplotype", "mouse_id")
+        genotypes.filter(gene_id=gene_selector.value)
+        .select("mouse_id", pl.col("genotype").alias("diplotype"), "genotype_confidence")
         .join(
             pl.DataFrame({"mouse_id": gene_class_counts.ids}),
             "mouse_id",
             maintain_order="right",
+        ).with_columns(
+            hap1=pl.col("diplotype").str.slice(0, 1).replace_strict(HAP_TO_HAPNUM),
+            hap2=pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM),
         )
     )
-    hap1 = gene_diplotypes.select(
-        pl.col("diplotype").str.slice(0, 1).replace_strict(HAP_TO_HAPNUM)
-    )["diplotype"].to_numpy()
-    hap2 = gene_diplotypes.select(
-        pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM)
-    )["diplotype"].to_numpy()
-    return hap1, hap2, n_classes, n_haps
+    hap1 = gene_diplotypes["hap1"].to_numpy()
+    hap2 = gene_diplotypes["hap2"].to_numpy()
+    return gene_diplotypes, hap1, hap2, n_classes, n_haps
 
 
 @app.cell
@@ -316,11 +325,15 @@ def _(ase_model):
     _start = time.time()
     with ase_model:
         idata_ase = pm.sample(
-            500,
-            chains=12,
+            300,
+            chains=6,
             cores=6,
+            blas_cores=1,
             random_seed=100,
             nuts_sampler="nutpie",
+            #nuts={"adaptation": "low_rank"},
+            #nuts={"adaptation": "full"},
+            #nuts=dict(target_accept=0.8),
         )
     _end = time.time()
     ase_model_time = _end - _start
@@ -348,13 +361,16 @@ def _(idata_ase):
 @app.cell
 def _(idata_ase, lp, n_haps):
     _gamma = (
-        (idata_ase["posterior"]["sigma_gamma"] * idata_ase["posterior"]["gamma"])
+        #(idata_ase["posterior"]["sigma_gamma"] * ) # using centered version now
+         idata_ase["posterior"]["gamma_raw"]
         .to_numpy()
         .reshape((-1, (n_haps * (n_haps - 1) // 2)))
     )
+    _names = idata_ase['posterior']['gamma_raw'].coords['hap_pairs'].data
     _df = (
-        pl.DataFrame({f"gamma_{i}": _gamma[:, i] for i in range(_gamma.shape[1])})
-        .unpivot(on=[f"gamma_{i}" for i in range(_gamma.shape[1])])
+        pl.DataFrame({f"gamma[{n}]": _gamma[:, i] for i, n in enumerate(_names)})
+        .unpivot(on=[f"gamma[{n}]" for n in _names])
+        .sort("variable")
         .group_by("variable")
         .agg(
             mean=pl.col("value").mean(),
@@ -364,7 +380,7 @@ def _(idata_ase, lp, n_haps):
     )
     (
         lp.ggplot(_df, lp.aes(x="mean", y="variable"))
-        + lp.geom_point()
+        + lp.geom_point(tooltips=lp.layer_tooltips(["variable"]))
         + lp.geom_errorbar(lp.aes(xmin="low", xmax="hi"))
         + lp.labs(x="gamma")
     )
@@ -379,12 +395,12 @@ def _(idata_ase):
 
 @app.cell
 def _(idata_ase):
-    az.summary(idata_ase, var_names=["sigma_u", "sigma_gamma"])
+    az.summary(idata_ase, var_names=["sigma_"], filter_vars="like")
     return
 
 
 @app.cell(hide_code=True)
-def _(gene_class_counts, idata_ase, lp, n_classes):
+def _(HAPLOTYPES, gene_class_counts, idata_ase, lp, n_classes):
     q_hat = np.mean(idata_ase["posterior"]["q"], axis=(0, 1))
     q_hat_se = np.std(idata_ase["posterior"]["q"], axis=(0, 1))
     # q_hat = [np.mean(samples['posterior'][f'q_{i}'], axis=(0,1)) for i in range(n_haps)]
@@ -462,7 +478,7 @@ def _(gene_class_counts, idata_ase, lp):
 
 
 @app.cell(hide_code=True)
-def _(gene_class_counts, hap1, hap2, idata_ase, lp, mo):
+def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, mo):
     # For each diplotype, plot the fit percentage of reads that are allele-unique for both haplotypes
     def _():
         temp = []
@@ -580,7 +596,7 @@ def _(gene_class_counts, hap1, hap2, idata_ase, lp, mo):
 
 
 @app.cell(hide_code=True)
-def _(gene_class_counts, hap1, hap2, idata_ase, lp, n_classes):
+def _(HAPLOTYPES, gene_class_counts, hap1, hap2, idata_ase, lp, n_classes):
     def _():
         p = idata_ase["posterior"]["p"].values
         q = idata_ase["posterior"]["q"].values
@@ -642,7 +658,7 @@ def _(gene_class_counts, hap1, hap2, idata_ase, lp, n_classes):
 
 
 @app.cell
-def _(HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp):
+def _(HAPLOTYPES, HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp):
     # Plot fit allele-unique bias rates
     _df = summarize_bias_rates(idata_ase, gene_class_counts)
     (
@@ -670,6 +686,37 @@ def _(HAPLOTYPE_COLORS, gene_class_counts, idata_ase, lp):
 @app.cell
 def _(idata_ase):
     az.plot_energy(idata_ase)
+    return
+
+
+@app.cell
+def _():
+    # Check for correlations across variables
+    import itertools
+    ase_raw_vars = ['q_logit', 'delta', 'eta', 'sigma_gamma', 'sigma_u']
+    def check_posterior_correlations(idata, raw_vars, chain):
+        var_names = []
+        temp = []
+        for var in raw_vars:
+            coord_names = list(idata['posterior'][var].coords)[2:]
+            for coords in itertools.product(*(idata['posterior'][var].coords[n].data for n in coord_names)):
+                var_name = f"{var}:{''.join(f'[{c}]' for c in coords)}"
+                temp.append(idata['posterior'][var].sel(chain=chain, **{n: c for n, c in zip(coord_names, coords)}).data.flatten())
+                var_names.append(var_name)
+        corrs = np.corrcoef(np.array(temp))
+        return var_names, corrs
+
+    return ase_raw_vars, check_posterior_correlations
+
+
+@app.cell
+def _(ase_raw_vars, check_posterior_correlations, idata_ase):
+    var_names, corrs = check_posterior_correlations(idata_ase, ase_raw_vars, chain=0)
+    _offdiag = corrs - np.eye(corrs.shape[0])
+    max_cols = np.argmax(_offdiag, axis=1)
+    max_row = np.argmax(_offdiag[np.arange(len(max_cols)), max_cols])
+    max_col = max_cols[max_row]
+    var_names[max_row], var_names[max_col], corrs[max_row, max_col]
     return
 
 
@@ -844,6 +891,7 @@ def _(buffering_res):
 
 @app.cell(hide_code=True)
 def _(
+    HAPLOTYPES,
     HAPLOTYPE_COLORS,
     beta_ase,
     beta_total,
@@ -1034,6 +1082,311 @@ def _(ase_model_time, idata_ase, idata_totals, total_model_time):
     import numba
 
     print(f"{numba.get_num_threads()=}")
+    return
+
+
+@app.cell(disabled=True)
+def _(ase_model):
+    # Time dlogp
+    wrapped_dlogp = ase_model.compile_dlogp(mode="numba")
+    ip = ase_model.initial_point()
+
+    #warm up
+    wrapped_dlogp(ip)
+
+    n = 100
+    t = time.perf_counter()
+    for _ in range(n):
+        #logp, grad = f(x0)
+        wrapped_dlogp(ip)
+    dt = (time.perf_counter() - t) / n
+    print(f"{dt*1e3:.2f} ms per dlogp  ->  1023 evals ≈ {dt*1023:.2f} s per draw")
+    return
+
+
+@app.cell
+def _(all_compatibility_classes, mo, tx_annot):
+    @mo.cache
+    def get_gene_class_counts_cached(gene_id):
+        return get_gene_class_counts(gene_id, tx_annot, all_compatibility_classes)
+
+    return (get_gene_class_counts_cached,)
+
+
+@app.cell
+def _(HAPLOTYPES):
+    def diplotypes_to_hapnums(diplotypes):
+        HAP_TO_HAPNUM = {hap:i for i,hap in enumerate(HAPLOTYPES)}
+        hapnums = diplotypes.select(
+            hap1=pl.col("diplotype").str.slice(0,1).replace_strict(HAP_TO_HAPNUM),
+            hap2=pl.col("diplotype").str.slice(1,1).replace_strict(HAP_TO_HAPNUM),
+        )
+        return hapnums['hap1'].to_numpy(), hapnums['hap2'].to_numpy()
+
+    return
+
+
+@app.cell(disabled=True)
+def _(HAPLOTYPES, HAP_TO_HAPNUM, allele_unique, get_gene_class_counts_cached):
+    # Relationship of variance and class prop in homozygous mice
+    _gene_list = [x.strip() for x in """
+    ENSMUSG00000030738
+    ENSMUSG00000041037
+    ENSMUSG00000008575
+    ENSMUSG00000021255
+    ENSMUSG00000038539
+    ENSMUSG00000025417
+    ENSMUSG00000039457
+    ENSMUSG00000046727
+    ENSMUSG00000066235
+    ENSMUSG00000037933
+    ENSMUSG00000040811
+    ENSMUSG00000024816
+    ENSMUSG00000033111
+    ENSMUSG00000121808
+    ENSMUSG00000039891
+    ENSMUSG00000001323
+    ENSMUSG00000051934
+    ENSMUSG00000051747
+    ENSMUSG00000018286
+    ENSMUSG00000038146
+    ENSMUSG00000037185
+    ENSMUSG00000032366
+    ENSMUSG00000039419
+    ENSMUSG00000009905
+    """.strip().splitlines()]
+    def _():
+        temp =[]
+        for gene_id in _gene_list:
+            gene_class_counts =  get_gene_class_counts_cached( gene_id )
+            gene_diplotypes = (
+                allele_unique.filter(gene_id=gene_id)
+                .select("diplotype", "mouse_id")
+                .join(
+                    pl.DataFrame({"mouse_id": gene_class_counts.ids}),
+                    "mouse_id",
+                    maintain_order="right",
+                ).with_columns(
+                    hap1=pl.col("diplotype").str.slice(0, 1).replace_strict(HAP_TO_HAPNUM),
+                    hap2=pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM),
+                )
+            )
+            q_hat = estimate_class_proportions(gene_class_counts.counts, gene_diplotypes['hap1'].to_numpy(), gene_diplotypes['hap2'].to_numpy(), len(HAPLOTYPES))
+            # NOTE: this works best if diplotypes are always sorted (AB not BA), which they are in
+            # our dataset but may not be in general (e.g., simulated). Estimate is just noisier otherwise.
+            for (diplotype, hap1, hap2), dat in gene_diplotypes.group_by(["diplotype", "hap1", "hap2"]):
+                these_mice = dat['mouse_id']
+                these_mice_ids = np.where(np.isin(gene_class_counts.ids, these_mice))
+                if len(these_mice) < 4:
+                    continue
+                these_counts=gene_class_counts.counts[these_mice_ids]
+                tots = np.sum(these_counts, axis=1)
+                q_hat_close = np.abs(np.log(q_hat[hap1] / q_hat[hap2])) < 0.5
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    props = these_counts / np.sum(these_counts, axis=1, keepdims=True)
+                    mprops = np.mean(props, axis=0)
+                    mult_var = (props * (1-props) / these_counts.sum(axis=1, keepdims=True)).mean(axis=0)
+                    true_var = props.var(axis=0, ddof=1)
+                    excess_var = true_var - mult_var
+                    alpha = mprops**2/(true_var - mprops*np.mean(1/tots))
+                n_classes = gene_class_counts.compat.shape[0]
+                temp.append(pl.DataFrame({
+                    "gene_id": gene_id,
+                    "diplotype": diplotype,
+                    "var": true_var,
+                    "mean_T": np.mean(tots),
+                    "mean_inv_T": np.mean(1/tots),
+                    "alpha": alpha,
+                    "q_hat_close": q_hat_close,
+                    "prop": mprops,
+                    "n_samples": len(these_mice),
+                    "class_num": np.arange(mprops.shape[0]),
+                    "hap_str": [''.join(h for i,h in enumerate(HAPLOTYPES) if gene_class_counts.compat[j,i]) for j in range(n_classes)]
+                }))
+        df = pl.concat(temp)
+        return df
+    class_variance_df = _()
+    return (class_variance_df,)
+
+
+@app.cell
+def _(HAPLOTYPES, class_variance_df, lp):
+    _df = class_variance_df.filter(
+        pl.col("prop") > 0.0,
+        pl.col("prop").is_nan().not_(),
+        pl.col("q_hat_close"),
+        #pl.col("alpha") > 0,
+    ).with_columns(
+        alpha_nice = pl.when(pl.col("alpha") < 0)
+            .then(1e3)
+            .otherwise("alpha"),
+        disp = 1/pl.col("alpha"),
+    )
+    _X =  np.array([
+            np.ones(len(_df)),
+            np.log(_df['prop'].to_numpy()),
+            np.log(_df['mean_T'].to_numpy()),
+        ]).T
+    res, _, _, _ = np.linalg.lstsq(
+        _X,
+        np.log(_df['var'].to_numpy())
+    )
+    _var = np.exp(res[0] + np.log(_df['prop'])*res[1] + np.log(_df['mean_T'])*res[2])
+    _fit = pl.DataFrame({"prop": _df['prop'], 'mean_T': _df['mean_T'], "gene_id":_df['gene_id'], "var": _var})
+    print(res)
+    (
+        lp.ggplot(
+            _df.with_columns(
+                is_hom = pl.col("diplotype").is_in([f'{hap}{hap}' for hap in HAPLOTYPES]),
+                #compatible = pl.col("diplotype").is_in(pl.col("hap_str").implode())
+            ).sample(fraction=1.0),# shuffle
+            lp.aes("prop", "var", color="is_hom")
+        )
+        + lp.facet_wrap("gene_id")
+        + lp.geom_point(tooltips=lp.layer_tooltips(["class_num", "n_samples", "diplotype", "hap_str"]), alpha=0.3)
+        + lp.scale_x_log10()
+        + lp.scale_y_continuous(trans="log10")
+        + lp.geom_smooth(lp.aes("prop", "var"), inherit_aes=False, method="lm", deg=4)
+        #+ lp.geom_smooth(lp.aes("prop", "var"), inherit_aes=False, method="lm")
+        + lp.geom_line(data=_fit, color="black")
+    )
+    return
+
+
+@app.cell
+def _(HAPLOTYPES, gene_class_counts, hap1, hap2):
+    _q_hat = estimate_class_proportions(gene_class_counts.counts, hap1, hap2, len(HAPLOTYPES))
+    #q_hat
+    #_hap1, _hap2
+    var_fit, alpha_fit = estimate_class_alpha(gene_class_counts, _q_hat, hap1, hap2)
+    return
+
+
+@app.cell(disabled=True)
+def _(idata_ase):
+    summary = az.summary(idata_ase)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Pairwise plotter (ASE model)
+    """)
+    return
+
+
+@app.cell
+def _(idata_ase, mo):
+    def extra_dims(var):
+        """Dims of a variable other than chain/draw."""
+        return [d for d in idata_ase.posterior[var].dims if d not in ("chain", "draw")]
+
+    def coord_pickers(var):
+        """One dropdown per extra dim of `var` (empty dict if scalar variable)."""
+        da = idata_ase.posterior[var]
+        return mo.ui.dictionary(
+            {
+                d: mo.ui.dropdown(
+                    options={str(v): v for v in da[d].values},  # label -> value
+                    value=str(da[d].values[0]),
+                    label=d,
+                )
+                for d in extra_dims(var)
+            }
+        )
+
+    plt_var_names = list(idata_ase.posterior.data_vars)
+    return coord_pickers, plt_var_names
+
+
+@app.cell
+def _(mo, plt_var_names):
+    x_var = mo.ui.dropdown(plt_var_names, value=plt_var_names[0], label="x variable")
+    y_var = mo.ui.dropdown(plt_var_names, value=plt_var_names[-1], label="y variable")
+    return x_var, y_var
+
+
+@app.cell
+def _(coord_pickers, x_var, y_var):
+    x_coords = coord_pickers(x_var.value)
+    y_coords = coord_pickers(y_var.value)
+    return x_coords, y_coords
+
+
+@app.cell(hide_code=True)
+def _(mo, x_coords, x_var, y_coords, y_var):
+    mo.vstack(
+        [
+            mo.hstack([x_var, x_coords], justify="start"),
+            mo.hstack([y_var, y_coords], justify="start"),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(idata_ase, lp, x_coords, x_var, y_coords, y_var):
+    def _():
+        def select(var, coords):
+            da = idata_ase.posterior[var].sel(**coords.value)  # -> (chain, draw)
+            label = var + (
+                "[" + ", ".join(str(v) for v in coords.value.values()) + "]"
+                if coords.value
+                else ""
+            )
+            return da, label
+
+        xda, xlab = select(x_var.value, x_coords)
+        yda, ylab = select(y_var.value, y_coords)
+
+        df = pl.DataFrame(
+            {
+                "x": xda.values.ravel(),
+                "y": yda.values.ravel(),
+                "chain": [str(c) for c in xda["chain"].values for _ in xda["draw"].values],
+            }
+        )
+
+        return (
+            lp.ggplot(df, lp.aes("x", "y", color="chain"))
+            + lp.geom_point(alpha=0.7, size=2.5)
+            + lp.labs(x=xlab, y=ylab)
+            + lp.ggsize(550, 450)
+        )
+    _()
+    return
+
+
+@app.cell
+def _(idata_ase, lp):
+    def _():
+        x = idata_ase.posterior['q_logit'].mean(axis=(0,1)).data
+        hap = np.broadcast_to(idata_ase.posterior['q_logit'].coords['haplotypes'].data[:,None], x.shape).astype(str)
+        class_name = np.broadcast_to(idata_ase.posterior['q_logit'].coords['classes'].data[None,:], x.shape).flatten()
+        q_hat = idata_ase.constant_data['q_hat'].data
+        return (
+            lp.ggplot(pl.DataFrame({'x': x.flatten(), 'y': x.flatten(), 'hap': hap.flatten(), 'q_hat': q_hat.flatten(), "class_name": class_name}), lp.aes('q_hat', 'y', color='hap')) 
+            + lp.geom_point(alpha=0.5, tooltips=lp.layer_tooltips(["hap", "class_name"]))
+            + lp.scale_x_log10()
+            + lp.ggtb()
+        )
+        #gene_class_counts.counts[hap1 == 0, 4]
+    _()
+    return
+
+
+@app.cell
+def _(gene_diplotypes, idata_ase, lp):
+    def _():
+        u = idata_ase.posterior['u'].mean(axis=(1)).data
+        sample_ids = idata_ase.posterior.coords['samples'].data
+        diplo = gene_diplotypes.join(pl.DataFrame({"mouse_id": sample_ids}), "mouse_id", how="right", maintain_order="right")
+        diplotype = np.broadcast_to(diplo['diplotype'], u.shape)
+        chain = np.broadcast_to(np.arange(u.shape[0])[:,None], u.shape).astype(str)
+        mouse_id = np.broadcast_to(diplo['mouse_id'], u.shape)
+        return lp.ggplot(pl.DataFrame({'mouse_id': mouse_id.flatten(), 'diplotype': diplotype.flatten(), 'u': u.flatten(), 'chain': chain.flatten()}).sample(fraction=1.0), lp.aes('diplotype', 'u', color="chain")) + lp.geom_point(alpha=0.5, tooltips=lp.layer_tooltips(["mouse_id", "diplotype", "chain"]))
+    _()
     return
 
 
