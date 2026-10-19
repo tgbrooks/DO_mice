@@ -272,19 +272,13 @@ def _(gene_class_counts, gene_effective_lengths, gene_selector, genotypes):
         genotypes.select('gene_id', 'mouse_id', 'genotype_confidence', diplotype='genotype'),
         gene_effective_lengths,
         config=dict(
-            sigma_u_sd=0.3,
-            sigma_v_sd=0.5,
-            dirichlet_scale_sd=3.0,
-            dirichlet_sclae_mu=np.log(1e4),
-            sigma_gamma_sd=1.0,
+            sigma_u_sd=0.5,
             q_mode="adaptive_centered",
-            sigma_q_sd=0.5,
-            q_logit_sd=1,
+            sigma_q_sd=0.15,
             beta_sd = 0.5,
-            u_centered = False,
-            use_eta = True,
-            gamma_centered = True,
-            min_genotype_confidence = 0.8,
+            gamma_mode='zero',
+            sigma_gamma_sd=1.0,
+            min_genotype_confidence = 0.9,
         ),
     )
     return (ase_model,)
@@ -370,13 +364,13 @@ def _(idata_ase, lp, n_haps):
     _df = (
         pl.DataFrame({f"gamma[{n}]": _gamma[:, i] for i, n in enumerate(_names)})
         .unpivot(on=[f"gamma[{n}]" for n in _names])
-        .sort("variable")
         .group_by("variable")
         .agg(
             mean=pl.col("value").mean(),
             low=pl.col("value").quantile(0.05),
             hi=pl.col("value").quantile(0.95),
         )
+        .sort("variable")
     )
     (
         lp.ggplot(_df, lp.aes(x="mean", y="variable"))
@@ -1353,26 +1347,32 @@ def _(idata_ase, lp, x_coords, x_var, y_coords, y_var):
             + lp.geom_point(alpha=0.7, size=2.5)
             + lp.labs(x=xlab, y=ylab)
             + lp.ggsize(550, 450)
+            + lp.ggtb()
         )
     _()
     return
 
 
 @app.cell
-def _(idata_ase, lp):
+def _(idata_ase, lp, mo):
     def _():
         x = idata_ase.posterior['q_logit'].mean(axis=(0,1)).data
         hap = np.broadcast_to(idata_ase.posterior['q_logit'].coords['haplotypes'].data[:,None], x.shape).astype(str)
         class_name = np.broadcast_to(idata_ase.posterior['q_logit'].coords['classes'].data[None,:], x.shape).flatten()
         q_hat = idata_ase.constant_data['q_hat'].data
+        pinned = idata_ase.constant_data['q_logit_pinned'].data
         return (
-            lp.ggplot(pl.DataFrame({'x': x.flatten(), 'y': x.flatten(), 'hap': hap.flatten(), 'q_hat': q_hat.flatten(), "class_name": class_name}), lp.aes('q_hat', 'y', color='hap')) 
-            + lp.geom_point(alpha=0.5, tooltips=lp.layer_tooltips(["hap", "class_name"]))
+            lp.ggplot(pl.DataFrame({'x': x.flatten(), 'y': x.flatten(), 'hap': hap.flatten(), 'q_hat': q_hat.flatten(), "class_name": class_name, "pinned": pinned.flatten()}), lp.aes('q_hat', 'y', color='hap', shape="pinned")) 
+            + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["hap", "class_name"]))
             + lp.scale_x_log10()
+            + lp.labs(y="q_logit")
             + lp.ggtb()
         )
         #gene_class_counts.counts[hap1 == 0, 4]
-    _()
+    mo.vstack([
+        "Compare q_hat (naive estimate with no ASE) to the adjustments to q_hat (on a logit scale) that the full model makes",
+        _()
+    ])
     return
 
 

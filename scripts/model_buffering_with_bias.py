@@ -126,7 +126,13 @@ tx_annot = (
 )
 
 allele_unique = pl.read_parquet(f"processed/{TISSUE}/allele_unique_reads.parquet")
-diplotypes = allele_unique.select("mouse_id", "gene_id", "diplotype")
+genotypes = pl.read_parquet("processed/genotypes.parquet").select(
+    "gene_id",
+    "mouse_id",
+    "genotype_confidence",
+    diplotype="genotype",
+)
+
 
 all_pheno = pl.read_csv("phenotypes.csv.gz").rename({"mouse.id": "mouse_id"})
 
@@ -144,93 +150,98 @@ for mouse_id in mouse_ids:
 quiet = len(gene_ids) > 1
 results = []
 for gene_id in gene_ids:
-    _gene_start = time.time()
-    print(f"Modelling {gene_id}", flush=True)
-    gene_class_counts = get_gene_class_counts(
-        gene_id,
-        tx_annot,
-        all_compatibility_classes,
-    )
-    gene_effective_lengths = effective_lengths.filter(gene_id=gene_id).select(
-        "mouse_id", "haplotype", "effective_length"
-    )
-    median_expr = np.median(gene_class_counts.counts.sum(axis=1))
-    if median_expr < 50:
-        print(f"Skipping {gene_id} - median expression too low")
-        continue
-
-    ###### ASE MODEL
-    ase_model = make_ase_model(
-        gene_id,
-        gene_class_counts,
-        diplotypes,
-        gene_effective_lengths,
-        config=ASE_CONFIG,
-    )
-    _start = time.time()
-    with ase_model:
-        idata_ase = pm.sample(
-            500,
-            cores=CORES,
-            chains=CHAINS,
-            random_seed=100,
-            nuts_sampler="nutpie",
-            quiet=quiet,
+    try:
+        _gene_start = time.time()
+        print(f"Modelling {gene_id}", flush=True)
+        gene_class_counts = get_gene_class_counts(
+            gene_id,
+            tx_annot,
+            all_compatibility_classes,
         )
-    _end = time.time()
-    ase_model_time = _end - _start
-
-    ###### TOTAL COUNTS MODEL
-    sample_info = all_pheno.with_columns(
-        pl.col("DOwave").cast(str).cast(pl.Enum([str(x) for x in range(1, 6)]))
-    ).join(size_factors, "mouse_id")
-    total_model = make_total_model(
-        gene_id,
-        gene_class_counts,
-        diplotypes,
-        sample_info,
-        gene_effective_lengths,
-    )
-    _start = time.time()
-    with total_model:
-        idata_total = pm.sample(
-            500,
-            cores=CORES,
-            chains=CHAINS,
-            random_seed=101,
-            nuts_sampler="nutpie",
-            quiet=quiet,
+        gene_effective_lengths = effective_lengths.filter(gene_id=gene_id).select(
+            "mouse_id", "haplotype", "effective_length"
         )
-    _end = time.time()
-    total_model_time = _end - _start
+        median_expr = np.median(gene_class_counts.counts.sum(axis=1))
+        if median_expr < 50:
+            print(f"Skipping {gene_id} - median expression too low")
+            continue
 
-    ##### BUFFERING MODEL
-    beta_ase_draws = az.extract(idata_ase, "posterior")["beta"].to_numpy()
-    beta_total_draws = az.extract(idata_total, "posterior")["beta"].to_numpy()
-    cov_ase = np.cov(beta_ase_draws)
-    cov_total = np.cov(beta_total_draws)
-    beta_ase = np.mean(beta_ase_draws, axis=1)
-    beta_total = np.mean(beta_total_draws, axis=1)
-    buffering_res = covariance_deming_regression(
-        beta_ase, beta_total, cov_ase, cov_total
-    )
+        ###### ASE MODEL
+        ase_model = make_ase_model(
+            gene_id,
+            gene_class_counts,
+            genotypes,
+            gene_effective_lengths,
+            config=ASE_CONFIG,
+        )
+        _start = time.time()
+        with ase_model:
+            idata_ase = pm.sample(
+                500,
+                cores=CORES,
+                chains=CHAINS,
+                random_seed=100,
+                nuts_sampler="nutpie",
+                quiet=quiet,
+            )
+        _end = time.time()
+        ase_model_time = _end - _start
 
-    # Report results
-    ase_summary = summarize_ase_model(idata_ase, gene_class_counts)
-    ase_summary["runtime"] = ase_model_time
-    total_summary = summarize_total_model(idata_total)
-    ase_summary["runtime"] = total_model_time
+        ###### TOTAL COUNTS MODEL
+        sample_info = all_pheno.with_columns(
+            pl.col("DOwave").cast(str).cast(pl.Enum([str(x) for x in range(1, 6)]))
+        ).join(size_factors, "mouse_id")
+        total_model = make_total_model(
+            gene_id,
+            gene_class_counts,
+            genotypes,
+            sample_info,
+            gene_effective_lengths,
+        )
+        _start = time.time()
+        with total_model:
+            idata_total = pm.sample(
+                500,
+                cores=CORES,
+                chains=CHAINS,
+                random_seed=101,
+                nuts_sampler="nutpie",
+                quiet=quiet,
+            )
+        _end = time.time()
+        total_model_time = _end - _start
 
-    results.append(
-        {
-            "gene_id": gene_id,
-            "ase_model": ase_summary,
-            "total_model": total_summary,
-            "buffering": buffering_res,
-            "runtime": time.time() - _gene_start,
-            "config": config,
-        }
-    )
+        ##### BUFFERING MODEL
+        beta_ase_draws = az.extract(idata_ase, "posterior")["beta"].to_numpy()
+        beta_total_draws = az.extract(idata_total, "posterior")["beta"].to_numpy()
+        cov_ase = np.cov(beta_ase_draws)
+        cov_total = np.cov(beta_total_draws)
+        beta_ase = np.mean(beta_ase_draws, axis=1)
+        beta_total = np.mean(beta_total_draws, axis=1)
+        buffering_res = covariance_deming_regression(
+            beta_ase, beta_total, cov_ase, cov_total
+        )
+
+        # Report results
+        ase_summary = summarize_ase_model(idata_ase, gene_class_counts)
+        ase_summary["runtime"] = ase_model_time
+        total_summary = summarize_total_model(idata_total)
+        ase_summary["runtime"] = total_model_time
+
+        results.append(
+            {
+                "gene_id": gene_id,
+                "ase_model": ase_summary,
+                "total_model": total_summary,
+                "buffering": buffering_res,
+                "runtime": time.time() - _gene_start,
+                "config": config,
+                "error": "none",
+            }
+        )
+    except Exception as e:
+        print(f"Encountered an error in {gene_id}:\n{e}")
+        results.append({"gene_id": gene_id, "error": f"Exception: {e}"})
 
 with open(OUTFILE, "wt") as outfile:
     json.dump(results, outfile)

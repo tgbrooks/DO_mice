@@ -8,10 +8,6 @@ import scipy.optimize
 import formulaic
 
 from util.compat_classes import CompatClassesDf
-from util.pymc_helpers import (
-    constrained_normal,
-    antisymmetric_constraints,
-)
 
 
 def make_ase_model(
@@ -36,7 +32,7 @@ def make_ase_model(
         "sigma_q_sd": 1.0,
         "q_logit_sd": 2.0,  # only when q_mode == 'eig_vecs'
         "gamma_mode": "mvn",
-        "min_genotype_confidence": 0.95,
+        "min_genotype_confidence": 0.9,
         "min_counts_to_center": 50,  # counts
     }
     if config is not None:
@@ -223,6 +219,7 @@ def make_ase_model(
             pin_idx = np.argmax(est_hap_class_counts, axis=1)
             pin = np.arange(n_classes)[None, :] == pin_idx[:, None]
             tiny = q_hat < 2e-5
+            # TODO: compute this threshold by a more principled manner
             center = (
                 (est_hap_class_counts > config["min_counts_to_center"]) & ~pin & ~tiny
             )
@@ -424,7 +421,7 @@ def summarize_ase_model(idata, gene_class_counts):
     beta_summary = _summary(idata, var_names=["beta"])
     # Secondarily important values
     # We choose gamma_raw over gamma since gamma contains meaningless values like gamma[A,A]
-    core_summary = _summary(idata, var_names=["sigma_gamma", "sigma_u", "gamma_raw"])
+    core_summary = _summary(idata, var_names=["sigma_"], filter_vars="like")
     # The rest are further less important.
     q_summary = _summary(idata, var_names=["q"])
     # Classes that are extremely rare aren't very interesting and tend to be poorly behaved
