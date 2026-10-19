@@ -42,6 +42,7 @@ def make_ase_model(
         "use_eta": False,
         "gamma_centered": True,
         "min_genotype_confidence": 0.95,
+        "min_counts_to_center": 50,  # counts
     }
     if config is not None:
         default_config.update(config)
@@ -84,6 +85,8 @@ def make_ase_model(
     gene_class_counts = gene_class_counts.subset_samples(
         list(gene_diplotypes["mouse_id"])
     )
+
+    assert list(gene_class_counts.ids) == gene_diplotypes["mouse_id"].to_list()
 
     HAPLOTYPES = gene_class_counts.haplotypes
     HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
@@ -170,7 +173,6 @@ def make_ase_model(
         _eff_len2 = pm.Data("eff_len2", eff_len2, dims="samples")
         _alpha = pm.Data("alpha", alpha, dims=("samples", "classes"))
         _q_hat = pm.Data("q_hat", q_hat, dims=("haplotypes", "classes"))
-        _nz = _counts > 0
 
         # Nuisance variables
         # Rates at which reads from a haplotype are assigned to each class
@@ -186,7 +188,7 @@ def make_ase_model(
             q = pm.Deterministic(
                 "q",
                 pm.math.softmax(
-                    np.log(_q_hat) + (eig_vecs @ q_logit[:, :, None])[:, :, 0], axis=1
+                    pt.log(_q_hat) + (eig_vecs @ q_logit[:, :, None])[:, :, 0], axis=1
                 ),
                 dims=("haplotypes", "classes"),
             )
@@ -206,7 +208,7 @@ def make_ase_model(
             )
             q = pm.Deterministic(
                 "q",
-                pm.math.softmax(np.log(_q_hat) + q_logit, axis=1),
+                pm.math.softmax(pt.log(_q_hat) + q_logit, axis=1),
                 dims=("haplotypes", "classes"),
             )
         elif config["q_mode"] == "noncentered":
@@ -216,31 +218,34 @@ def make_ase_model(
             )
             q = pm.Deterministic(
                 "q",
-                pm.math.softmax(np.log(_q_hat) + sigma_q * q_logit, axis=1),
+                pm.math.softmax(pt.log(_q_hat) + sigma_q * q_logit, axis=1),
                 dims=("haplotypes", "classes"),
             )
         elif config["q_mode"] == "adaptive_centered":
-            # Center high expressers only
-            threshold = 50
-            center = est_hap_class_counts > threshold
+            # Center high expressers only.
             # Pin the highest class of each haplotype to 0
+            # and separate out the tiny classes where the q_hat estimate is unreliable
             pin_idx = np.argmax(est_hap_class_counts, axis=1)
             pin = np.arange(n_classes)[None, :] == pin_idx[:, None]
-            # Separate out the tiny classes where the q_hat estimate is unreliable
             tiny = q_hat < 2e-5
+            center = (est_hap_class_counts > config["min_counts_to_center"]) & ~pin
+
             sigma_q = pm.HalfNormal("sigma_q", sigma=config["sigma_q_sd"])
             sigma_q_tiny = pm.HalfNormal("sigma_q_tiny", sigma=config["sigma_q_sd"])
-            sigmas = pt.ones(center.shape)
-            sigmas = pt.set_subtensor(sigmas[center & (~tiny)], sigma_q)
-            sigmas = pt.set_subtensor(sigmas[center & tiny], sigma_q_tiny)
-            q_logit = pm.Normal("q_logit", sigma=sigmas, dims=("haplotypes", "classes"))
-            noncenter_sigmas = pt.ones(center.shape)
-            noncenter_sigmas = pt.set_subtensor(sigmas[~center & (~tiny)], sigma_q)
-            noncenter_sigmas = pt.set_subtensor(sigmas[~center & (tiny)], sigma_q_tiny)
-            q_logit_final = (noncenter_sigmas * q_logit) * (~pin)
+            scale = pt.switch(tiny, sigma_q_tiny, sigma_q)  # (haplotypes, classes)
+
+            pm.Data("q_logit_pinned", pin, dims=("haplotypes", "classes"))
+            raw = pm.Normal(
+                "q_logit",
+                0.0,
+                pt.switch(center, scale, 1.0),
+                dims=("haplotypes", "classes"),
+            )
+            q_logit_final = pt.switch(center, raw, scale * raw) * (~pin)
+
             q = pm.Deterministic(
                 "q",
-                pm.math.softmax(np.log(_q_hat) + q_logit_final, axis=1),
+                pm.math.softmax(pt.log(_q_hat) + q_logit_final, axis=1),
                 dims=("haplotypes", "classes"),
             )
         else:
@@ -276,8 +281,12 @@ def make_ase_model(
         #     )
         #     _gamma = gamma
 
+        # TODO: use q_hat and expected counts to infer how informed a hap pair is
+        # and center based off that. E.g., homozygous or nearly identical hets
+
         ## Delta: union of gamma and beta, one variable per hap pair (hets only)
-        sigma_gamma = pm.HalfNormal("sigma_gamma") * config["sigma_gamma_sd"]
+
+        sigma_gamma = pm.HalfNormal("sigma_gamma", sigma=config["sigma_gamma_sd"])
         delta_cov = n_haps * config["beta_sd"] ** 2 * P_B + sigma_gamma**2 * P_G
         delta = pm.MvNormal(
             "delta", mu=np.zeros(len(pairs)), cov=delta_cov, dims="hap_pairs"
@@ -285,10 +294,18 @@ def make_ase_model(
         beta = pm.Deterministic("beta", Bm.T @ delta / n_haps, dims="haplotypes")
         gamma_raw = pm.Deterministic("gamma_raw", P_G @ delta, dims="hap_pairs")
 
-        sigma_u = pm.HalfNormal("sigma_u") * config["sigma_u_sd"]
+        # Sample-level allele-specific expression
+        # Adaptively centered: center if high information content, otherwise non-centered
+        info = eta_information(gene_class_counts.counts, q_hat, hap1, hap2, alpha)
+        eta_centered = info * config["sigma_u_sd"] ** 2 > 1.0
+        pm.Data("eta_centered", eta_centered, dims="samples")
+        sigma_u = pm.HalfNormal("sigma_u", sigma=config["sigma_u_sd"])
+        sigma_eta = pt.switch(eta_centered, sigma_u, 1)
         lin = sign * delta[idx] + pm.math.log(_eff_len1) - pm.math.log(_eff_len2)
-        eta = pm.Normal("eta", mu=lin, sigma=sigma_u, dims="samples")
-        u = pm.Deterministic("u", eta - lin, dims="samples")
+        eta = pm.Normal("eta", mu=lin, sigma=sigma_eta, dims="samples")
+        u = pm.Deterministic(
+            "u", pt.switch(eta_centered, eta, sigma_u * eta) - lin, dims="samples"
+        )
 
         # lin = (
         #    beta[_hap1]
@@ -332,6 +349,7 @@ def make_ase_model(
         # v = pt.set_subtensor(v[i_lo], log_mu[i_lo] + sigma_v * z_lo)
 
         # Original
+        # _nz = _counts > 0
         # class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
         # pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
 
@@ -443,6 +461,7 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
         with np.errstate(divide="ignore", invalid="ignore"):
             props = these_counts / np.sum(these_counts, axis=1, keepdims=True)
             mprops = np.mean(props, axis=0)
+            log_mprops = np.log(mprops)
             true_var = props.var(axis=0, ddof=1)
         temp.append(
             pl.DataFrame(
@@ -453,12 +472,13 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
                     "mean_T": np.mean(tots),
                     "mean_inv_T": np.mean(1 / tots),
                     "q_hat_close": q_hat_close,
-                    "log_prop": np.log(mprops),
+                    "log_prop": log_mprops,
                     "n_samples": len(these_mice),
                     "class_num": np.arange(mprops.shape[0]),
                 }
             )
         )
+    # TODO: handle case where no mice have < 4. Currently this crashes and those genes are ignored.
     df = pl.concat(temp)
     _df = df.filter("q_hat_close", pl.col("log_prop").is_finite())
     # Fit trend curve
@@ -475,8 +495,23 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
     var_fit = np.exp(X2 @ var_coeffs).reshape(q_hat_mean.shape)
     mean_T_inv = np.mean(1 / gene_class_counts.counts.sum(axis=1, keepdims=True))
     alpha = q_hat_mean**2 / (var_fit - q_hat_mean * mean_T_inv)
-    alpha[alpha < 0] = 1e3  # Poisson-like fit -> high alpha -> low dispersion
+    alpha[alpha < 0] = 1e10  # Poisson-like fit -> high alpha -> low dispersion
+    # TODO: add correction for alpha to be mean of linear-scaled alpha not log-scaled
     return var_fit, alpha
+
+
+def eta_information(counts, q_hat, hap1, hap2, alpha, p=0.5):
+    """information content of eta, the logit-scaled proprtion of hap1 versus hap2
+
+    Using negative binomial log-likelihoods (dispersion parameter alpha)
+    and plugging in ASE ratio of p
+    """
+    T = counts.sum(axis=1, keepdims=True)
+    p = np.broadcast_to(np.asarray(p, dtype=float), counts.shape)
+    q1, q2 = q_hat[hap1], q_hat[hap2]
+    mu = T * (p * q1 + (1 - p) * q2)
+    dmu = T * p * (1 - p) * (q1 - q2)
+    return (dmu**2 / (mu * (1 + mu / alpha))).sum(axis=1)
 
 
 def _summary(idata, **kwargs):
