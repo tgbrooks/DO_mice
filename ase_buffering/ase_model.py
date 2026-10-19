@@ -31,15 +31,10 @@ def make_ase_model(
     default_config = {
         "sigma_u_sd": 1.0,
         "sigma_gamma_sd": 1.0,
-        "sigma_v_sd": 1.0,
-        "dirichlet_scale_sd": 3.0,
-        "dirichlet_scale_mu": np.log(1e3),
         "beta_sd": 2.0,
-        "use_q_logit": True,
-        "q_logit_sd": 2.0,
-        "u_centered": True,  # Note: terminology reversed, True = N(0,1)*sigma (non-centered) TODO: fix
-        "v_centered": True,
-        "use_eta": False,
+        "q_mode": "adaptive_centered",
+        "sigma_q_sd": 1.0,
+        "q_logit_sd": 2.0,  # only when q_mode == 'eig_vecs'
         "gamma_mode": "mvn",
         "min_genotype_confidence": 0.95,
         "min_counts_to_center": 50,  # counts
@@ -280,18 +275,14 @@ def make_ase_model(
         info = eta_information(gene_class_counts.counts, q_hat, hap1, hap2, alpha)
         eta_centered = info * config["sigma_u_sd"] ** 2 > 1.0
         pm.Data("eta_centered", eta_centered, dims="samples")
-        sigma_u = pm.HalfNormal("sigma_u", sigma=config["sigma_u_sd"])
         lin = sign * delta[idx] + pm.math.log(_eff_len1) - pm.math.log(_eff_len2)
-        eta_raw = pm.Normal(
-            "eta_raw",
-            mu=pt.switch(eta_centered, lin, 0.0),
-            sigma=pt.switch(eta_centered, sigma_u, 1.0),
-            dims="samples",
-        )
+        sigma_u = pm.HalfNormal("sigma_u", sigma=config["sigma_u_sd"])
+        lam = (
+            info * sigma_u**2 / (1 + info * sigma_u**2)
+        )  # symbolic, varies with sigma_u
+        eta_raw = pm.Normal("eta_raw", mu=lam * lin, sigma=sigma_u**lam, dims="samples")
         eta = pm.Deterministic(
-            "eta",
-            pt.switch(eta_centered, eta_raw, lin + sigma_u * eta_raw),
-            dims="samples",
+            "eta", lin + sigma_u ** (1 - lam) * (eta_raw - lam * lin), dims="samples"
         )
         u = pm.Deterministic("u", eta - lin, dims="samples")
 
