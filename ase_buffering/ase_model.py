@@ -40,7 +40,7 @@ def make_ase_model(
         "u_centered": True,  # Note: terminology reversed, True = N(0,1)*sigma (non-centered) TODO: fix
         "v_centered": True,
         "use_eta": False,
-        "gamma_centered": True,
+        "gamma_mode": "mvn",
         "min_genotype_confidence": 0.95,
         "min_counts_to_center": 50,  # counts
     }
@@ -228,7 +228,9 @@ def make_ase_model(
             pin_idx = np.argmax(est_hap_class_counts, axis=1)
             pin = np.arange(n_classes)[None, :] == pin_idx[:, None]
             tiny = q_hat < 2e-5
-            center = (est_hap_class_counts > config["min_counts_to_center"]) & ~pin
+            center = (
+                (est_hap_class_counts > config["min_counts_to_center"]) & ~pin & ~tiny
+            )
 
             sigma_q = pm.HalfNormal("sigma_q", sigma=config["sigma_q_sd"])
             sigma_q_tiny = pm.HalfNormal("sigma_q_tiny", sigma=config["sigma_q_sd"])
@@ -236,7 +238,7 @@ def make_ase_model(
 
             pm.Data("q_logit_pinned", pin, dims=("haplotypes", "classes"))
             raw = pm.Normal(
-                "q_logit",
+                "q_logit_raw",
                 0.0,
                 pt.switch(center, scale, 1.0),
                 dims=("haplotypes", "classes"),
@@ -251,48 +253,27 @@ def make_ase_model(
         else:
             raise ValueError("Unrecognized 'q_mode'")
 
-        # # Haplotype effects
-        # beta = pm.ZeroSumNormal("beta", sigma=config["beta_sd"], dims="haplotypes")
-
-        # # Diplotype effects
-        # # Deviations from additive haplotype effects, constrained to be orthogonal
-        # # to the additive effect
-        # sigma_gamma = pm.HalfNormal("sigma_gamma") * config["sigma_gamma_sd"]
-        # # Orthogonal to the beta's
-        # orthog_to_beta = np.zeros((n_haps, n_haps, n_haps))
-        # for i in range(n_haps):
-        #     orthog_to_beta[i, i, :] += 1
-        #     orthog_to_beta[i, :, i] -= 1
-        # gamma_null = np.concat((orthog_to_beta, antisymmetric_constraints(n_haps)))
-        # if config["gamma_centered"]:
-        #     gamma = constrained_normal(
-        #         "gamma",
-        #         orthog_to=gamma_null,
-        #         sigma=1.0,
-        #         dims=("haplotypes", "haplotypes2"),
-        #     )
-        #     _gamma = sigma_gamma * gamma
-        # else:
-        #     gamma = constrained_normal(
-        #         "gamma",
-        #         orthog_to=gamma_null,
-        #         sigma=sigma_gamma,
-        #         dims=("haplotypes", "haplotypes2"),
-        #     )
-        #     _gamma = gamma
-
-        # TODO: use q_hat and expected counts to infer how informed a hap pair is
-        # and center based off that. E.g., homozygous or nearly identical hets
+        # TODO: adaptively center delta as well?
 
         ## Delta: union of gamma and beta, one variable per hap pair (hets only)
 
-        sigma_gamma = pm.HalfNormal("sigma_gamma", sigma=config["sigma_gamma_sd"])
-        delta_cov = n_haps * config["beta_sd"] ** 2 * P_B + sigma_gamma**2 * P_G
-        delta = pm.MvNormal(
-            "delta", mu=np.zeros(len(pairs)), cov=delta_cov, dims="hap_pairs"
-        )
-        beta = pm.Deterministic("beta", Bm.T @ delta / n_haps, dims="haplotypes")
-        gamma_raw = pm.Deterministic("gamma_raw", P_G @ delta, dims="hap_pairs")
+        if config["gamma_mode"] == "mvn":
+            sigma_gamma = pm.HalfNormal("sigma_gamma", sigma=config["sigma_gamma_sd"])
+            delta_cov = n_haps * config["beta_sd"] ** 2 * P_B + sigma_gamma**2 * P_G
+            delta = pm.MvNormal(
+                "delta", mu=np.zeros(len(pairs)), cov=delta_cov, dims="hap_pairs"
+            )
+            beta = pm.Deterministic("beta", Bm.T @ delta / n_haps, dims="haplotypes")
+            gamma_raw = pm.Deterministic("gamma_raw", P_G @ delta, dims="hap_pairs")
+        elif config["gamma_mode"] == "zero":
+            # No gamma: delta is only composed of beta
+            beta = pm.ZeroSumNormal("beta", sigma=config["beta_sd"], dims="haplotypes")
+            delta = pm.Deterministic("delta", Bm @ beta / n_haps, dims="hap_pairs")
+            gamma_raw = pm.Deterministic(
+                "gamma_raw", pt.zeros(len(hap_het_pairs)), dims="hap_pairs"
+            )
+        else:
+            raise ValueError(f"Unrecognized 'gamma mode': {config['gamma_mode']}")
 
         # Sample-level allele-specific expression
         # Adaptively centered: center if high information content, otherwise non-centered
@@ -300,32 +281,19 @@ def make_ase_model(
         eta_centered = info * config["sigma_u_sd"] ** 2 > 1.0
         pm.Data("eta_centered", eta_centered, dims="samples")
         sigma_u = pm.HalfNormal("sigma_u", sigma=config["sigma_u_sd"])
-        sigma_eta = pt.switch(eta_centered, sigma_u, 1)
         lin = sign * delta[idx] + pm.math.log(_eff_len1) - pm.math.log(_eff_len2)
-        eta = pm.Normal("eta", mu=lin, sigma=sigma_eta, dims="samples")
-        u = pm.Deterministic(
-            "u", pt.switch(eta_centered, eta, sigma_u * eta) - lin, dims="samples"
+        eta_raw = pm.Normal(
+            "eta_raw",
+            mu=pt.switch(eta_centered, lin, 0.0),
+            sigma=pt.switch(eta_centered, sigma_u, 1.0),
+            dims="samples",
         )
-
-        # lin = (
-        #    beta[_hap1]
-        #    - beta[_hap2]
-        #    + pm.math.log(_eff_len1)
-        #    - pm.math.log(_eff_len2)
-        #    + _gamma[_hap1, _hap2]
-        # )
-        # # Random per-sample effects
-        # sigma_u = pm.HalfNormal("sigma_u") * config["sigma_u_sd"]
-        # if config["use_eta"]:
-        #    eta = pm.Normal("eta", mu=lin, sigma=sigma_u, dims="samples")
-        #    u = pm.Deterministic("u", eta - lin, dims="samples")
-        # else:
-        #    if config["u_centered"]:
-        #        u_raw = pm.Normal("u_raw", 0, 1, dims="samples")
-        #        u = sigma_u * u_raw
-        #    else:
-        #        u = pm.Normal("u", 0, sigma=sigma_u, dims="samples")
-        #    eta = lin + u
+        eta = pm.Deterministic(
+            "eta",
+            pt.switch(eta_centered, eta_raw, lin + sigma_u * eta_raw),
+            dims="samples",
+        )
+        u = pm.Deterministic("u", eta - lin, dims="samples")
 
         p = pm.Deterministic(
             "p",
@@ -333,69 +301,9 @@ def make_ase_model(
             dims=("samples"),
         )
 
-        # # Try adding log-normal noise to each class
-        # # TODO: log or logit here?
-        # log_mu = pm.math.log(p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2])
-        # sigma_v = pm.HalfNormal("sigma_v", sigma=config["sigma_v_sd"])
-        # # v = pm.Normal("v", mu=class_props, sigma=sigma_v, dims=("samples", "classes"))
-        # # Split whether we do centered or non-centered v by counts for efficiency
-        # counts_np = gene_class_counts.counts
-        # hi = counts_np >= 50  # roughly: centered when count * sigma_v**2 >~ 1
-        # i_hi, i_lo = np.nonzero(hi), np.nonzero(~hi)
-        # v_hi = pm.Normal("v_hi", mu=log_mu[i_hi], sigma=sigma_v, shape=int(hi.sum()))
-        # z_lo = pm.Normal("z_lo", 0, 1, shape=int((~hi).sum()))
-        # v = pt.zeros_like(log_mu)
-        # v = pt.set_subtensor(v[i_hi], v_hi)
-        # v = pt.set_subtensor(v[i_lo], log_mu[i_lo] + sigma_v * z_lo)
-
-        # Original
-        # _nz = _counts > 0
-        # class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
-        # pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
-
-        # Dirichlet multinomial version
-        # Log-likelihood - used instaed of pm.Multinomial since its a bit faster
-        # We drop the constant terms that don't depend upon class_props
-        # pm.Potential("ll", pt.sum(_counts[_nz] * pt.log(class_props[_nz])))
-        # class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
-        # dirichlet_scale = pm.Normal(
-        #    "dirichlet_scale",
-        #    mu=config["dirichlet_scale_mu"],
-        #    sigma=config["dirichlet_scale_sd"],
-        # )
-        # pm.DirichletMultinomial(
-        #    "dm_counts",
-        #    n=pt.sum(_counts, axis=1),
-        #    a=class_props * np.exp(dirichlet_scale),
-        #    dims=("samples", "classes"),
-        #    observed=_counts,
-        # )
-
-        # Normal
+        # Negative-binomial as a potential - samples much faster for unclear reasons
         class_props = p[:, None] * q[_hap1] + (1 - p)[:, None] * q[_hap2]
         totals = gene_class_counts.counts.sum(axis=1, keepdims=True)
-        # sigma_final_coeffs = pm.Normal("sigma_final_coeffs", 0.0, 2.0, shape=B.shape[1])
-        # pm.Normal(
-        #     "y",
-        #     mu=np.log(totals * class_props + 1),
-        #     sigma=pt.exp(B @ sigma_final_coeffs).reshape((n_samples, n_classes)),
-        #     observed=np.log(_counts + 1),
-        #     dims=("samples", "classes"),
-        # )
-
-        # Negative-binomial option
-        # kappa = pm.LogNormal("kappa", 0.0, 1.0)
-        # alpha_final_coeffs = pm.Normal("alpha_final_coeffs", 0.0, 2.0, shape=B.shape[1])
-        # pm.NegativeBinomial(
-        #    "y",
-        #    mu=totals * class_props,
-        #    alpha=alpha,
-        #    # alpha=np.exp(B @ alpha_final_coeffs).reshape((n_samples, n_classes)),
-        #    observed=_counts,
-        #    dims=("samples", "classes"),
-        # )
-
-        # Negative-binomial as a potential - samples much faster for unclear reasons
         mu = totals * class_props
         nb_const = (
             pt.gammaln(_alpha + gene_class_counts.counts)
