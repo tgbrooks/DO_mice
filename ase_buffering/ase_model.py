@@ -382,16 +382,29 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
         "~ bs(log_prop, df=4, extrapolation='clip')"
     ).get_model_matrix(_df)
     y = np.log(_df["var"])
+
+    # correct for Jensen's inequality of log()
+    nu = _df["n_samples"] - 1
+    y -= scipy.special.digamma(nu / 2) + np.log(nu / 2)
+
     var_coeffs, _, _, _ = np.linalg.lstsq(X.to_numpy(), y)
+
     # Now get sample-level trend-curve values
     q_hat_mean = (q_hat[hap1] + q_hat[hap2]) / 2
     X2 = X.model_spec.get_model_matrix(
         pl.DataFrame({"log_prop": np.log(q_hat_mean.ravel())})
     )
     var_fit = np.exp(X2 @ var_coeffs).reshape(q_hat_mean.shape)
-    mean_T_inv = np.mean(1 / gene_class_counts.counts.sum(axis=1, keepdims=True))
-    alpha = q_hat_mean**2 / (var_fit - q_hat_mean * mean_T_inv)
+    mean_T_inv = np.average(
+        _df["mean_inv_T"].to_numpy(),
+        weights=_df["n_samples"],
+    )
+    # We don't estimate q_hat
+    lo, hi = _df["log_prop"].min(), _df["log_prop"].max()
+    q_clip = np.exp(np.clip(np.log(q_hat_mean), lo, hi))
+    alpha = q_clip**2 / (var_fit - q_clip * mean_T_inv)
     alpha[alpha < 0] = 1e10  # Poisson-like fit -> high alpha -> low dispersion
+    alpha = np.clip(alpha, 0.1, None)  # lower bound prevents massive variance
     # TODO: add correction for alpha to be mean of linear-scaled alpha not log-scaled
     return var_fit, alpha
 
