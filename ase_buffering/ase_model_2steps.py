@@ -47,6 +47,7 @@ DEFAULTS = dict(
     min_counts_to_center=50,
     eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
     min_eta_info=1.0,  # mice with less plug-in information are not fit for eta
+    min_n_informative=100,
     # --- handoff ---
     cov_shrink=0.1,  # shrink stage-1 posterior correlations toward 0 (full mode)
     max_abs_skew=0.5,  # flag mice whose stage-1 posterior is clearly non-Gaussian
@@ -154,7 +155,7 @@ def prepare_gene_data(
 
     q_hat = estimate_class_proportions(counts, hap1, hap2, n_haps)
     # TODO: estimate_class_alpha fails if no diplotype has >= 4 mice; needs a fallback curve.
-    _var_fit, alpha = estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2)
+    _var_fit, alpha, _ = estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2)
     info = eta_information(counts, q_hat, hap1, hap2, alpha)
 
     est_hap_total_counts = np.array(
@@ -214,15 +215,29 @@ def _make_q(d: GeneData, config: dict):
             "q", pt.as_tensor(d.q_hat), dims=("haplotypes", "classes")
         )
 
-    if config["q_mode"] != "adaptive_centered":
-        raise ValueError(f"Unrecognized q_mode: {config['q_mode']}")
-
     # Pin the largest class of each haplotype (softmax invariance); tiny classes have
     # one-sided likelihoods, so they are never centered.
     pin_idx = np.argmax(d.est_hap_class_counts, axis=1)
     pin = np.arange(n_classes)[None, :] == pin_idx[:, None]
     tiny = d.q_hat < 2e-5
     center = (d.est_hap_class_counts > config["min_counts_to_center"]) & ~pin & ~tiny
+    pm.Data("q_logit_centered", center, dims=("haplotypes", "classes"))
+
+    if config["q_mode"] == "constant_sigma_q":
+        raw = pm.Normal(
+            "q_logit_raw",
+            mu=0.0,
+            sigma=pt.switch(tiny, config["sigma_q"], config["sigma_q_tiny"]),
+            dims=("haplotypes", "classes"),
+        )
+        return pm.Deterministic(
+            "q",
+            pm.math.softmax(log_q_hat + raw * ~pin, axis=1),
+            dims=("haplotypes", "classes"),
+        )
+
+    if config["q_mode"] != "adaptive_centered":
+        raise ValueError(f"Unrecognized q_mode: {config['q_mode']}")
 
     sigma_q = pm.HalfNormal("sigma_q", sigma=config["sigma_q_sd"])
     sigma_q_tiny = pm.HalfNormal("sigma_q_tiny", sigma=config["sigma_q_sd"])
@@ -256,6 +271,10 @@ def stage1_fit_mask(d: GeneData, config: dict) -> np.ndarray:
 def make_stage1_model(d: GeneData, config: dict) -> pm.Model:
     n_samples = len(d.ids)
     i_fit = np.nonzero(stage1_fit_mask(d, config))[0]
+
+    n_informative = len(i_fit)
+    if n_informative < config["min_n_informative"]:
+        raise ValueError(f"Only {n_informative} samples were informative for ASE")
 
     coords = {
         "haplotypes": d.haplotypes,
