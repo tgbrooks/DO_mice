@@ -834,26 +834,26 @@ def _(
     gene_selector,
     lp,
     mo,
-    var_fit,
 ):
+    _T = gene_data.counts.sum(axis=1).mean()
     _df = class_variance_df.with_columns(
         gene_id = pl.lit(gene_selector.value),
         diplotype = np.array(HAPLOTYPES)[class_variance_df['hap1']] + np.array(HAPLOTYPES)[class_variance_df['hap2']],
         prop = pl.col("log_prop").exp(),
-        poisson_var = pl.col("mean_inv_T") * pl.col("log_prop").exp(),
-        corrected_var = pl.col("corrected_log_var").exp(),
-        in_fit = pl.col("fit_var").is_null().not_().cast(str).cast(pl.Enum(["false", "true"])),
+        poisson_var = pl.col("mean_inv_T") * pl.col("log_prop").exp() * (1-pl.col("log_prop").exp()),
+        in_fit = pl.col("fit_alpha").is_null().not_().cast(str).cast(pl.Enum(["false", "true"])),
+        # variance of x is mu + mu^2 / alpha, variance of p is var(x)/T^2
+        fit_var = (pl.col("log_prop").exp()*_T + (pl.col("log_prop").exp()*_T)**2/pl.col("fit_alpha"))/_T**2,
     )
 
     _df_by_mouse = pl.DataFrame({
         "mouse_id": gene_class_counts.ids, 
-        "var": var_fit,
         "alpha": alpha_fit,
         "total": gene_class_counts.counts.sum(axis=1),
     }).join(pl.DataFrame({
         "mouse_id": gene_data.ids,
         "prop": (gene_data.q_hat[gene_data.hap1] + gene_data.q_hat[gene_data.hap2])/2,
-    }), how="inner", on="mouse_id").explode(["var", "prop", "alpha"]).with_columns(
+    }), how="inner", on="mouse_id").explode(["prop", "alpha"]).with_columns(
         poisson_var = pl.col("prop")  / pl.col("total")
     )
     # TODO: why is _df_by_mouse['var'] now so high?
@@ -864,10 +864,10 @@ def _(
                     is_hom = pl.col("diplotype").is_in([f'{hap}{hap}' for hap in HAPLOTYPES]),
                     #compatible = pl.col("diplotype").is_in(pl.col("hap_str").implode())
                 ).sample(fraction=1.0),# shuffle
-                lp.aes("prop", "corrected_var", color="is_hom")
+                lp.aes("prop", "var", color="is_hom")
             )
             + lp.facet_wrap("gene_id")
-            + lp.geom_point(lp.aes(alpha="in_fit"), tooltips=lp.layer_tooltips(["class_num", "n_samples", "diplotype"]))
+            + lp.geom_point(lp.aes(alpha="in_fit"), tooltips=lp.layer_tooltips(["class_num", "n_samples", "diplotype", "q_hat_close"]))
             + lp.scale_x_log10()
             + lp.scale_y_continuous(trans="log10")
             + lp.labs(y="variance (of class proportions)")
@@ -876,10 +876,10 @@ def _(
             + lp.geom_line(lp.aes("prop", "poisson_var"), color="black", linetype="dashed")
         ),
         (
-            lp.ggplot(_df_by_mouse, lp.aes("prop", "var", color="alpha"))
+            lp.ggplot(_df_by_mouse, lp.aes("prop", "alpha", color="alpha"))
             + lp.geom_point()
-            + lp.geom_line(lp.aes("prop", "poisson_var"), color="black", linetype="dashed")
-            + lp.labs(y="fit variance (of class proportions)")
+            #+ lp.geom_line(lp.aes("prop", "poisson_var"), color="black", linetype="dashed")
+            + lp.labs(y="alpha (dispersion parameter)")
             + lp.scale_x_log10()
             + lp.scale_y_continuous(trans="log10")
             + lp.scale_color_gradient(trans="log10")
@@ -887,7 +887,7 @@ def _(
     ], guides="collect", sharey=True)  + lp.ggsize(900, 500)
 
     mo.vstack([
-        "For each diplotype, we compute the variance of the read class abundance proportions. This can only be done in diplotypes with enough samples (>= 4). A trend line is fit and then variances are fit for each sample. Variance in excess of expected Poisson (approximating multinomial) variance is overdispersion and reflected by smaller alpha values. This depends upon both read depth and class proportion, and so depends upon sample and class. Dashed lines give Poisson noise levels.",
+        "For each diplotype, we compute the variance of the read class abundance proportions. This can only be done in diplotypes with enough samples (>= 4). IRLS estimate of alpha (dispersion parameter, var = mu + mu^2/alpha)",
         plts,
     ])
     return
@@ -898,8 +898,8 @@ def _(HAPLOTYPES, gene_class_counts, hap1, hap2):
     _q_hat = estimate_class_proportions(gene_class_counts.counts, hap1, hap2, len(HAPLOTYPES))
     #q_hat
     #_hap1, _hap2
-    var_fit, alpha_fit, class_variance_df = estimate_class_alpha(gene_class_counts, _q_hat, hap1, hap2)
-    return alpha_fit, class_variance_df, var_fit
+    alpha_fit, class_variance_df = estimate_class_alpha(gene_class_counts, _q_hat, hap1, hap2)
+    return alpha_fit, class_variance_df
 
 
 @app.cell(disabled=True, hide_code=True)

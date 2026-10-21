@@ -121,7 +121,7 @@ def make_ase_model(
     M = np.array([np.diag(row) - row[:, None] @ row[None, :] for row in q_hat])
     eig_vals, eig_vecs = np.linalg.eigh(M)
     # Estimate alphas
-    _var_fit, alpha = estimate_class_alpha(
+    alpha, _ = estimate_class_alpha(
         gene_class_counts,
         q_hat,
         hap1,
@@ -359,7 +359,6 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
             mprops = np.mean(props, axis=0)
             log_mprops = np.log(mprops)
             true_var = props.var(axis=0, ddof=1)
-        nu = len(these_mice) - 1
         temp.append(
             pl.DataFrame(
                 {
@@ -367,10 +366,6 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
                     "hap2": h2,
                     "class_num": np.arange(mprops.shape[0]),
                     "var": true_var,
-                    # Jensen's inequality correction: log() of chi2
-                    "corrected_log_var": np.log(true_var)
-                    - scipy.special.digamma(nu / 2)
-                    + np.log(nu / 2),
                     "mean_T": np.mean(tots),
                     "mean_inv_T": np.mean(1 / tots),
                     "q_hat_close": q_hat_close,
@@ -381,33 +376,17 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
         )
     # TODO: handle case where no mice have < 4. Currently this crashes and those genes are ignored.
     df = pl.concat(temp)
-    min_mean_count = 1
-    _df = df.filter(
-        pl.col("q_hat_close"),
-        pl.col("log_prop").is_finite(),
-        pl.col("var") > 0,
-        # Drop highly uninformative classes. Chi2 approximation breaks down, little information.
-        # Those tend towards Poisson-like variance which is over confident, so we conservatively drop them.
-        pl.col("log_prop").exp() * pl.col("mean_T") >= min_mean_count,
-    )
-
-    # Fit trend curve
-    X = formulaic.Formula(
-        "~ bs(log_prop, df=4, extrapolation='clip')"
-    ).get_model_matrix(_df)
-    y = _df["corrected_log_var"]
-    assert X.shape[0] == _df.shape[0]  # nothing should be dropped by Formulaic
-
-    var_coeffs, _, _, _ = np.linalg.lstsq(X.to_numpy(), y)
+    df_fit = df.filter(pl.col("q_hat_close"), pl.col("log_prop").is_finite())
+    X, inv_alpha_fit_coeffs = _fit_inv_alpha_trend(df_fit)
 
     # Report fit curve
-    var_fit = np.exp(X @ var_coeffs)
+    inv_alpha_fit = np.exp(X @ inv_alpha_fit_coeffs)
     df_out = df.join(
-        _df.select(
+        df_fit.select(
             "hap1",
             "hap2",
             "class_num",
-            fit_var=var_fit,
+            fit_alpha=1 / inv_alpha_fit,
         ),
         on=["hap1", "hap2", "class_num"],
         how="left",
@@ -415,22 +394,40 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
 
     # Now get sample-level trend-curve values
     q_hat_mean = (q_hat[hap1] + q_hat[hap2]) / 2
-    X2 = X.model_spec.get_model_matrix(
-        pl.DataFrame({"log_prop": np.log(q_hat_mean.ravel())})
-    )
-    sample_var_fit = np.exp(X2 @ var_coeffs).reshape(q_hat_mean.shape)
-    mean_T_inv = np.average(
-        _df["mean_inv_T"].to_numpy(),
-        weights=_df["n_samples"],
-    )
-    # Since log-prop is clipped in X2 based off X, need to clip it here too
-    lo, hi = _df["log_prop"].min(), _df["log_prop"].max()
-    q_clip = np.exp(np.clip(np.log(q_hat_mean), lo, hi))
-    alpha = q_clip**2 / (sample_var_fit - q_clip * mean_T_inv)
-    alpha[alpha < 0] = 1e10  # Poisson-like fit -> high alpha -> low dispersion
-    alpha = np.clip(alpha, 0.1, None)  # lower bound prevents massive variance
-    # TODO: add correction for alpha to be mean of linear-scaled alpha not log-scaled
-    return sample_var_fit, alpha, df_out
+    alpha = _predict_alpha(X.model_spec, inv_alpha_fit_coeffs, q_hat_mean, floor=0.1)
+    return alpha, df_out
+
+
+def _fit_inv_alpha_trend(df: pl.DataFrame, n_iter: int = 20):
+    """Quasi-likelihood fit of E[V] = m*invT + m^2 * exp(spline(log m)). Uses all classes."""
+    m = np.exp(df["log_prop"].to_numpy())
+    V = df["var"].to_numpy()
+    nu = df["n_samples"].to_numpy() - 1
+    invT = df["mean_inv_T"].to_numpy()
+
+    X = formulaic.Formula(
+        "~ bs(log_prop, df=4, extrapolation='clip')"
+    ).get_model_matrix(df)
+    Xn = X.to_numpy()
+
+    def s2(c):
+        return m * invT + m**2 * np.exp(Xn @ c)
+
+    c = np.zeros(Xn.shape[1])  # start at 1/alpha = 1
+    for _ in range(n_iter):  # IRLS: weights fixed within each step
+        sd_V = np.sqrt(2 * s2(c) ** 2 / nu)  # sd of a sample variance (normal theory)
+        c_new = scipy.optimize.least_squares(lambda c: (V - s2(c)) / sd_V, c).x
+        if np.max(np.abs(c_new - c)) < 1e-6:
+            c = c_new
+            break
+        c = c_new
+    return X, c
+
+
+def _predict_alpha(spec, c, q_hat_mean, floor=0.1):
+    X2 = spec.get_model_matrix(pl.DataFrame({"log_prop": np.log(q_hat_mean.ravel())}))
+    inv_alpha = np.exp(X2.to_numpy() @ c).reshape(q_hat_mean.shape)
+    return np.clip(1 / inv_alpha, floor, None)
 
 
 def eta_information(counts, q_hat, hap1, hap2, alpha, p=0.5):

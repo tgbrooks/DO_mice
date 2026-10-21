@@ -155,7 +155,7 @@ def prepare_gene_data(
 
     q_hat = estimate_class_proportions(counts, hap1, hap2, n_haps)
     # TODO: estimate_class_alpha fails if no diplotype has >= 4 mice; needs a fallback curve.
-    _var_fit, alpha, _ = estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2)
+    alpha, _ = estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2)
     info = eta_information(counts, q_hat, hap1, hap2, alpha)
 
     est_hap_total_counts = np.array(
