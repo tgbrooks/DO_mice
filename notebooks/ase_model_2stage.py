@@ -13,6 +13,7 @@ with app.setup:
     import pymc as pm
     import arviz as az
     import time
+    import xarray as xr
 
     import yaml
 
@@ -139,7 +140,7 @@ def _(HAPLOTYPES, OUTLIER_MOUSE_IDS, mouse_ids):
 
 
 @app.cell(hide_code=True)
-def _(allele_unique, args, gene_annot, mo):
+def _(allele_unique, gene_annot, mo):
     _vals = (
         allele_unique.select("gene_id")
         .unique()
@@ -155,13 +156,7 @@ def _(allele_unique, args, gene_annot, mo):
     gene_ids = list(_vals["gene_id"])
     _options = {_name: _id for _name, _id in zip(_names, gene_ids)}
     len(gene_ids)
-    if args.gene_id:
-        assert args.gene_id in gene_ids, (
-            f"Provided gene id must be in gene ids (e.g. {gene_ids[:10]})"
-        )
-        (default,) = [n for n, id in _options.items() if id == args.gene_id]
-    else:
-        default = None
+    default = None
     gene_selector = mo.ui.dropdown(_options, value=default, searchable=True)
     mo.sidebar(
         [
@@ -209,11 +204,14 @@ def _(mo):
 @app.cell
 def _(gene_data):
     stage1_config = dict(
-        q_mode="adaptive_centered",  # or "q_hat"
-        sigma_q_sd=0.5,
+        q_mode="adaptive_centered",  # "adaptive_centered", "constant_sigma_q" or "q_hat"
+        sigma_q = 0.3,
+        sigma_q_tiny = 2.0,
+        sigma_q_sd=0.025,
         min_counts_to_center=50,
         eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
-        min_eta_info=1.0,  # mice with less plug-in information are not fit for eta
+        min_eta_info=2.0,  # mice with less plug-in information are not fit for eta
+        min_n_informative=50,
     )
     ase_model1 = make_stage1_model(
         gene_data,
@@ -242,7 +240,7 @@ def _(HAPLOTYPES, HAP_TO_HAPNUM, gene_class_counts, gene_selector, genotypes):
     )
     hap1 = gene_diplotypes["hap1"].to_numpy()
     hap2 = gene_diplotypes["hap2"].to_numpy()
-    return hap1, hap2, n_classes
+    return gene_diplotypes, hap1, hap2, n_classes
 
 
 @app.cell
@@ -258,35 +256,62 @@ def _(ase_model1):
     with ase_model1:
         idata_ase1 = pm.sample(
             300,
-            chains=6,
-            cores=6,
+            chains=4,
+            cores=4,
             blas_cores=1,
             random_seed=100,
             nuts_sampler="nutpie",
+            target_accept=0.95,
         )
     _end = time.time()
     ase_model_time1 = _end - _start
     return (idata_ase1,)
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(gene_data, gene_diplotypes, idata_ase1, lp, mo):
     def _():
-        eta = idata_ase1.posterior['eta'].mean(axis=(1)).data
+        eta = idata_ase1.posterior['eta'].mean(axis=(0,1)).data
+        eta_se = idata_ase1.posterior['eta'].std(axis=(0,1)).data
         sample_ids = idata_ase1.posterior.coords['fit_samples'].data
         diplo = gene_diplotypes.join(pl.DataFrame({"mouse_id": sample_ids}), "mouse_id", how="right", maintain_order="right")
         diplotype = np.broadcast_to(diplo['diplotype'], eta.shape)
-        chain = np.broadcast_to(np.arange(eta.shape[0])[:,None], eta.shape).astype(str)
+        #chain = np.broadcast_to(np.arange(eta.shape[0])[:,None], eta.shape).astype(str)
         mouse_id = np.broadcast_to(diplo['mouse_id'], eta.shape)
-        info = np.broadcast_to(gene_data.info[idata_ase1., eta.shape) #TODO: take the idata_as1.posterior.coords.fit_samples.data mice from gene_data.info
-        return lp.ggplot(pl.DataFrame({'mouse_id': mouse_id.flatten(), 'diplotype': diplotype.flatten(), 'eta': eta.flatten(), 'chain': chain.flatten(), "eta_info": info.flatten()}).sample(fraction=1.0).sort('diplotype'), lp.aes('diplotype', 'eta', color="info")) + lp.geom_point(alpha=0.5, tooltips=lp.layer_tooltips(["mouse_id", "diplotype", "chain"]), position=lp.position_dodge(width=.8))
+        info = xr.DataArray(gene_data.info, dims="sample", coords={"sample": gene_data.ids})
+        info = np.broadcast_to(
+            info.sel(sample=idata_ase1.posterior.coords['fit_samples']).data,
+            eta.shape,
+        )
+        max_mice_per_group = 8
+        df = pl.DataFrame({
+            'mouse_id': mouse_id.flatten(),
+            'diplotype': diplotype.flatten(),
+            'eta': eta.flatten(),
+            'eta_se': eta_se.flatten(),
+            #'chain': chain.flatten(),
+            "eta_info": info.flatten(),
+        }).with_columns(
+            eta_hi = pl.col("eta") + pl.col("eta_se")*1.96,
+            eta_lo = pl.col("eta") - pl.col("eta_se")*1.96,
+            mouse_num = pl.row_index().over("diplotype").mod(max_mice_per_group).cast(int),
+        ).with_columns(
+            mouse_num = (pl.col("mouse_num") - pl.col("mouse_num").max().over("diplotype")//2),
+        )
+        return (
+            lp.ggplot(df.sample(fraction=1.0).sort('diplotype'), lp.aes('diplotype', 'eta', group="mouse_num", color="eta_info"))
+            + lp.geom_errorbar(
+                lp.aes(ymin="eta_lo", ymax="eta_hi"),
+                position=lp.position_dodge(width=0.8)
+            )
+            + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["mouse_id", "diplotype", "eta_info", "mouse_num"]), position=lp.position_dodge(width=0.8))
+            + lp.ggsize(900,500)
+        )
     mo.vstack([
         "Per-mouse imbalance estimates (eta) by diplotype + chain",
         _()
     ])
-    """,
-    name="_"
-)
+    return
 
 
 @app.cell
@@ -298,6 +323,12 @@ def _(idata_ase1):
 @app.cell
 def _(idata_ase1):
     az.summary(idata_ase1, var_names="sigma", filter_vars="like")
+    return
+
+
+@app.cell
+def _(idata_ase1):
+    az.plot_trace_dist(idata_ase1, var_names="sigma", filter_vars="like")
     return
 
 
@@ -457,18 +488,19 @@ def _(ase_model2, mo):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ase_model2):
     # Fit the model - stage 2
     _start = time.time()
     with ase_model2:
         idata_ase2 = pm.sample(
             300,
-            chains=6,
-            cores=6,
+            chains=4,
+            cores=4,
             blas_cores=1,
-            random_seed=100,
+            random_seed=101,
             nuts_sampler="nutpie",
+            target_accept=0.8,
         )
     _end = time.time()
     ase_model_time2 = _end - _start
@@ -476,15 +508,23 @@ def _(ase_model2):
 
 
 @app.cell
+def _(idata_ase2):
+    az.summary(idata_ase2, var_names=["beta"], filter_vars="like")
+    return
+
+
+@app.cell
 def _(gene_data, idata_ase2, lp, mo):
     def _():
-        delta = idata_ase2.posterior['delta'].mean(axis=(1)).data
+        delta = idata_ase2.posterior['delta'].mean(axis=(0,1)).data
+        delta_se = idata_ase2.posterior['delta'].std(axis=(0,1)).data
         hap_pairs = np.broadcast_to(idata_ase2.posterior.coords['hap_pairs'].data, delta.shape)
-        chain = np.broadcast_to(np.arange(delta.shape[0])[:,None], delta.shape).astype(str)
+        #chain = np.broadcast_to(np.arange(delta.shape[0])[:,None], delta.shape).astype(str)
         beta = idata_ase2.posterior['beta'].mean(axis=(0,1)).data
         beta_fit = np.broadcast_to((gene_data.Bm @ beta), delta.shape)
-        beta_all = idata_ase2.posterior['beta'].mean(axis=(1)).data
-        beta_chain = np.broadcast_to(np.arange(beta_all.shape[0])[:,None], beta_all.shape).astype(str)
+        beta_all = idata_ase2.posterior['beta'].mean(axis=(0,1)).data
+        beta_all_se = idata_ase2.posterior['beta'].std(axis=(0,1)).data
+        #beta_chain = np.broadcast_to(np.arange(beta_all.shape[0])[:,None], beta_all.shape).astype(str)
         haplotypes = np.broadcast_to(idata_ase2.posterior.coords['haplotypes'].data, beta_all.shape)
         return lp.gggrid([
             (
@@ -492,33 +532,52 @@ def _(gene_data, idata_ase2, lp, mo):
                     pl.DataFrame({
                         'hap_pair': hap_pairs.flatten(),
                         'delta': delta.flatten(),
+                        'delta_se': delta_se.flatten(),
                         'beta_fit': beta_fit.flatten(),
-                        'chain': chain.flatten()}
+                        #'chain': chain.flatten(),
+                    }
+                    ).with_columns(
+                        delta_hi = 1.96*pl.col("delta_se") + pl.col("delta"),
+                        delta_lo = -1.96*pl.col("delta_se") + pl.col("delta"),
                     ),
-                    lp.aes('hap_pair', 'delta', color="chain")
+                    lp.aes('hap_pair', 'delta')
                 )
                     + lp.geom_point(
-                        tooltips=lp.layer_tooltips(["hap_pair", "delta", "chain"]),
-                        position=lp.position_dodge(width=.8)
+                        tooltips=lp.layer_tooltips(["hap_pair", "delta"]),
+                        position=lp.position_dodge(width=.8),
+                        #color="#5B7C99",
                     )
-                    + lp.geom_crossbar(lp.aes(y="beta_fit"), color="black", fatten=1)
+                    + lp.geom_errorbar(
+                        lp.aes(ymin="delta_lo", ymax="delta_hi"),
+                        position=lp.position_dodge(width=.8),
+                        #color="#5B7C99",
+                    )
+                    + lp.geom_crossbar(lp.aes(y="beta_fit"), color="red", fatten=1)
             ),
             (
                 lp.ggplot(
                     pl.DataFrame({
                         "haplotype": haplotypes.flatten(),
                         "beta": beta_all.flatten(),
-                        "chain": beta_chain.flatten(),
-                    }),
-                    lp.aes(x="haplotype", y="beta", color="chain")
+                        "beta_se": beta_all_se.flatten(),
+                        #"chain": beta_chain.flatten(),
+                    }).with_columns(
+                        beta_hi = 1.96*pl.col("beta_se") + pl.col("beta"),
+                        beta_lo = -1.96*pl.col("beta_se") + pl.col("beta"),
+                    ),
+                    lp.aes(x="haplotype", y="beta")
                 )
                 + lp.geom_point(
-                    position=lp.position_dodge(width=0.8)
+                    position=lp.position_dodge(width=0.8),
+                )
+                + lp.geom_errorbar(
+                    lp.aes(ymin="beta_lo", ymax="beta_hi"),
+                    position=lp.position_dodge(width=.8),
                 )
             )
         ], guides="collect", sharey=True, align=True) + lp.ggsize(1000, 500)
     mo.vstack([
-        "Fit delta values for each (heterozygous) pair. Black bars denote the fits using just beta (additive haplotype effects, no diplotype effect).",
+        "Fit delta values for each (heterozygous) pair. Red bars denote the fits using just beta (additive haplotype effects, no diplotype effect).",
         _()
     ])
     return
@@ -765,6 +824,84 @@ def _(mo):
     return
 
 
+@app.cell
+def _(
+    HAPLOTYPES,
+    alpha_fit,
+    class_variance_df,
+    gene_class_counts,
+    gene_data,
+    gene_selector,
+    lp,
+    mo,
+    var_fit,
+):
+    _df = class_variance_df.with_columns(
+        gene_id = pl.lit(gene_selector.value),
+        diplotype = np.array(HAPLOTYPES)[class_variance_df['hap1']] + np.array(HAPLOTYPES)[class_variance_df['hap2']],
+        prop = pl.col("log_prop").exp(),
+        poisson_var = pl.col("mean_inv_T") * pl.col("log_prop").exp(),
+        corrected_var = pl.col("corrected_log_var").exp(),
+        in_fit = pl.col("fit_var").is_null().not_().cast(str).cast(pl.Enum(["false", "true"])),
+    )
+
+    _df_by_mouse = pl.DataFrame({
+        "mouse_id": gene_class_counts.ids, 
+        "var": var_fit,
+        "alpha": alpha_fit,
+        "total": gene_class_counts.counts.sum(axis=1),
+    }).join(pl.DataFrame({
+        "mouse_id": gene_data.ids,
+        "prop": (gene_data.q_hat[gene_data.hap1] + gene_data.q_hat[gene_data.hap2])/2,
+    }), how="inner", on="mouse_id").explode(["var", "prop", "alpha"]).with_columns(
+        poisson_var = pl.col("prop")  / pl.col("total")
+    )
+    # TODO: why is _df_by_mouse['var'] now so high?
+    plts = lp.gggrid([
+        (
+            lp.ggplot(
+                _df.with_columns(
+                    is_hom = pl.col("diplotype").is_in([f'{hap}{hap}' for hap in HAPLOTYPES]),
+                    #compatible = pl.col("diplotype").is_in(pl.col("hap_str").implode())
+                ).sample(fraction=1.0),# shuffle
+                lp.aes("prop", "corrected_var", color="is_hom")
+            )
+            + lp.facet_wrap("gene_id")
+            + lp.geom_point(lp.aes(alpha="in_fit"), tooltips=lp.layer_tooltips(["class_num", "n_samples", "diplotype"]))
+            + lp.scale_x_log10()
+            + lp.scale_y_continuous(trans="log10")
+            + lp.labs(y="variance (of class proportions)")
+            + lp.geom_line(lp.aes("prop", "fit_var"), data=_df.select("prop", "fit_var").drop_nulls(), color="magenta")
+            #+ lp.geom_smooth(lp.aes("prop", "var"), inherit_aes=False, method="lm", deg=4)
+            + lp.geom_line(lp.aes("prop", "poisson_var"), color="black", linetype="dashed")
+        ),
+        (
+            lp.ggplot(_df_by_mouse, lp.aes("prop", "var", color="alpha"))
+            + lp.geom_point()
+            + lp.geom_line(lp.aes("prop", "poisson_var"), color="black", linetype="dashed")
+            + lp.labs(y="fit variance (of class proportions)")
+            + lp.scale_x_log10()
+            + lp.scale_y_continuous(trans="log10")
+            + lp.scale_color_gradient(trans="log10")
+        )
+    ], guides="collect", sharey=True)  + lp.ggsize(900, 500)
+
+    mo.vstack([
+        "For each diplotype, we compute the variance of the read class abundance proportions. This can only be done in diplotypes with enough samples (>= 4). A trend line is fit and then variances are fit for each sample. Variance in excess of expected Poisson (approximating multinomial) variance is overdispersion and reflected by smaller alpha values. This depends upon both read depth and class proportion, and so depends upon sample and class. Dashed lines give Poisson noise levels.",
+        plts,
+    ])
+    return
+
+
+@app.cell
+def _(HAPLOTYPES, gene_class_counts, hap1, hap2):
+    _q_hat = estimate_class_proportions(gene_class_counts.counts, hap1, hap2, len(HAPLOTYPES))
+    #q_hat
+    #_hap1, _hap2
+    var_fit, alpha_fit, class_variance_df = estimate_class_alpha(gene_class_counts, _q_hat, hap1, hap2)
+    return alpha_fit, class_variance_df, var_fit
+
+
 @app.cell(disabled=True, hide_code=True)
 def _(
     all_compatibility_classes,
@@ -851,20 +988,6 @@ def _(mo):
 
 
 @app.cell
-def _():
-    # Get command-line arguments to work:
-    import argparse
-
-    parser = argparse.ArgumentParser("Run bias model on genes")
-    parser.add_argument(
-        "--gene_id",
-        help="which gene to run on (optional)",
-    )
-    args = parser.parse_args()
-    return (args,)
-
-
-@app.cell
 def _(ase_model_time, idata_ase, idata_totals, total_model_time):
     print(f"ASE model time: {ase_model_time:0.2f}")
     print(f"{idata_ase.posterior.attrs=}")
@@ -914,7 +1037,7 @@ def _(all_compatibility_classes, mo, tx_annot):
     def get_gene_class_counts_cached(gene_id):
         return get_gene_class_counts(gene_id, tx_annot, all_compatibility_classes)
 
-    return (get_gene_class_counts_cached,)
+    return
 
 
 @app.cell
@@ -927,142 +1050,6 @@ def _(HAPLOTYPES):
         )
         return hapnums['hap1'].to_numpy(), hapnums['hap2'].to_numpy()
 
-    return
-
-
-@app.cell(disabled=True)
-def _(HAPLOTYPES, HAP_TO_HAPNUM, allele_unique, get_gene_class_counts_cached):
-    # Relationship of variance and class prop in homozygous mice
-    _gene_list = [x.strip() for x in """
-    ENSMUSG00000030738
-    ENSMUSG00000041037
-    ENSMUSG00000008575
-    ENSMUSG00000021255
-    ENSMUSG00000038539
-    ENSMUSG00000025417
-    ENSMUSG00000039457
-    ENSMUSG00000046727
-    ENSMUSG00000066235
-    ENSMUSG00000037933
-    ENSMUSG00000040811
-    ENSMUSG00000024816
-    ENSMUSG00000033111
-    ENSMUSG00000121808
-    ENSMUSG00000039891
-    ENSMUSG00000001323
-    ENSMUSG00000051934
-    ENSMUSG00000051747
-    ENSMUSG00000018286
-    ENSMUSG00000038146
-    ENSMUSG00000037185
-    ENSMUSG00000032366
-    ENSMUSG00000039419
-    ENSMUSG00000009905
-    """.strip().splitlines()]
-    def _():
-        temp =[]
-        for gene_id in _gene_list:
-            gene_class_counts =  get_gene_class_counts_cached( gene_id )
-            gene_diplotypes = (
-                allele_unique.filter(gene_id=gene_id)
-                .select("diplotype", "mouse_id")
-                .join(
-                    pl.DataFrame({"mouse_id": gene_class_counts.ids}),
-                    "mouse_id",
-                    maintain_order="right",
-                ).with_columns(
-                    hap1=pl.col("diplotype").str.slice(0, 1).replace_strict(HAP_TO_HAPNUM),
-                    hap2=pl.col("diplotype").str.slice(1, 1).replace_strict(HAP_TO_HAPNUM),
-                )
-            )
-            q_hat = estimate_class_proportions(gene_class_counts.counts, gene_diplotypes['hap1'].to_numpy(), gene_diplotypes['hap2'].to_numpy(), len(HAPLOTYPES))
-            # NOTE: this works best if diplotypes are always sorted (AB not BA), which they are in
-            # our dataset but may not be in general (e.g., simulated). Estimate is just noisier otherwise.
-            for (diplotype, hap1, hap2), dat in gene_diplotypes.group_by(["diplotype", "hap1", "hap2"]):
-                these_mice = dat['mouse_id']
-                these_mice_ids = np.where(np.isin(gene_class_counts.ids, these_mice))
-                if len(these_mice) < 4:
-                    continue
-                these_counts=gene_class_counts.counts[these_mice_ids]
-                tots = np.sum(these_counts, axis=1)
-                q_hat_close = np.abs(np.log(q_hat[hap1] / q_hat[hap2])) < 0.5
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    props = these_counts / np.sum(these_counts, axis=1, keepdims=True)
-                    mprops = np.mean(props, axis=0)
-                    mult_var = (props * (1-props) / these_counts.sum(axis=1, keepdims=True)).mean(axis=0)
-                    true_var = props.var(axis=0, ddof=1)
-                    excess_var = true_var - mult_var
-                    alpha = mprops**2/(true_var - mprops*np.mean(1/tots))
-                n_classes = gene_class_counts.compat.shape[0]
-                temp.append(pl.DataFrame({
-                    "gene_id": gene_id,
-                    "diplotype": diplotype,
-                    "var": true_var,
-                    "mean_T": np.mean(tots),
-                    "mean_inv_T": np.mean(1/tots),
-                    "alpha": alpha,
-                    "q_hat_close": q_hat_close,
-                    "prop": mprops,
-                    "n_samples": len(these_mice),
-                    "class_num": np.arange(mprops.shape[0]),
-                    "hap_str": [''.join(h for i,h in enumerate(HAPLOTYPES) if gene_class_counts.compat[j,i]) for j in range(n_classes)]
-                }))
-        df = pl.concat(temp)
-        return df
-    class_variance_df = _()
-    return (class_variance_df,)
-
-
-@app.cell
-def _(HAPLOTYPES, class_variance_df, lp):
-    _df = class_variance_df.filter(
-        pl.col("prop") > 0.0,
-        pl.col("prop").is_nan().not_(),
-        pl.col("q_hat_close"),
-        #pl.col("alpha") > 0,
-    ).with_columns(
-        alpha_nice = pl.when(pl.col("alpha") < 0)
-            .then(1e3)
-            .otherwise("alpha"),
-        disp = 1/pl.col("alpha"),
-    )
-    _X =  np.array([
-            np.ones(len(_df)),
-            np.log(_df['prop'].to_numpy()),
-            np.log(_df['mean_T'].to_numpy()),
-        ]).T
-    res, _, _, _ = np.linalg.lstsq(
-        _X,
-        np.log(_df['var'].to_numpy())
-    )
-    _var = np.exp(res[0] + np.log(_df['prop'])*res[1] + np.log(_df['mean_T'])*res[2])
-    _fit = pl.DataFrame({"prop": _df['prop'], 'mean_T': _df['mean_T'], "gene_id":_df['gene_id'], "var": _var})
-    print(res)
-    (
-        lp.ggplot(
-            _df.with_columns(
-                is_hom = pl.col("diplotype").is_in([f'{hap}{hap}' for hap in HAPLOTYPES]),
-                #compatible = pl.col("diplotype").is_in(pl.col("hap_str").implode())
-            ).sample(fraction=1.0),# shuffle
-            lp.aes("prop", "var", color="is_hom")
-        )
-        + lp.facet_wrap("gene_id")
-        + lp.geom_point(tooltips=lp.layer_tooltips(["class_num", "n_samples", "diplotype", "hap_str"]), alpha=0.3)
-        + lp.scale_x_log10()
-        + lp.scale_y_continuous(trans="log10")
-        + lp.geom_smooth(lp.aes("prop", "var"), inherit_aes=False, method="lm", deg=4)
-        #+ lp.geom_smooth(lp.aes("prop", "var"), inherit_aes=False, method="lm")
-        + lp.geom_line(data=_fit, color="black")
-    )
-    return
-
-
-@app.cell
-def _(HAPLOTYPES, gene_class_counts, hap1, hap2):
-    _q_hat = estimate_class_proportions(gene_class_counts.counts, hap1, hap2, len(HAPLOTYPES))
-    #q_hat
-    #_hap1, _hap2
-    var_fit, alpha_fit = estimate_class_alpha(gene_class_counts, _q_hat, hap1, hap2)
     return
 
 
@@ -1164,15 +1151,15 @@ def _(idata_ase1, lp, x_coords, x_var, y_coords, y_var):
 
 
 @app.cell
-def _(idata_ase, lp, mo):
+def _(gene_data, idata_ase1, lp, mo):
     def _():
-        x = idata_ase.posterior['q_logit'].mean(axis=(0,1)).data
-        hap = np.broadcast_to(idata_ase.posterior['q_logit'].coords['haplotypes'].data[:,None], x.shape).astype(str)
-        class_name = np.broadcast_to(idata_ase.posterior['q_logit'].coords['classes'].data[None,:], x.shape).flatten()
-        q_hat = idata_ase.constant_data['q_hat'].data
-        pinned = idata_ase.constant_data['q_logit_pinned'].data
+        x = idata_ase1.posterior['q_logit_raw'].mean(axis=(0,1)).data
+        hap = np.broadcast_to(idata_ase1.posterior['q_logit_raw'].coords['haplotypes'].data[:,None], x.shape).astype(str)
+        class_name = np.broadcast_to(idata_ase1.posterior['q_logit_raw'].coords['classes'].data[None,:], x.shape).flatten()
+        q_hat = gene_data.q_hat
+    #    pinned = idata_ase1.constant_data['q_logit_pinned'].data
         return (
-            lp.ggplot(pl.DataFrame({'x': x.flatten(), 'y': x.flatten(), 'hap': hap.flatten(), 'q_hat': q_hat.flatten(), "class_name": class_name, "pinned": pinned.flatten()}), lp.aes('q_hat', 'y', color='hap', shape="pinned")) 
+            lp.ggplot(pl.DataFrame({'x': x.flatten(), 'y': x.flatten(), 'hap': hap.flatten(), 'q_hat': q_hat.flatten(), "class_name": class_name}), lp.aes('q_hat', 'y', color='hap')) 
             + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["hap", "class_name"]))
             + lp.scale_x_log10()
             + lp.labs(y="q_logit")
