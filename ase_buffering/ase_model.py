@@ -334,7 +334,7 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
     return q_hat  # n_haps x n_classes
 
 
-def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
+def estimate_class_alpha(gene_data):
     """
     Compute alpha as a function of read class proportion (p).
     Fit by IRLS alpha by first estimating variance of p
@@ -343,16 +343,19 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
     q_hat from estimate_class_proportions()
     """
     temp = []
-    haps = pl.DataFrame({"mouse_id": gene_class_counts.ids, "hap1": hap1, "hap2": hap2})
+    q_hat = gene_data.q_hat
+    hap1 = gene_data.hap1
+    hap2 = gene_data.hap2
+    haps = pl.DataFrame({"mouse_id": gene_data.ids, "hap1": hap1, "hap2": hap2})
     # NOTE: this works best if diplotypes are always sorted (AB not BA), which they are in
     # our dataset but may not be in general (e.g., simulated). Estimate is just noisier otherwise.
     for (h1, h2), dat in haps.group_by(["hap1", "hap2"]):
         these_mice = dat["mouse_id"]
-        these_mice_ids = np.where(np.isin(gene_class_counts.ids, these_mice))
+        these_mice_ids = np.where(np.isin(gene_data.ids, these_mice))
         if len(these_mice) < 4:
             # Variance too high in this diplotype, ignore
             continue
-        these_counts = gene_class_counts.counts[these_mice_ids]
+        these_counts = gene_data.counts[these_mice_ids]
         tots = np.sum(these_counts, axis=1)
         q_hat_close = np.abs(np.log(q_hat[h1] / q_hat[h2])) < 0.5
         with np.errstate(divide="ignore", invalid="ignore"):

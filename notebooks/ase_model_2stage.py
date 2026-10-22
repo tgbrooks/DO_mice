@@ -240,7 +240,7 @@ def _(HAPLOTYPES, HAP_TO_HAPNUM, gene_class_counts, gene_selector, genotypes):
     )
     hap1 = gene_diplotypes["hap1"].to_numpy()
     hap2 = gene_diplotypes["hap2"].to_numpy()
-    return gene_diplotypes, hap1, hap2, n_classes
+    return gene_diplotypes, n_classes
 
 
 @app.cell
@@ -249,7 +249,7 @@ def _(ase_model1, mo):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ase_model1):
     # Fit the model
     _start = time.time()
@@ -829,34 +829,37 @@ def _(
     HAPLOTYPES,
     alpha_fit,
     class_variance_df,
-    gene_class_counts,
     gene_data,
     gene_selector,
     lp,
     mo,
 ):
     _T = gene_data.counts.sum(axis=1).mean()
+    _p = pl.col("prop")
     _df = class_variance_df.with_columns(
         gene_id = pl.lit(gene_selector.value),
         diplotype = np.array(HAPLOTYPES)[class_variance_df['hap1']] + np.array(HAPLOTYPES)[class_variance_df['hap2']],
         prop = pl.col("log_prop").exp(),
         poisson_var = pl.col("mean_inv_T") * pl.col("log_prop").exp() * (1-pl.col("log_prop").exp()),
-        in_fit = pl.col("fit_alpha").is_null().not_().cast(str).cast(pl.Enum(["false", "true"])),
-        # variance of x is mu + mu^2 / alpha, variance of p is var(x)/T^2
-        fit_var = (pl.col("log_prop").exp()*_T + (pl.col("log_prop").exp()*_T)**2/pl.col("fit_alpha"))/_T**2,
+        in_fit = pl.col("q_hat_close").cast(str).cast(pl.Enum(['false', 'true'])),
+    ).with_columns(
+        # variance of x is mu + mu^2 / alpha,
+        # variance of p is p(1-p)/T + p^2 [ (1-p^2)/alpha + sum_{k}p_k^2/alpha_k]
+        # where k ranges over the other classes. We plug in for if the other classes are Poisson (alpha=inf)
+        #fit_var = _p*(1-_p)/_T + _p**2 * ( (1-_p**2)/pl.col("fit_alpha") +_p**2 /pl.col("fit_alpha")),
+        fit_var = _p*(1-_p)/_T + _p**2 * ( (1-_p)**2/pl.col("fit_alpha"))# +_p**2 /pl.col("fit_alpha")),
     )
 
     _df_by_mouse = pl.DataFrame({
-        "mouse_id": gene_class_counts.ids, 
+        "mouse_id": gene_data.ids, 
         "alpha": alpha_fit,
-        "total": gene_class_counts.counts.sum(axis=1),
+        "total": gene_data.counts.sum(axis=1),
     }).join(pl.DataFrame({
         "mouse_id": gene_data.ids,
         "prop": (gene_data.q_hat[gene_data.hap1] + gene_data.q_hat[gene_data.hap2])/2,
-    }), how="inner", on="mouse_id").explode(["prop", "alpha"]).with_columns(
+    }), how="inner", on="mouse_id").explode(["prop", "alpha"], empty_as_null=False).with_columns(
         poisson_var = pl.col("prop")  / pl.col("total")
     )
-    # TODO: why is _df_by_mouse['var'] now so high?
     plts = lp.gggrid([
         (
             lp.ggplot(
@@ -894,11 +897,8 @@ def _(
 
 
 @app.cell
-def _(HAPLOTYPES, gene_class_counts, hap1, hap2):
-    _q_hat = estimate_class_proportions(gene_class_counts.counts, hap1, hap2, len(HAPLOTYPES))
-    #q_hat
-    #_hap1, _hap2
-    alpha_fit, class_variance_df = estimate_class_alpha(gene_class_counts, _q_hat, hap1, hap2)
+def _(gene_data):
+    alpha_fit, class_variance_df = estimate_class_alpha(gene_data)
     return alpha_fit, class_variance_df
 
 

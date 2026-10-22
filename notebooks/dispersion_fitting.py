@@ -183,7 +183,7 @@ def _(HAPLOTYPES, gene_ids, get_gene_data_cached):
         gene_data, gene_class_counts = get_gene_data_cached(gene_id)
         hap1, hap2 = gene_data.hap1, gene_data.hap2
         _q_hat = estimate_class_proportions(gene_data.counts, hap1, hap2, len(HAPLOTYPES))
-        alpha_fit, class_variance_df = estimate_class_alpha(gene_data, _q_hat, hap1, hap2)
+        alpha_fit, class_variance_df = estimate_class_alpha(gene_data)
 
         T = gene_data.counts.sum(axis=1).mean()
         p = pl.col("log_prop").exp()
