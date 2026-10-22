@@ -48,6 +48,7 @@ DEFAULTS = dict(
     eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
     min_eta_info=1.0,  # mice with less plug-in information are not fit for eta
     min_n_informative=100,
+    sigma_log_total_reads=1.0,
     # --- handoff ---
     cov_shrink=0.1,  # shrink stage-1 posterior correlations toward 0 (full mode)
     max_abs_skew=0.5,  # flag mice whose stage-1 posterior is clearly non-Gaussian
@@ -298,8 +299,13 @@ def make_stage1_model(d: GeneData, config: dict) -> pm.Model:
         p = pm.math.sigmoid(eta)
 
         class_props = p[:, None] * q[d.hap1] + (1 - p)[:, None] * q[d.hap2]
-        totals = d.counts.sum(axis=1, keepdims=True)
-        _nb_potential(d.counts, d.alpha, totals * class_props)
+        observed_totals = d.counts.sum(axis=1, keepdims=True)
+        log_total_reads = pm.Normal(
+            "log_total_reads",
+            mu=np.log(observed_totals),
+            sigma=config["sigma_log_total_reads"],
+        )
+        _nb_potential(d.counts, d.alpha, pm.exp(log_total_reads) * class_props)
 
     model.i_fit = i_fit  # convenience for stage1_likelihood
     assert len(i_fit) <= n_samples
