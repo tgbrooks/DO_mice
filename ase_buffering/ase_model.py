@@ -336,8 +336,9 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
 
 def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
     """
-    Compute a trend line of variance over class proportion
-    Use that to compute alpha (1/dispersion) for each class's counts
+    Compute alpha as a function of read class proportion (p).
+    Fit by IRLS alpha by first estimating variance of p
+    within mice of each diplotype and then fitting alpha as a function of p.
 
     q_hat from estimate_class_proportions()
     """
@@ -376,58 +377,66 @@ def estimate_class_alpha(gene_class_counts, q_hat, hap1, hap2):
         )
     # TODO: handle case where no mice have < 4. Currently this crashes and those genes are ignored.
     df = pl.concat(temp)
-    df_fit = df.filter(pl.col("q_hat_close"), pl.col("log_prop").is_finite())
-    X, inv_alpha_fit_coeffs = _fit_inv_alpha_trend(df_fit)
+    X, inv_alpha_fit_coeffs, model_spec = _fit_inv_alpha_trend(df)
 
     # Report fit curve
     inv_alpha_fit = np.exp(X @ inv_alpha_fit_coeffs)
-    df_out = df.join(
-        df_fit.select(
-            "hap1",
-            "hap2",
-            "class_num",
-            fit_alpha=1 / inv_alpha_fit,
-        ),
-        on=["hap1", "hap2", "class_num"],
-        how="left",
-    )
+    df_out = df.with_columns(fit_alpha=1 / inv_alpha_fit)
 
     # Now get sample-level trend-curve values
     q_hat_mean = (q_hat[hap1] + q_hat[hap2]) / 2
-    alpha = _predict_alpha(X.model_spec, inv_alpha_fit_coeffs, q_hat_mean, floor=0.1)
+    alpha = _predict_alpha(model_spec, inv_alpha_fit_coeffs, q_hat_mean, floor=0.1)
     return alpha, df_out
 
 
 def _fit_inv_alpha_trend(df: pl.DataFrame, n_iter: int = 20):
     """Quasi-likelihood fit of E[V] = m*invT + m^2 * exp(spline(log m)). Uses all classes."""
+    df = df.with_row_index("_index")
+    fit_mask = (df["q_hat_close"] & df["log_prop"].is_finite()).to_numpy()
+    _, g = np.unique(df.select("hap1", "hap2").to_numpy(), axis=0, return_inverse=True)
+    g = g.ravel()  # genotypes coded as integers
     m = np.exp(df["log_prop"].to_numpy())
     V = df["var"].to_numpy()
     nu = df["n_samples"].to_numpy() - 1
     invT = df["mean_inv_T"].to_numpy()
 
-    X = formulaic.Formula(
-        "~ bs(log_prop, df=4, extrapolation='clip')"
-    ).get_model_matrix(df)
-    Xn = X.to_numpy()
+    finite = df["log_prop"].is_finite().to_numpy()
+    spec = (
+        formulaic.Formula("~ log_prop")  # linear fit line
+        .get_model_matrix(df.filter(fit_mask))
+        .model_spec
+    )
+    Xn = np.zeros((len(df), len(spec.column_names)))
+    Xn[finite] = spec.get_model_matrix(df.filter(finite)).to_numpy()
 
-    def s2(c):
-        return m * invT + m**2 * np.exp(Xn @ c)
+    def s2_all(c):
+        ia = np.exp(Xn @ c)  # 1/alpha for every row
+        contrib = m**2 * ia
+        S_other = (
+            np.bincount(g, weights=contrib)[g] - contrib
+        )  # sum over other classes in group
+        return m * (1 - m) * invT + m**2 * ((1 - m) ** 2 * ia + S_other)
+
+    def resid(c, sd_V):
+        return (V[fit_mask] - s2_all(c)[fit_mask]) / sd_V
 
     c = np.zeros(Xn.shape[1])  # start at 1/alpha = 1
     for _ in range(n_iter):  # IRLS: weights fixed within each step
-        sd_V = np.sqrt(2 * s2(c) ** 2 / nu)  # sd of a sample variance (normal theory)
-        c_new = scipy.optimize.least_squares(lambda c: (V - s2(c)) / sd_V, c).x
+        sd_V = np.sqrt(2 * s2_all(c) ** 2 / nu)[
+            fit_mask
+        ]  # sd of a sample variance (normal theory)
+        c_new = scipy.optimize.least_squares(lambda c: resid(c, sd_V), c).x
         if np.max(np.abs(c_new - c)) < 1e-6:
             c = c_new
             break
         c = c_new
-    return X, c
+    return Xn, c, spec
 
 
-def _predict_alpha(spec, c, q_hat_mean, floor=0.1):
+def _predict_alpha(spec, c, q_hat_mean, floor=0.1, ceil=1e10):
     X2 = spec.get_model_matrix(pl.DataFrame({"log_prop": np.log(q_hat_mean.ravel())}))
     inv_alpha = np.exp(X2.to_numpy() @ c).reshape(q_hat_mean.shape)
-    return np.clip(1 / inv_alpha, floor, None)
+    return np.clip(1 / inv_alpha, floor, ceil)
 
 
 def eta_information(counts, q_hat, hap1, hap2, alpha, p=0.5):
