@@ -249,7 +249,7 @@ def _(ase_model1, mo):
     return
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(ase_model1):
     # Fit the model
     _start = time.time()
@@ -261,7 +261,7 @@ def _(ase_model1):
             blas_cores=1,
             random_seed=100,
             nuts_sampler="nutpie",
-            target_accept=0.95,
+            target_accept=0.8,
         )
     _end = time.time()
     ase_model_time1 = _end - _start
@@ -276,7 +276,6 @@ def _(gene_data, gene_diplotypes, idata_ase1, lp, mo):
         sample_ids = idata_ase1.posterior.coords['fit_samples'].data
         diplo = gene_diplotypes.join(pl.DataFrame({"mouse_id": sample_ids}), "mouse_id", how="right", maintain_order="right")
         diplotype = np.broadcast_to(diplo['diplotype'], eta.shape)
-        #chain = np.broadcast_to(np.arange(eta.shape[0])[:,None], eta.shape).astype(str)
         mouse_id = np.broadcast_to(diplo['mouse_id'], eta.shape)
         info = xr.DataArray(gene_data.info, dims="sample", coords={"sample": gene_data.ids})
         info = np.broadcast_to(
@@ -289,7 +288,6 @@ def _(gene_data, gene_diplotypes, idata_ase1, lp, mo):
             'diplotype': diplotype.flatten(),
             'eta': eta.flatten(),
             'eta_se': eta_se.flatten(),
-            #'chain': chain.flatten(),
             "eta_info": info.flatten(),
         }).with_columns(
             eta_hi = pl.col("eta") + pl.col("eta_se")*1.96,
@@ -304,7 +302,7 @@ def _(gene_data, gene_diplotypes, idata_ase1, lp, mo):
                 lp.aes(ymin="eta_lo", ymax="eta_hi"),
                 position=lp.position_dodge(width=0.8)
             )
-            + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["mouse_id", "diplotype", "eta_info", "mouse_num"]), position=lp.position_dodge(width=0.8))
+            + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["mouse_id", "diplotype", "eta_info"]), position=lp.position_dodge(width=0.8))
             + lp.ggsize(900,500)
         )
     mo.vstack([
@@ -488,7 +486,7 @@ def _(ase_model2, mo):
     return
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(ase_model2):
     # Fit the model - stage 2
     _start = time.time()
@@ -513,33 +511,79 @@ def _(idata_ase2):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(gene_data, idata_ase2, lp, mo):
     def _():
         delta = idata_ase2.posterior['delta'].mean(axis=(0,1)).data
         delta_se = idata_ase2.posterior['delta'].std(axis=(0,1)).data
         hap_pairs = np.broadcast_to(idata_ase2.posterior.coords['hap_pairs'].data, delta.shape)
-        #chain = np.broadcast_to(np.arange(delta.shape[0])[:,None], delta.shape).astype(str)
         beta = idata_ase2.posterior['beta'].mean(axis=(0,1)).data
         beta_fit = np.broadcast_to((gene_data.Bm @ beta), delta.shape)
         beta_all = idata_ase2.posterior['beta'].mean(axis=(0,1)).data
         beta_all_se = idata_ase2.posterior['beta'].std(axis=(0,1)).data
-        #beta_chain = np.broadcast_to(np.arange(beta_all.shape[0])[:,None], beta_all.shape).astype(str)
         haplotypes = np.broadcast_to(idata_ase2.posterior.coords['haplotypes'].data, beta_all.shape)
+
+        by_diplotype_df = (
+            pl.DataFrame({
+                'hap_pair': hap_pairs.flatten(),
+                'delta': delta.flatten(),
+                'delta_se': delta_se.flatten(),
+                'beta_fit': beta_fit.flatten(),
+            }
+            ).with_columns(
+                delta_hi = 1.96*pl.col("delta_se") + pl.col("delta"),
+                delta_lo = -1.96*pl.col("delta_se") + pl.col("delta"),
+            )
+        )
+
+        beta_df = (
+            pl.DataFrame({
+                "haplotype": haplotypes.flatten(),
+                "beta": beta_all.flatten(),
+                "beta_se": beta_all_se.flatten(),
+            }).with_columns(
+                beta_hi = 1.96*pl.col("beta_se") + pl.col("beta"),
+                beta_lo = -1.96*pl.col("beta_se") + pl.col("beta"),
+            )
+        )
+
+        resid_df_wide = (
+            by_diplotype_df
+            .with_columns(
+                hap1 = pl.col("hap_pair").str.slice(-2,1),
+                hap2 = pl.col("hap_pair").str.slice(-1,1),
+            )
+            .join(
+                beta_df.select(hap1="haplotype", beta1="beta"),
+                on="hap1",
+            )
+            .join(
+                beta_df.select(hap2="haplotype", beta2="beta"),
+                on="hap2",
+            )
+            .with_columns(
+                resid1 = pl.col("delta") + pl.col("beta2"),
+                resid2 = -pl.col("delta") + pl.col("beta1"),
+            )
+        )
+
+        resid_df = pl.concat([
+            resid_df_wide.select(
+                "hap1", "hap2",
+                hap = "hap1",
+                resid = "resid1",
+            ),
+            resid_df_wide.select(
+                "hap1", "hap2",
+                hap = "hap2",
+                resid = "resid2",
+            )
+        ])
+
         return lp.gggrid([
             (
                 lp.ggplot(
-                    pl.DataFrame({
-                        'hap_pair': hap_pairs.flatten(),
-                        'delta': delta.flatten(),
-                        'delta_se': delta_se.flatten(),
-                        'beta_fit': beta_fit.flatten(),
-                        #'chain': chain.flatten(),
-                    }
-                    ).with_columns(
-                        delta_hi = 1.96*pl.col("delta_se") + pl.col("delta"),
-                        delta_lo = -1.96*pl.col("delta_se") + pl.col("delta"),
-                    ),
+                    by_diplotype_df,
                     lp.aes('hap_pair', 'delta')
                 )
                     + lp.geom_point(
@@ -556,28 +600,29 @@ def _(gene_data, idata_ase2, lp, mo):
             ),
             (
                 lp.ggplot(
-                    pl.DataFrame({
-                        "haplotype": haplotypes.flatten(),
-                        "beta": beta_all.flatten(),
-                        "beta_se": beta_all_se.flatten(),
-                        #"chain": beta_chain.flatten(),
-                    }).with_columns(
-                        beta_hi = 1.96*pl.col("beta_se") + pl.col("beta"),
-                        beta_lo = -1.96*pl.col("beta_se") + pl.col("beta"),
-                    ),
+                    beta_df,
                     lp.aes(x="haplotype", y="beta")
                 )
                 + lp.geom_point(
+                    lp.aes(x="hap", y="resid"),
+                    data=resid_df,
+                    position=lp.position_nudge(x=0.2),
+                    tooltips=lp.layer_tooltips(['hap1', 'hap2'])
+                )
+                + lp.geom_point(
                     position=lp.position_dodge(width=0.8),
+                    color="red",
                 )
                 + lp.geom_errorbar(
                     lp.aes(ymin="beta_lo", ymax="beta_hi"),
                     position=lp.position_dodge(width=.8),
+                    color="red",
                 )
             )
         ], guides="collect", sharey=True, align=True) + lp.ggsize(1000, 500)
     mo.vstack([
-        "Fit delta values for each (heterozygous) pair. Red bars denote the fits using just beta (additive haplotype effects, no diplotype effect).",
+        #"Fit delta values for each (heterozygous) pair. Red bars denote the fits using just beta (additive haplotype effects, no diplotype effect).",
+        "Red denotes beta values (additive haplotype effects without diplotype effect), black denotes delta values (diplotype effect). On left, each delta value (black) plotted along with the haplotype additive effect of just betas. On right, beta values (red) next to the residual after removing the other haplotype beta.",
         _()
     ])
     return

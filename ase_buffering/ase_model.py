@@ -334,18 +334,19 @@ def estimate_class_proportions(class_counts, hap1, hap2, n_haps):
     return q_hat  # n_haps x n_classes
 
 
-def estimate_class_alpha(gene_data):
+def estimate_class_alpha(gene_data, q_hat=None, hap1=None, hap2=None):
     """
     Compute alpha as a function of read class proportion (p).
     Fit by IRLS alpha by first estimating variance of p
     within mice of each diplotype and then fitting alpha as a function of p.
 
     q_hat from estimate_class_proportions()
+    If q_hat, hap1, or hap2 are not provided, expected to be in gene_data
     """
     temp = []
-    q_hat = gene_data.q_hat
-    hap1 = gene_data.hap1
-    hap2 = gene_data.hap2
+    q_hat = q_hat if q_hat is not None else gene_data.q_hat
+    hap1 = hap1 if hap1 is not None else gene_data.hap1
+    hap2 = hap2 if hap2 is not None else gene_data.hap2
     haps = pl.DataFrame({"mouse_id": gene_data.ids, "hap1": hap1, "hap2": hap2})
     # NOTE: this works best if diplotypes are always sorted (AB not BA), which they are in
     # our dataset but may not be in general (e.g., simulated). Estimate is just noisier otherwise.
