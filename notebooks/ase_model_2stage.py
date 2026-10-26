@@ -212,6 +212,7 @@ def _(gene_data):
         eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
         min_eta_info=2.0,  # mice with less plug-in information are not fit for eta
         min_n_informative=50,
+        sigma_log_total_reads=1.0,
     )
     ase_model1 = make_stage1_model(
         gene_data,
@@ -261,7 +262,7 @@ def _(ase_model1):
             blas_cores=1,
             random_seed=100,
             nuts_sampler="nutpie",
-            target_accept=0.8,
+            target_accept=0.9,
         )
     _end = time.time()
     ase_model_time1 = _end - _start
@@ -295,14 +296,14 @@ def _(gene_data, gene_diplotypes, idata_ase1, lp, mo):
             mouse_num = pl.row_index().over("diplotype").mod(max_mice_per_group).cast(int),
         ).with_columns(
             mouse_num = (pl.col("mouse_num") - pl.col("mouse_num").max().over("diplotype")//2),
-        )
+        ).join(gene_diplotypes, "mouse_id")
         return (
             lp.ggplot(df.sample(fraction=1.0).sort('diplotype'), lp.aes('diplotype', 'eta', group="mouse_num", color="eta_info"))
             + lp.geom_errorbar(
                 lp.aes(ymin="eta_lo", ymax="eta_hi"),
                 position=lp.position_dodge(width=0.8)
             )
-            + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["mouse_id", "diplotype", "eta_info"]), position=lp.position_dodge(width=0.8))
+            + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["mouse_id", "diplotype", "eta_info", "genotype_confidence"]), position=lp.position_dodge(width=0.8))
             + lp.ggsize(900,500)
         )
     mo.vstack([

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 import pymc as pm
+import arviz as az
 import pytensor.tensor as pt
 import scipy.stats
 
@@ -95,9 +96,25 @@ def prepare_gene_data(
     gene_effective_lengths: pl.DataFrame,
     config: dict,
 ) -> GeneData:
+    total_counts = pl.DataFrame(
+        {
+            "mouse_id": gene_class_counts.ids,
+            "total_counts": gene_class_counts.counts.sum(axis=1),
+        }
+    )
+
     gene_diplotypes = (
-        diplotypes.filter(gene_id=gene_id)
+        diplotypes.filter(
+            gene_id=gene_id,
+        )
+        .join(
+            total_counts,
+            "mouse_id",
+        )
         .filter(
+            # All-zero samples are useless for ASE model
+            # (though they still need to be retained for the total counts model)
+            pl.col("total_counts") > 0,
             pl.col("genotype_confidence") > config["min_genotype_confidence"],
             pl.col("mouse_id").is_in(gene_class_counts.ids),
         )
@@ -278,6 +295,7 @@ def make_stage1_model(d: GeneData, config: dict) -> pm.Model:
         raise ValueError(f"Only {n_informative} samples were informative for ASE")
 
     coords = {
+        "samples": d.ids,
         "haplotypes": d.haplotypes,
         "classes": d.class_names,
         "fit_samples": [d.ids[i] for i in i_fit],
@@ -299,13 +317,14 @@ def make_stage1_model(d: GeneData, config: dict) -> pm.Model:
         p = pm.math.sigmoid(eta)
 
         class_props = p[:, None] * q[d.hap1] + (1 - p)[:, None] * q[d.hap2]
-        observed_totals = d.counts.sum(axis=1, keepdims=True)
+        observed_totals = d.counts.sum(axis=1)
         log_total_reads = pm.Normal(
             "log_total_reads",
             mu=np.log(observed_totals),
             sigma=config["sigma_log_total_reads"],
+            dims="samples",
         )
-        _nb_potential(d.counts, d.alpha, pm.exp(log_total_reads) * class_props)
+        _nb_potential(d.counts, d.alpha, pt.exp(log_total_reads[:, None]) * class_props)
 
     model.i_fit = i_fit  # convenience for stage1_likelihood
     assert len(i_fit) <= n_samples
@@ -478,3 +497,58 @@ def fit_gene_two_stage(
     return dict(
         data=d, config=cfg, idata_stage1=idata1, likelihood=lik, idata_stage2=idata2
     )
+
+
+# ---------------------------------------------------------------------------
+# Summarize
+# ---------------------------------------------------------------------------
+
+
+def _summary(idata, **kwargs):
+    return pl.DataFrame(az.summary(idata, **kwargs).reset_index(names="variable"))
+
+
+def summarize_ase_models(idata_ase1, idata_ase2, gene_data) -> dict:
+    eta_summary = _summary(idata_ase1, var_names=["eta"])
+    delta_summary = _summary(idata_ase2, var_names=["delta"])
+    beta_summary = _summary(idata_ase2, var_names=["beta"])
+    sigma_summary = pl.concat(
+        [
+            _summary(idata_ase1, var_names=["sigma_q", "sigma_q_tiny"]),
+            # _summary(idata_ase2, var_names=["sigma_u"]),
+        ]
+    )
+    return {
+        "beta": beta_summary.rows_by_key("variable", unique=True, named=True),
+        "eta": eta_summary.rows_by_key("variable", unique=True, named=True),
+        "delta": delta_summary.rows_by_key("variable", unique=True, named=True),
+        "diagnostic": {
+            "max_rhat_beta": beta_summary["r_hat"].max(),
+            "median_rhat_eta": eta_summary["r_hat"].median(),
+            "median_rhat_delta": delta_summary["r_hat"].median(),
+            "min_rhat_sigma": sigma_summary["r_hat"].max(),
+            "min_ess_bulk_beta": beta_summary["ess_bulk"].min(),
+            "min_ess_tail_beta": beta_summary["ess_tail"].min(),
+            "min_ess_bulk_eta": eta_summary["ess_bulk"].min(),
+            "min_ess_tail_eta": eta_summary["ess_tail"].min(),
+            "min_ess_bulk_delta": delta_summary["ess_bulk"].min(),
+            "min_ess_tail_delta": delta_summary["ess_tail"].min(),
+            "min_ess_bulk_sigma": sigma_summary["ess_bulk"].min(),
+            "min_ess_tail_sigma": sigma_summary["ess_tail"].min(),
+        },
+        "info": {
+            "n_chains1": len(idata_ase1["sample_stats"]["chain"]),
+            "n_chains2": len(idata_ase2["sample_stats"]["chain"]),
+            "n_samples": len(gene_data.ids),  # TODO: add number informative samples
+            "n_diverging1": int(idata_ase1["sample_stats"]["diverging"].sum()),
+            "n_diverging2": int(idata_ase2["sample_stats"]["diverging"].sum()),
+            "n_diverging_chains1": int(
+                idata_ase1["sample_stats"]["diverging"].any(axis=1).sum(axis=0)
+            ),
+            "n_diverging_chains2": int(
+                idata_ase2["sample_stats"]["diverging"].any(axis=1).sum(axis=0)
+            ),
+            "mean_tree_depth1": float(idata_ase1["sample_stats"]["depth"].mean()),
+            "mean_tree_depth2": float(idata_ase2["sample_stats"]["depth"].mean()),
+        },
+    }
