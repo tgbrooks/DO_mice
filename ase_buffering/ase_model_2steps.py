@@ -43,9 +43,7 @@ from ase_buffering.ase_model import (
 DEFAULTS = dict(
     min_genotype_confidence=0.90,
     # --- stage 1 ---
-    q_mode="adaptive_centered",  # or "q_hat"
-    sigma_q_sd=0.5,
-    min_counts_to_center=50,
+    sigma_q=0.5,
     eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
     min_eta_info=1.0,  # mice with less plug-in information are not fit for eta
     min_n_informative=100,
@@ -224,50 +222,32 @@ def prepare_gene_data(
 # ---------------------------------------------------------------------------
 
 
+def q_information(counts, q_hat, hap1, hap2, alpha, p=0.5):
+    """Fisher information about each log-q entry (haplotypes x classes), NB likelihood."""
+    T = counts.sum(axis=1, keepdims=True)
+    mu = T * (p * q_hat[hap1] + (1 - p) * q_hat[hap2])
+    var = mu * (1 + mu / alpha)
+    info = np.zeros_like(q_hat)
+    for h in range(q_hat.shape[0]):
+        w = p * (hap1 == h) + (1 - p) * (hap2 == h)  # homozygotes of h get weight 1
+        dmu = T * w[:, None] * q_hat[h] * (1 - q_hat[h])
+        info[h] = (dmu**2 / var).sum(axis=0)
+    return info
+
+
 def _make_q(d: GeneData, config: dict):
     n_haps, n_classes = d.q_hat.shape
     log_q_hat = np.log(d.q_hat)
-
-    if config["q_mode"] == "q_hat":
-        return pm.Deterministic(
-            "q", pt.as_tensor(d.q_hat), dims=("haplotypes", "classes")
-        )
 
     # Pin the largest class of each haplotype (softmax invariance); tiny classes have
     # one-sided likelihoods, so they are never centered.
     pin_idx = np.argmax(d.est_hap_class_counts, axis=1)
     pin = np.arange(n_classes)[None, :] == pin_idx[:, None]
-    tiny = d.q_hat < 2e-5
-    center = (d.est_hap_class_counts > config["min_counts_to_center"]) & ~pin & ~tiny
-    pm.Data("q_logit_centered", center, dims=("haplotypes", "classes"))
 
-    if config["q_mode"] == "constant_sigma_q":
-        raw = pm.Normal(
-            "q_logit_raw",
-            mu=0.0,
-            sigma=pt.switch(tiny, config["sigma_q"], config["sigma_q_tiny"]),
-            dims=("haplotypes", "classes"),
-        )
-        return pm.Deterministic(
-            "q",
-            pm.math.softmax(log_q_hat + raw * ~pin, axis=1),
-            dims=("haplotypes", "classes"),
-        )
-
-    if config["q_mode"] != "adaptive_centered":
-        raise ValueError(f"Unrecognized q_mode: {config['q_mode']}")
-
-    sigma_q = pm.HalfNormal("sigma_q", sigma=config["sigma_q_sd"])
-    sigma_q_tiny = pm.HalfNormal("sigma_q_tiny", sigma=config["sigma_q_sd"])
-    scale = pt.switch(tiny, sigma_q_tiny, sigma_q)
-
-    raw = pm.Normal(
-        "q_logit_raw",
-        0.0,
-        pt.switch(center, scale, 1.0),
-        dims=("haplotypes", "classes"),
+    q_logit_raw = pm.Normal(
+        "q_logit_raw", sigma=config["sigma_q"], dims=("haplotypes", "classes")
     )
-    q_logit = pt.switch(center, raw, scale * raw) * (~pin)
+    q_logit = pt.switch(pin, 0.0, q_logit_raw)
     return pm.Deterministic(
         "q",
         pm.math.softmax(log_q_hat + q_logit, axis=1),
@@ -277,7 +257,14 @@ def _make_q(d: GeneData, config: dict):
 
 def _nb_potential(counts: np.ndarray, alpha: np.ndarray, mu):
     # Constant terms (fixed alpha, observed counts) dropped: they do not affect sampling.
-    ll = -alpha * pt.log1p(mu / alpha) + counts * (pt.log(mu) - pt.log(alpha + mu))
+    # ll = -alpha * pt.log1p(mu / alpha) + counts * (pt.log(mu) - pt.log(alpha + mu))
+    ll = (
+        pt.gammaln(counts + alpha)
+        - pt.gammaln(alpha)
+        - pt.gammaln(counts + 1)
+        + alpha * (pt.log(alpha) - pt.log(alpha + mu))
+        + counts * (pt.log(mu) - pt.log(alpha + mu))
+    )
     pm.Potential("ll", pt.sum(ll))
 
 
