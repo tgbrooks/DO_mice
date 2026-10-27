@@ -205,14 +205,15 @@ def _(mo):
 def _(gene_data):
     stage1_config = dict(
         q_mode="adaptive_centered",  # "adaptive_centered", "constant_sigma_q" or "q_hat"
-        sigma_q = 0.3,
+        sigma_q = 0.5,
         sigma_q_tiny = 2.0,
-        sigma_q_sd=0.025,
-        min_counts_to_center=50,
+        sigma_q_sd=0.3,
+        min_counts_to_center=5,
         eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
         min_eta_info=2.0,  # mice with less plug-in information are not fit for eta
         min_n_informative=50,
         sigma_log_total_reads=1.0,
+        sigma_log_kappa=1.0,
     )
     ase_model1 = make_stage1_model(
         gene_data,
@@ -257,8 +258,8 @@ def _(ase_model1):
     with ase_model1:
         idata_ase1 = pm.sample(
             300,
-            chains=4,
-            cores=4,
+            chains=12,
+            cores=6,
             blas_cores=1,
             random_seed=100,
             nuts_sampler="nutpie",
@@ -316,18 +317,6 @@ def _(gene_data, gene_diplotypes, idata_ase1, lp, mo):
 @app.cell
 def _(idata_ase1):
     az.summary(idata_ase1, var_names="eta", filter_vars="like")
-    return
-
-
-@app.cell
-def _(idata_ase1):
-    az.summary(idata_ase1, var_names="sigma", filter_vars="like")
-    return
-
-
-@app.cell
-def _(idata_ase1):
-    az.plot_trace_dist(idata_ase1, var_names="sigma", filter_vars="like")
     return
 
 
@@ -512,8 +501,8 @@ def _(idata_ase2):
     return
 
 
-@app.cell(hide_code=True)
-def _(gene_data, idata_ase2, lp, mo):
+@app.cell
+def _(gene_data, gene_diplotypes, idata_ase1, idata_ase2, lp, mo):
     def _():
         delta = idata_ase2.posterior['delta'].mean(axis=(0,1)).data
         delta_se = idata_ase2.posterior['delta'].std(axis=(0,1)).data
@@ -581,6 +570,43 @@ def _(gene_data, idata_ase2, lp, mo):
             )
         ])
 
+        eta_sample_ids = idata_ase1.posterior.coords['fit_samples'].data
+        sample_resid_df_wide = (
+            pl.DataFrame({
+                "mouse_id": eta_sample_ids,
+                "eta": idata_ase1.posterior.eta.mean(axis=(0,1)).data,
+            }).join(
+                gene_diplotypes,
+                "mouse_id"
+            ).with_columns(
+                hap1 = pl.col("diplotype").str.slice(-2,1),
+                hap2 = pl.col("diplotype").str.slice(-1,1),
+            )
+            .join(
+                beta_df.select(hap1="haplotype", beta1="beta"),
+                on="hap1",
+            )
+            .join(
+                beta_df.select(hap2="haplotype", beta2="beta"),
+                on="hap2",
+            )
+            .with_columns(
+                resid1 = pl.col("eta") + pl.col("beta2"),
+                resid2 = -pl.col("eta") + pl.col("beta1"),
+            )
+        )
+        sample_resid_df = pl.concat([
+            sample_resid_df_wide.select(
+                "mouse_id", "hap1", "hap2",
+                hap="hap1",
+                resid="resid1",
+            ),
+            sample_resid_df_wide.select(
+                "mouse_id", "hap1", "hap2",
+                hap="hap2",
+                resid="resid2",
+            )
+        ]).with_columns(hap_pair = "pair_" + pl.col("hap1") + pl.col("hap2"))
         return lp.gggrid([
             (
                 lp.ggplot(
@@ -597,6 +623,13 @@ def _(gene_data, idata_ase2, lp, mo):
                         position=lp.position_dodge(width=.8),
                         #color="#5B7C99",
                     )
+                    + lp.geom_point(
+                        lp.aes(x="hap_pair", y="resid"),
+                        data=sample_resid_df,
+                        position=lp.position_nudge(x=0.4),
+                        tooltips=lp.layer_tooltips(['hap1', 'hap2', "mouse_id"]),
+                        color="blue",
+                    )
                     + lp.geom_crossbar(lp.aes(y="beta_fit"), color="red", fatten=1)
             ),
             (
@@ -611,6 +644,13 @@ def _(gene_data, idata_ase2, lp, mo):
                     tooltips=lp.layer_tooltips(['hap1', 'hap2'])
                 )
                 + lp.geom_point(
+                    lp.aes(x="hap", y="resid"),
+                    data=sample_resid_df,
+                    position=lp.position_nudge(x=0.4),
+                    tooltips=lp.layer_tooltips(['hap1', 'hap2', "mouse_id"]),
+                    color="blue",
+                )
+                + lp.geom_point(
                     position=lp.position_dodge(width=0.8),
                     color="red",
                 )
@@ -620,7 +660,7 @@ def _(gene_data, idata_ase2, lp, mo):
                     color="red",
                 )
             )
-        ], guides="collect", sharey=True, align=True) + lp.ggsize(1000, 500)
+        ], guides="collect", align=True, ncol=1) + lp.ggsize(800, 1000)
     mo.vstack([
         #"Fit delta values for each (heterozygous) pair. Red bars denote the fits using just beta (additive haplotype effects, no diplotype effect).",
         "Red denotes beta values (additive haplotype effects without diplotype effect), black denotes delta values (diplotype effect). On left, each delta value (black) plotted along with the haplotype additive effect of just betas. On right, beta values (red) next to the residual after removing the other haplotype beta.",
@@ -638,8 +678,8 @@ def _(mo):
 
 
 @app.cell
-def _(diplotypes, gene_class_counts, gene_selector):
-    gene_totals = get_gene_totals(gene_selector.value, gene_class_counts, diplotypes)
+def _(gene_class_counts, gene_selector, genotypes):
+    gene_totals = get_gene_totals(gene_selector.value, gene_class_counts, genotypes)
     return
 
 
@@ -1199,13 +1239,16 @@ def _(idata_ase1, lp, x_coords, x_var, y_coords, y_var):
 @app.cell
 def _(gene_data, idata_ase1, lp, mo):
     def _():
-        x = idata_ase1.posterior['q_logit_raw'].mean(axis=(0,1)).data
-        hap = np.broadcast_to(idata_ase1.posterior['q_logit_raw'].coords['haplotypes'].data[:,None], x.shape).astype(str)
-        class_name = np.broadcast_to(idata_ase1.posterior['q_logit_raw'].coords['classes'].data[None,:], x.shape).flatten()
-        q_hat = gene_data.q_hat
-    #    pinned = idata_ase1.constant_data['q_logit_pinned'].data
+        var = 'q_logit_raw' if "q_logit_raw" in idata_ase1.posterior else "q_logit"
+        x = idata_ase1.posterior[var].mean(axis=(1)).data
+        hap = np.broadcast_to(idata_ase1.posterior[var].coords['haplotypes'].data[:,None], x.shape).astype(str)
+        class_name = np.broadcast_to(idata_ase1.posterior[var].coords['classes'].data[None,:], x.shape).flatten()
+        q_hat = np.broadcast_to(gene_data.q_hat, x.shape)
+        n_chains = idata_ase1.posterior[var].shape[0]
+        chain = np.broadcast_to(np.arange(n_chains)[:,None,None], x.shape).flatten()
+        #pinned = idata_ase1.constant_data['q_logit_pinned'].data
         return (
-            lp.ggplot(pl.DataFrame({'x': x.flatten(), 'y': x.flatten(), 'hap': hap.flatten(), 'q_hat': q_hat.flatten(), "class_name": class_name}), lp.aes('q_hat', 'y', color='hap')) 
+            lp.ggplot(pl.DataFrame({'x': x.flatten(), 'y': x.flatten(), 'hap': hap.flatten(), 'q_hat': q_hat.flatten(), "class_name": class_name, "chain": chain.astype(str)}), lp.aes('q_hat', 'y', color='chain', alpha="chain")) 
             + lp.geom_point(alpha=1.0, tooltips=lp.layer_tooltips(["hap", "class_name"]))
             + lp.scale_x_log10()
             + lp.labs(y="q_logit")

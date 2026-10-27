@@ -170,9 +170,10 @@ def _(gene_selector, lp, mo, pl, plot_msa, transcripts, tx_annot):
             seqs=list(_dat['sequence'])
             a_res=a.msa(seqs, out_cons=True, out_msa=True) # perform multiple sequence alignment 
             _temp.append(plot_msa(a_res, _dat['haplotype']) + lp.ggtitle(transcript_id))
-        lp.gggrid(_temp, ncol=1) + lp.ggsize(900, 250*len(_temp)) + lp.ggtb()
+        _out = lp.gggrid(_temp, ncol=1) + lp.ggsize(900, 250*len(_temp)) + lp.ggtb()
     else:
-        mo.md(f"Skipping very long gene: {max_len}bp")
+        _out = mo.md(f"Skipping very long gene: {max_len}bp")
+    _out
     return gene_transcripts, max_len, pa
 
 
