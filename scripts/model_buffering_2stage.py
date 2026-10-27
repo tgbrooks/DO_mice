@@ -15,7 +15,7 @@ from ase_buffering.total_counts_model import make_total_model, summarize_total_m
 from ase_buffering.covariance_deming_regression import covariance_deming_regression
 from ase_buffering.ase_model_2steps import (
     make_stage1_model,
-    make_stage2_model,
+    fit_stage2_eb,
     prepare_gene_data,
     stage1_likelihood,
     summarize_ase_models,
@@ -234,79 +234,52 @@ for gene_id in gene_ids:
         )
 
         ###### ASE MODEL - STAGE 2
-        ase_model2 = make_stage2_model(
-            gene_data,
-            handoff,
-            config=dict(
-                gamma_mode="mvn",  # or "zero"
-                beta_sd=0.5,
-                sigma_gamma_sd=1.0,
-                sigma_u_sd=0.3,
-                stage2_cov="full",  # "full" or "diag"
-            ),
-        )
+        stage2 = fit_stage2_eb(gene_data, handoff)
 
+        ###### TOTAL COUNTS MODEL
+        sample_info = all_pheno.with_columns(
+            pl.col("DOwave").cast(str).cast(pl.Enum([str(x) for x in range(1, 6)]))
+        ).join(size_factors, "mouse_id")
+        total_model = make_total_model(
+            gene_id,
+            gene_class_counts,
+            genotypes,
+            sample_info,
+            gene_effective_lengths,
+        )
         _start = time.time()
-        with ase_model2:
-            idata_ase2 = pm.sample(
-                300,
-                chains=4,
-                cores=4,
-                blas_cores=1,
+        with total_model:
+            idata_total = pm.sample(
+                500,
+                cores=CORES,
+                chains=CHAINS,
                 random_seed=101,
                 nuts_sampler="nutpie",
-                target_accept=0.8,
+                quiet=quiet,
             )
         _end = time.time()
-        ase_model_time2 = _end - _start
+        total_model_time = _end - _start
 
-        #        ###### TOTAL COUNTS MODEL
-        #        sample_info = all_pheno.with_columns(
-        #            pl.col("DOwave").cast(str).cast(pl.Enum([str(x) for x in range(1, 6)]))
-        #        ).join(size_factors, "mouse_id")
-        #        total_model = make_total_model(
-        #            gene_id,
-        #            gene_class_counts,
-        #            genotypes,
-        #            sample_info,
-        #            gene_effective_lengths,
-        #        )
-        #        _start = time.time()
-        #        with total_model:
-        #            idata_total = pm.sample(
-        #                500,
-        #                cores=CORES,
-        #                chains=CHAINS,
-        #                random_seed=101,
-        #                nuts_sampler="nutpie",
-        #                quiet=quiet,
-        #            )
-        #        _end = time.time()
-        #        total_model_time = _end - _start
-        #
-        #        ##### BUFFERING MODEL
-        #        beta_ase_draws = az.extract(idata_ase, "posterior")["beta"].to_numpy()
-        #        beta_total_draws = az.extract(idata_total, "posterior")["beta"].to_numpy()
-        #        cov_ase = np.cov(beta_ase_draws)
-        #        cov_total = np.cov(beta_total_draws)
-        #        beta_ase = np.mean(beta_ase_draws, axis=1)
-        #        beta_total = np.mean(beta_total_draws, axis=1)
-        #        buffering_res = covariance_deming_regression(
-        #            beta_ase, beta_total, cov_ase, cov_total
-        #        )
+        ##### BUFFERING MODEL
+        beta_ase = stage2["beta"]
+        cov_ase = stage2["cov_beta"]
+        beta_total_draws = az.extract(idata_total, "posterior")["beta"].to_numpy()
+        cov_total = np.cov(beta_total_draws)
+        beta_total = np.mean(beta_total_draws, axis=1)
+        buffering_res = covariance_deming_regression(
+            beta_ase, beta_total, cov_ase, cov_total
+        )
 
         # Report results
-        ase_summary = summarize_ase_models(idata_ase1, idata_ase2, gene_data)
-        ase_summary["runtime"] = ase_model_time1 + ase_model_time2
-        #        total_summary = summarize_total_model(idata_total)
-        #        ase_summary["runtime"] = total_model_time
+        ase_summary = summarize_ase_models(idata_ase1, stage2, gene_data)
+        total_summary = summarize_total_model(idata_total)
 
         results.append(
             {
                 "gene_id": gene_id,
                 "ase_model": ase_summary,
-                #                "total_model": total_summary,
-                #                "buffering": buffering_res,
+                "total_model": total_summary,
+                "buffering": buffering_res,
                 "runtime": time.time() - _gene_start,
                 "config": config,
                 "error": "none",

@@ -20,7 +20,7 @@ with app.setup:
     from util.compressed_emase import load_compressed_emase
     from util.compat_classes import get_gene_class_counts, get_gene_totals, sparse_any
     from ase_buffering.ase_model import make_ase_model, summarize_read_classes, summarize_bias_rates, estimate_class_proportions, estimate_class_alpha
-    from ase_buffering.ase_model_2steps import make_stage1_model, make_stage2_model, prepare_gene_data, stage1_likelihood
+    from ase_buffering.ase_model_2steps import make_stage1_model, fit_stage2_gls, fit_stage2_eb, prepare_gene_data, stage1_likelihood
     from ase_buffering.total_counts_model import make_total_model
 
 
@@ -456,62 +456,22 @@ def _(gene_data, idata_ase1, stage1_config):
 
 @app.cell
 def _(gene_data, handoff):
-    ase_model2 = make_stage2_model(
-        gene_data,
-        handoff,
-        config=dict(
-            gamma_mode="mvn",  # or "zero"
-            beta_sd=0.5,
-            sigma_gamma_sd=1.0,
-            sigma_u_sd=0.3,
-            stage2_cov="full",  # "full" or "diag"
-        )
-    )
-    return (ase_model2,)
+    stage2 = fit_stage2_eb(gene_data, handoff)
+    return (stage2,)
 
 
 @app.cell
-def _(ase_model2, mo):
-    mo.mermaid(pm.model_to_mermaid(ase_model2))
-    return
-
-
-@app.cell
-def _(ase_model2):
-    # Fit the model - stage 2
-    _start = time.time()
-    with ase_model2:
-        idata_ase2 = pm.sample(
-            300,
-            chains=4,
-            cores=4,
-            blas_cores=1,
-            random_seed=101,
-            nuts_sampler="nutpie",
-            target_accept=0.8,
-        )
-    _end = time.time()
-    ase_model_time2 = _end - _start
-    return (idata_ase2,)
-
-
-@app.cell
-def _(idata_ase2):
-    az.summary(idata_ase2, var_names=["beta"], filter_vars="like")
-    return
-
-
-@app.cell
-def _(gene_data, gene_diplotypes, idata_ase1, idata_ase2, lp, mo):
+def _(gene_data, gene_diplotypes, idata_ase1, lp, mo, stage2):
     def _():
-        delta = idata_ase2.posterior['delta'].mean(axis=(0,1)).data
-        delta_se = idata_ase2.posterior['delta'].std(axis=(0,1)).data
-        hap_pairs = np.broadcast_to(idata_ase2.posterior.coords['hap_pairs'].data, delta.shape)
-        beta = idata_ase2.posterior['beta'].mean(axis=(0,1)).data
+        delta = stage2['delta']
+        delta_se = np.sqrt(np.diag(stage2['cov_delta']))
+        _hap_pairs = [f'pair_{gene_data.haplotypes[i]}{gene_data.haplotypes[j]}' for i,j in gene_data.pairs]
+        hap_pairs = np.broadcast_to(_hap_pairs, delta.shape)
+        beta = stage2['beta']
         beta_fit = np.broadcast_to((gene_data.Bm @ beta), delta.shape)
-        beta_all = idata_ase2.posterior['beta'].mean(axis=(0,1)).data
-        beta_all_se = idata_ase2.posterior['beta'].std(axis=(0,1)).data
-        haplotypes = np.broadcast_to(idata_ase2.posterior.coords['haplotypes'].data, beta_all.shape)
+        beta_all = stage2['beta']
+        beta_all_se = np.sqrt(np.diag(stage2['cov_beta']))
+        haplotypes = np.broadcast_to(gene_data.haplotypes, beta_all.shape)
 
         by_diplotype_df = (
             pl.DataFrame({
@@ -631,6 +591,7 @@ def _(gene_data, gene_diplotypes, idata_ase1, idata_ase2, lp, mo):
                         color="blue",
                     )
                     + lp.geom_crossbar(lp.aes(y="beta_fit"), color="red", fatten=1)
+                    + lp.labs(y="delta")
             ),
             (
                 lp.ggplot(
@@ -659,11 +620,12 @@ def _(gene_data, gene_diplotypes, idata_ase1, idata_ase2, lp, mo):
                     position=lp.position_dodge(width=.8),
                     color="red",
                 )
+                + lp.labs(y="beta")
             )
         ], guides="collect", align=True, ncol=1) + lp.ggsize(800, 1000)
     mo.vstack([
         #"Fit delta values for each (heterozygous) pair. Red bars denote the fits using just beta (additive haplotype effects, no diplotype effect).",
-        "Red denotes beta values (additive haplotype effects without diplotype effect), black denotes delta values (diplotype effect). On left, each delta value (black) plotted along with the haplotype additive effect of just betas. On right, beta values (red) next to the residual after removing the other haplotype beta.",
+        "Red denotes beta values (additive haplotype effects without diplotype effect), black denotes delta values (diplotype effect), and blue denotes etas (sample-level allelic balance). On top, each delta value (black) plotted along with the haplotype additive effect of just betas. On bottom, beta values (red) next to the residual after removing the other haplotype beta.",
         _()
     ])
     return

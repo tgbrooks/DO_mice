@@ -117,7 +117,7 @@ rule collect_buffering_results:
             temp.append(data)
         pl.concat(temp).write_csv(output.results, separator="\t")
 
-def get_chunk_fle(wildcards):
+def get_chunk_file(wildcards):
     chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir)
     return chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt"
 rule model_buffering_with_bias:
@@ -133,8 +133,8 @@ rule model_buffering_with_bias:
     threads: 4
     resources:
         mem_mb = 24_000,
-    script:
-        "python scripts/model_buffering_with_bias.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list}"
+    shell:
+        "python scripts/model_buffering_2stage.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list} --ase_config \"{{}}\""
 
 rule collect_buffering_with_bias_results:
     input:

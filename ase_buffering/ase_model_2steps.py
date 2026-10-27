@@ -29,6 +29,7 @@ import pymc as pm
 import arviz as az
 import pytensor.tensor as pt
 import scipy.stats
+import scipy.optimize
 
 from util.compat_classes import CompatClassesDf
 
@@ -53,7 +54,7 @@ DEFAULTS = dict(
     max_abs_skew=0.5,  # flag mice whose stage-1 posterior is clearly non-Gaussian
     # --- stage 2 ---
     gamma_mode="mvn",  # or "zero"
-    beta_sd=0.5,
+    sigma_beta=0.5,
     sigma_gamma_sd=1.0,
     sigma_u_sd=0.3,
     stage2_cov="full",  # "full" or "diag"
@@ -380,78 +381,112 @@ def stage1_likelihood(idata, d: GeneData, config: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _make_delta(d: GeneData, config: dict):
-    n_haps = len(d.haplotypes)
-    if config["gamma_mode"] == "mvn":
-        sigma_gamma = pm.HalfNormal("sigma_gamma", sigma=config["sigma_gamma_sd"])
-        cov = n_haps * config["beta_sd"] ** 2 * d.P_B + sigma_gamma**2 * d.P_G
-        delta = pm.MvNormal(
-            "delta", mu=np.zeros(len(d.pairs)), cov=cov, dims="hap_pairs"
+def fit_stage2_gls(d, lik, sigma_u_max=5.0, tol=1e-8):
+    """
+    Extract beta values from the stage 1 eta fits and covariance by GLS
+
+    Model:
+     eta_hat - offsets = X Beta + epsilon
+     epsilon ~ N(0, V(sigma_u^2))
+     V(sigma_u^2) = C_lik + sigma_u^2 I
+     where C_lik is from stage 1 and X has +1 at hap1 and -1 at hap2
+     Estimate sigma_u^2 from REML and then beta from ML
+    """
+
+    i = lik["index"]
+    y = lik["mean"] - d.log_eff_ratio[i]
+    C = lik["cov"]
+    n, n_h = len(i), len(d.haplotypes)
+
+    X = np.zeros((n, n_h))
+    X[np.arange(n), d.hap1[i]] += 1.0
+    X[np.arange(n), d.hap2[i]] -= 1.0
+
+    # Sum-to-zero beta: orthonormal basis Z, then keep only directions the data identify
+    Z = scipy.linalg.null_space(np.ones((1, n_h)))  # n_h x (n_h - 1)
+    U, s, Vt = np.linalg.svd(X @ Z, full_matrices=False)
+    keep = s > tol * s.max()
+    B = Z @ Vt[keep].T  # beta = B @ theta
+    Xk = X @ B
+
+    def solve(s2):
+        L = scipy.linalg.cho_factor(C + s2 * np.eye(n))
+        A = Xk.T @ scipy.linalg.cho_solve(L, Xk)
+        theta = np.linalg.solve(A, Xk.T @ scipy.linalg.cho_solve(L, y))
+        r = y - Xk @ theta
+        logdetV = 2 * np.log(np.diag(L[0])).sum()
+        nll = 0.5 * (
+            logdetV + np.linalg.slogdet(A)[1] + r @ scipy.linalg.cho_solve(L, r)
         )
-        pm.Deterministic("beta", d.Bm.T @ delta / n_haps, dims="haplotypes")
-        pm.Deterministic("gamma", d.P_G @ delta, dims="hap_pairs")
-    elif config["gamma_mode"] == "zero":
-        beta = pm.ZeroSumNormal("beta", sigma=config["beta_sd"], dims="haplotypes")
-        # delta_ab = beta_a - beta_b (no 1/n factor here)
-        delta = pm.Deterministic("delta", d.Bm @ beta, dims="hap_pairs")
-        pm.Deterministic("gamma", pt.zeros(len(d.pairs)), dims="hap_pairs")
-    else:
-        raise ValueError(f"Unrecognized gamma_mode: {config['gamma_mode']}")
-    return delta
+        return nll, theta, A
 
-
-def make_stage2_model(d: GeneData, lik: dict, config: dict) -> pm.Model:
-    i = lik["index"]
-    coords = {
-        "haplotypes": d.haplotypes,
-        "hap_pairs": d.pair_names,
-        "obs_samples": [d.ids[k] for k in i],
-    }
-    with pm.Model(coords=coords) as model:
-        delta = _make_delta(d, config)
-        sigma_u = pm.HalfNormal("sigma_u", sigma=config["sigma_u_sd"])
-
-        lin = d.sign[i] * delta[d.idx[i]] + d.log_eff_ratio[i]
-
-        if config["stage2_cov"] == "diag":
-            pm.Normal(
-                "eta_hat",
-                mu=lin,
-                sigma=pt.sqrt(np.diag(lik["cov"]) + sigma_u**2),
-                observed=lik["mean"],
-                dims="obs_samples",
-            )
-        else:
-            pm.MvNormal(
-                "eta_hat",
-                mu=lin,
-                cov=lik["cov"] + sigma_u**2 * np.eye(len(i)),
-                observed=lik["mean"],
-                dims="obs_samples",
-            )
-    return model
-
-
-def posterior_u(idata2, d: GeneData, lik: dict, n_draws: int = 500, seed: int = 0):
-    """
-    Optional: recover per-mouse u = eta - lin from stage-2 draws (diagonal approximation).
-    Given lin and sigma_u, eta_j | data is Gaussian with precision 1/c_j + 1/sigma_u^2.
-    Returns an array (n_draws, n_obs) of u draws.
-    """
-    rng = np.random.default_rng(seed)
-    i = lik["index"]
-    c = np.diag(lik["cov"])
-    post = idata2.posterior.stack(s=("chain", "draw"))
-    picks = rng.choice(
-        post.sizes["s"], size=min(n_draws, post.sizes["s"]), replace=False
+    res = scipy.optimize.minimize_scalar(
+        lambda su: solve(su**2)[0], bounds=(0.0, sigma_u_max), method="bounded"
     )
-    delta = post["delta"].values[:, picks].T  # (n, pairs)
-    sigma_u = post["sigma_u"].values[picks]
-    lin = d.sign[i] * delta[:, d.idx[i]] + d.log_eff_ratio[i]
-    prec = 1 / c + 1 / sigma_u[:, None] ** 2
-    m = (lik["mean"] / c + lin / sigma_u[:, None] ** 2) / prec
-    eta = m + rng.standard_normal(m.shape) / np.sqrt(prec)
-    return eta - lin
+    sigma_u = res.x
+    _, theta, A = solve(sigma_u**2)
+    beta = B @ theta
+    cov_beta = B @ np.linalg.inv(A) @ B.T
+    identified = (
+        np.linalg.matrix_rank(B) == n_h - 1
+    )  # False if some haplotype has no information
+    return dict(beta=beta, cov_beta=cov_beta, sigma_u=sigma_u, identified=identified)
+
+
+def fit_stage2_eb(d, lik, sigma_beta=0.5, bound=5.0):
+    """
+    Extract beta values via ridge regression
+
+    Model:
+        eta - offsets = X Delta + u
+        Delta_gh = Beta_g - Beta_h + gamma_gh
+        u ~ N(0, sigma_u)
+        gamma_gh ~ N(0, sigma_gamma)
+        Beta ~ N(0, sigma_beta)
+        where X is the matrix of samples' diplotypes
+
+    """
+    i = lik["index"]
+    y = lik["mean"] - d.log_eff_ratio[i]
+    C = lik["cov"]
+    n_obs, n_pairs, n_h = len(i), len(d.pairs), len(d.haplotypes)
+    S = np.zeros((n_obs, n_pairs))
+    S[np.arange(n_obs), d.idx[i]] = d.sign[i]
+
+    def Sigma_delta(sg):
+        return n_h * sigma_beta**2 * d.P_B + sg**2 * d.P_G
+
+    def nll(params):
+        su, sg = params
+        M = S @ Sigma_delta(sg) @ S.T + C + su**2 * np.eye(n_obs)
+        L = scipy.linalg.cho_factor(M)
+        return np.log(np.diag(L[0])).sum() + 0.5 * y @ scipy.linalg.cho_solve(L, y)
+
+    res = scipy.optimize.minimize(
+        nll, x0=[0.1, 0.1], bounds=[(0, bound), (0, bound)], method="L-BFGS-B"
+    )
+    su, sg = res.x
+
+    # Posterior of delta in the form that stays valid when sigma_gamma -> 0 (singular prior)
+    Sd = Sigma_delta(sg)
+    M = S @ Sd @ S.T + C + su**2 * np.eye(n_obs)
+    L = scipy.linalg.cho_factor(M)
+    K = Sd @ S.T  # n_pairs x n_obs
+    delta_mean = K @ scipy.linalg.cho_solve(L, y)
+    delta_cov = Sd - K @ scipy.linalg.cho_solve(L, K.T)
+
+    T = d.Bm.T / n_h  # beta = T @ delta
+    return dict(
+        sigma_u=su,
+        sigma_gamma=sg,
+        beta=T @ delta_mean,
+        cov_beta=T @ delta_cov @ T.T,
+        gamma=d.P_G @ delta_mean,
+        cov_gamma=d.P_G @ delta_cov @ d.P_G.T,
+        delta=delta_mean,
+        cov_delta=delta_cov,
+        converged=res.success,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +501,6 @@ def fit_gene_two_stage(
     gene_effective_lengths: pl.DataFrame,
     config: dict | None = None,
     stage1_sample_kwargs: dict | None = None,
-    stage2_sample_kwargs: dict | None = None,
 ):
     cfg = {**DEFAULTS, **(config or {})}
     d = prepare_gene_data(
@@ -478,11 +512,16 @@ def fit_gene_two_stage(
 
     lik = stage1_likelihood(idata1, d, cfg)
 
-    with make_stage2_model(d, lik, cfg):
-        idata2 = pm.sample(**(stage2_sample_kwargs or {}))
+    stage2 = fit_stage2_eb(d, lik)
+    summary = summarize_ase_models(idata1, stage2, d)
 
     return dict(
-        data=d, config=cfg, idata_stage1=idata1, likelihood=lik, idata_stage2=idata2
+        data=d,
+        config=cfg,
+        idata_stage1=idata1,
+        likelihood=lik,
+        stage2=stage2,
+        summary=summary,
     )
 
 
@@ -495,47 +534,36 @@ def _summary(idata, **kwargs):
     return pl.DataFrame(az.summary(idata, **kwargs).reset_index(names="variable"))
 
 
-def summarize_ase_models(idata_ase1, idata_ase2, gene_data) -> dict:
+def summarize_ase_models(idata_ase1, stage2, gene_data) -> dict:
     eta_summary = _summary(idata_ase1, var_names=["eta"])
-    delta_summary = _summary(idata_ase2, var_names=["delta"])
-    beta_summary = _summary(idata_ase2, var_names=["beta"])
-    sigma_summary = pl.concat(
-        [
-            _summary(idata_ase1, var_names=["sigma_q", "sigma_q_tiny"]),
-            # _summary(idata_ase2, var_names=["sigma_u"]),
-        ]
-    )
     return {
-        "beta": beta_summary.rows_by_key("variable", unique=True, named=True),
+        "beta": stage2["beta"].tolist(),
+        "gamma": stage2["gamma"].tolist(),
+        "delta": stage2["delta"].tolist(),
         "eta": eta_summary.rows_by_key("variable", unique=True, named=True),
-        "delta": delta_summary.rows_by_key("variable", unique=True, named=True),
-        "diagnostic": {
-            "max_rhat_beta": beta_summary["r_hat"].max(),
-            "median_rhat_eta": eta_summary["r_hat"].median(),
-            "median_rhat_delta": delta_summary["r_hat"].median(),
-            "min_rhat_sigma": sigma_summary["r_hat"].max(),
-            "min_ess_bulk_beta": beta_summary["ess_bulk"].min(),
-            "min_ess_tail_beta": beta_summary["ess_tail"].min(),
-            "min_ess_bulk_eta": eta_summary["ess_bulk"].min(),
-            "min_ess_tail_eta": eta_summary["ess_tail"].min(),
-            "min_ess_bulk_delta": delta_summary["ess_bulk"].min(),
-            "min_ess_tail_delta": delta_summary["ess_tail"].min(),
-            "min_ess_bulk_sigma": sigma_summary["ess_bulk"].min(),
-            "min_ess_tail_sigma": sigma_summary["ess_tail"].min(),
+        "cov": {
+            "cov_beta": stage2["cov_beta"].tolist(),
+            "cov_gamma": stage2["cov_gamma"].tolist(),
+            "cov_delta": stage2["cov_delta"].tolist(),
         },
-        "info": {
-            "n_chains1": len(idata_ase1["sample_stats"]["chain"]),
-            "n_chains2": len(idata_ase2["sample_stats"]["chain"]),
-            "n_samples": len(gene_data.ids),  # TODO: add number informative samples
-            "n_diverging1": int(idata_ase1["sample_stats"]["diverging"].sum()),
-            "n_diverging2": int(idata_ase2["sample_stats"]["diverging"].sum()),
-            "n_diverging_chains1": int(
+        "stage2_info": {
+            "sigma_u": stage2["sigma_u"],
+            "sigma_gamma": stage2["sigma_gamma"],
+            "converged": stage2["converged"],
+        },
+        "pymc_info": {
+            "n_chains": len(idata_ase1["sample_stats"]["chain"]),
+            "n_samples": len(gene_data.ids),
+            "n_ase_informative_samples": len(
+                idata_ase1.posterior.coords["fit_samples"]
+            ),
+            "n_diverging": int(idata_ase1["sample_stats"]["diverging"].sum()),
+            "n_diverging_chains": int(
                 idata_ase1["sample_stats"]["diverging"].any(axis=1).sum(axis=0)
             ),
-            "n_diverging_chains2": int(
-                idata_ase2["sample_stats"]["diverging"].any(axis=1).sum(axis=0)
-            ),
-            "mean_tree_depth1": float(idata_ase1["sample_stats"]["depth"].mean()),
-            "mean_tree_depth2": float(idata_ase2["sample_stats"]["depth"].mean()),
+            "mean_tree_depth": float(idata_ase1["sample_stats"]["depth"].mean()),
+            "median_rhat_eta": eta_summary["r_hat"].median(),
+            "min_ess_bulk_eta": eta_summary["ess_bulk"].min(),
+            "min_ess_tail_eta": eta_summary["ess_tail"].min(),
         },
     }
