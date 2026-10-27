@@ -36,8 +36,11 @@ snakemake-executor-plugin-lsf = { git = "ssh://git@github.com/tgbrooks/snakemake
 dev = [
     "h5py>=3.16.0",
     "ipython>=9.15.0",
+    "jedi>=0.19.2",
     "numpy>=2.0",
     "python-lsp-server>=1.15.0",
     "ruff>=0.16.3",
+    "ty>=0.0.92",
+    "pynvim>=0.6.0",
     "websockets>=17.0.1",
 ]
