@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.stats
 import scipy.optimize
 
 
@@ -27,37 +28,36 @@ def covariance_deming_regression(b1, b2, V1, V2, grid=np.linspace(-2, 3, 2001)):
     Cs = C + C.T
 
     def Q(lam):
-        # objective function to be minimized: -2 log likelihood (plus a constant)
         d = b2 - lam * b1
         S = V2 + lam**2 * V1 - lam * Cs
-        e = np.linalg.eigh(S)
-        k = e.eigenvalues > np.max(e.eigenvalues) * 1e-8  # generalized inverse
-        return np.sum(
-            d[k].T
-            @ e.eigenvectors[:, k].T
-            @ e.eigenvectors[:, k]
-            @ d[k]
-            / e.eigenvalues[k]
-        )
+        w, U = np.linalg.eigh(S)
+        k = w > w.max() * 1e-8  # generalized inverse
+        z = U[:, k].T @ d
+        return np.sum(z**2 / w[k])
 
     # First minimize Q over a discrete grid
     q = np.array([Q(lam) for lam in grid])
     i = np.argmin(q)
     # Then find the minimum by numeric search in the neighborhood of that grid point
-    start = grid[max(i - 1, 0)]
-    end = grid[min(i + 1, len(grid) - 1)]
+    start_idx = max(i - 1, 0)
+    end_idx = min(i + 1, len(grid) - 1)
+    start = grid[start_idx]
+    end = grid[end_idx]
     opt = scipy.optimize.minimize(Q, x0=grid[i], bounds=[(start, end)])
     # Profile confidence interval on lambda
     keep = q <= opt.fun + scipy.stats.chi2.ppf(0.95, df=1)
-    # p-value testing whether lambda = 1, likelihood ratio test
-    val_at_1 = Q(1)
-    val_at_MLE = opt.fun
-    lrt_p = scipy.stats.chi2.sf(val_at_1 - val_at_MLE, df=1)
+    if not any(keep):
+        idx = np.arange(len(grid))
+        keep = (idx >= start_idx) & (idx <= end_idx)
+        assert any(keep)
+    # test of lambda=1, chi2 test
     r = np.linalg.matrix_rank(V1 + V2)
+    chi2_p = scipy.stats.chi2.sf(Q(1), df=r)
     return {
         "lambda": float(opt.x[0]),
         "Q": float(opt.fun),
-        "lrt_p": float(lrt_p),
+        "chi2": float(Q(1)),
+        "chi2_p": float(chi2_p),
         "df_gof": int(r - 1),
         "p_gof": float(scipy.stats.chi2.sf(opt.fun, df=r - 1)),
         "lo": float(min(grid[keep])),

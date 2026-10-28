@@ -136,10 +136,13 @@ def summarize_total_model(idata):
     )
     # Sample-specific effects, less important
     rest_summary = _summary(idata, var_names=["mu"])
+    beta_draws = az.extract(idata, "posterior")["beta"].to_numpy()
+    beta_cov = np.cov(beta_draws)
 
     return {
         "beta": beta_summary.rows_by_key("variable", unique=True, named=True),
         "core": core_summary.rows_by_key("variable", unique=True, named=True),
+        "beta_cov": beta_cov.tolist(),
         "diagnostic": {
             "max_rhat_beta": beta_summary["r_hat"].max(),
             "max_rhat_core": core_summary["r_hat"].max(),
