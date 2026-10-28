@@ -281,7 +281,6 @@ for gene_id in gene_ids:
                 "total_model": total_summary,
                 "buffering": buffering_res,
                 "runtime": time.time() - _gene_start,
-                "config": config,
                 "error": "none",
             }
         )

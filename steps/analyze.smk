@@ -156,6 +156,7 @@ rule collect_buffering_with_bias_results:
                     json.dump(gene, ndjson)
                     ndjson.write("\n")
 
+
 rule compute_coverage:
     input:
         R1 = "processed/{tissue}/gbrs/{sample_id}.R1.bam",
