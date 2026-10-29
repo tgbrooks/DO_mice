@@ -827,6 +827,7 @@ def _(HAPLOTYPES, json, np):
         error_genes = []
         out = []
         eta_out = []
+        beta_covs_out = {}
         with open("results/Adipose/buffering_with_bias.ndjson") as f:
             def get(field_str):
                 entries = field_str.split(".")
@@ -843,8 +844,9 @@ def _(HAPLOTYPES, json, np):
                     error_genes.append(record)
                     continue
 
+                gene_id = get('gene_id')
                 out.append({
-                    "gene_id": get("gene_id"),
+                    "gene_id": gene_id,
                     'ase_model': {
                         'beta': get("ase_model.beta"),
                         'gamma': get("ase_model.gamma"),
@@ -868,14 +870,15 @@ def _(HAPLOTYPES, json, np):
                 })
 
                 eta_out.append({
-                    "gene_id": get("gene_id"),
+                    "gene_id": gene_id,
                     "eta": [x['mean'] for x in get("ase_model.eta").values()],
                     "eta_se": [x['sd'] for x in get("ase_model.eta").values()],
                     "mouse_id": [x.removeprefix("eta[").removesuffix("]") for x in get("ase_model.eta").keys()]
                 })
+                beta_covs_out[gene_id] = get("ase_model.cov.cov_beta")
         print(f"Skipped {len(error_genes)} genes with errors")
-        return out, eta_out
-    buffering_with_bias_objs, eta_objs = _()
+        return out, eta_out, beta_covs_out
+    buffering_with_bias_objs, eta_objs, beta_covs = _()
     return buffering_with_bias_objs, eta_objs
 
 
@@ -910,7 +913,8 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
         .select(
             "gene_id",
             buffering_factor = pl.col("buffering").struct.field("lambda"),
-            buffering_factor_p = pl.col("buffering").struct.field("lrt_p"),
+            buffering_factor_p = pl.col("buffering").struct.field("chi2_p"),
+            buffering_factor_chi2 = pl.col("buffering").struct.field("chi2"),
             buffering_factor_ci_lo = pl.col("buffering").struct.field("lo"),
             buffering_factor_ci_hi = pl.col("buffering").struct.field("hi"),
             deming_Q = pl.col("buffering").struct.field("Q"),
@@ -988,7 +992,7 @@ def _(HAPLOTYPES, buffering2, good_genes5, lp, moving_median, np, pl):
         pl.col("total_success"),
         pl.col("sigma_u") < 0.25,
         pl.col("sigma_gamma") < 0.25,
-        pl.col("deming_p_gof") > 0.0001,
+        #pl.col("deming_p_gof") > 0.0001,
     ).with_columns(
         log_ase_zscore = pl.max_horizontal([
             (pl.col(f'effect_{h}') / pl.col(f'effect_{h}_se')).log()
@@ -1023,6 +1027,33 @@ def _(HAPLOTYPES, buffering2, good_genes5, lp, moving_median, np, pl):
         + lp.ggmarginal(sides="tr", layer=lp.geom_density())
         + lp.scale_color_viridis(option="magma")
     )
+    return
+
+
+@app.cell
+def _(buffering2, gene_annot, good_genes5, lp, mo, pl):
+    _data1 = buffering2.filter(
+        pl.col("gene_id").is_in(good_genes5),
+        pl.col("ase_success"),
+        pl.col("total_success"),
+        pl.col("sigma_u") < 0.25,
+        pl.col("sigma_gamma") < 0.25,
+    ).join(gene_annot.select('gene_id', 'gene_name'), 'gene_id')
+    mo.vstack([
+        lp.gggrid([
+            lp.ggplot(
+                _data1.sort("buffering_factor_p").with_columns(
+                    buffering_factor_p = -pl.col('buffering_factor_p').log10(),
+                    theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
+                ),
+                lp.aes(x="theoretical_p", y="buffering_factor_p"),
+            )
+            + lp.geom_point(tooltips=lp.layer_tooltips(["gene_id", 'gene_name']))
+            + lp.geom_abline(intercept=0, slope=1, color='red')
+            + lp.labs(x="-log10(theoretical p)", y="-log10(chi2 p)")
+            + lp.ggtitle("QQ plot of p-value for non-1 buffering factor.")
+        ]) + lp.ggsize(500, 400)
+    ])
     return
 
 
@@ -1302,11 +1333,11 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(buffering, gene_selector, mo):
-    _dat = buffering.filter(gene_id = gene_selector.value).to_dicts()[0]
+def _(buffering2, gene_selector, mo):
+    _dat = buffering2.filter(gene_id = gene_selector.value).to_dicts()[0]
     mo.vstack([
         f"gene_id: {_dat['gene_id']} | {_dat['gene_name']}",
-        f"binom: p={_dat['anova_binom_p']:0.1e} | GOF p={_dat['binom_p_gof']:0.1e}",
+        f"sigma_u = {_dat['sigma_u']:0.2f} | sigma_gamma: {_dat['sigma_gamma']:0.2f}",
         f"buffering factor: {_dat['buffering_factor']:0.2f} ({_dat['buffering_factor_ci_lo']:0.2f}-{_dat['buffering_factor_ci_hi']:0.2f})"
     ])
     return
@@ -1366,11 +1397,11 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
         data = buffering2.filter(gene_id = gene_selector.value)
         buff_factor = data['buffering_factor'][0]
         df = pl.DataFrame(dict(
-            hap = [hap for hap in HAPLOTYPES if hap != "H"],
-            x = data[[f'effect_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0], # H is refernece, always 0
-            x_se = data[[f'effect_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
-            y = data[[f'total_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
-            y_se = data[[f'total_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
+            hap = [hap for hap in HAPLOTYPES],
+            x = data[[f'effect_{hap}' for hap in HAPLOTYPES]].to_numpy()[0], # H is refernece, always 0
+            x_se = data[[f'effect_{hap}_se' for hap in HAPLOTYPES]].to_numpy()[0],
+            y = data[[f'total_{hap}' for hap in HAPLOTYPES]].to_numpy()[0],
+            y_se = data[[f'total_{hap}_se' for hap in HAPLOTYPES]].to_numpy()[0],
         )).with_columns(
             x_min = pl.col("x") - 1.96*pl.col("x_se"),
             x_max = pl.col("x") + 1.96*pl.col("x_se"),
@@ -1380,6 +1411,11 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
         xmin, xmax = min(df['x_min']), max(df['x_max'])
         ymin, ymax = min(df['y_min']), max(df['y_max'])
         lims = min(ymin,xmin), max(xmax, ymax)
+        fit_lines = pl.DataFrame(dict(
+            slope = [1.0, buff_factor],
+            intercept = [0, 0],
+            fit_type = ["no buffering", "fit w/ buffering"],
+        ))
         return (
             lp.ggplot(df, lp.aes("x", "y", color="hap"))
             + lp.geom_point(
@@ -1393,8 +1429,10 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
                 values=HAPLOTYPE_COLORS,
                 breaks=HAPLOTYPES,
             )
-            + lp.geom_abline(slope=buff_factor, intercept=0, color="red", linetype=2)
-            + lp.geom_abline(slope=1, intercept=0, color="black", linetype=2)
+            + lp.geom_abline(lp.aes(linetype="fit_type", slope="slope", intercept="intercept"), inherit_aes=False, data=fit_lines)
+            #+ lp.geom_abline(lp.aes(linetype="fit"), slope=buff_factor, intercept=0)
+            #+ lp.geom_abline(lp.aes(linetype="diagonal"), slope=1, intercept=0)
+            + lp.scale_linetype_manual(name="fit type", values={"fit w/ buffering": 2, "no buffering": 3})
             + lp.coord_fixed()
             + lp.xlim(*lims)
             + lp.ylim(*lims)
@@ -1402,7 +1440,7 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
             + lp.ggtitle("Estimated effects by model type")
         )
     mo.vstack([
-        "BUFFERING BIAS MODEL: Plot the ASE model fit parameters versus the total counts fit parameters. In dash red, the buffering fit line and in black the reference diagonal line. Note that the buffering fit line takes into account covariance of the estimate, which is typically substantial and means that the fit may not line between the points (it's intercept is always 0).",
+        "BUFFERING BIAS MODEL: Plot the ASE model fit parameters versus the total counts fit parameters.",
         _(),
     ])
     return
