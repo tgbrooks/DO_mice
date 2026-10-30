@@ -2,6 +2,7 @@ import polars as pl
 import numpy as np
 import pymc as pm
 import arviz as az
+import scipy.linalg
 
 
 from util.compat_classes import CompatClassesDf, get_gene_totals
@@ -84,6 +85,21 @@ def make_total_model(
     mean_expr = (
         gene_totals["total_reads"] / my_sample_info["size_factor"]
     ).to_numpy().mean() / 2
+
+    n_h = len(gene_class_counts.haplotypes)
+    dip_pairs = [
+        (a, b) for a in range(n_h) for b in range(a, n_h)
+    ]  # 36 incl. homozygotes
+    dip_index = {pr: k for k, pr in enumerate(dip_pairs)}
+    # Additive matrix of beta effects:
+    A = np.zeros((len(dip_pairs), n_h))
+    for k, (a, b) in enumerate(dip_pairs):
+        A[k, a] += 1
+        A[k, b] += 1
+    # 36 x 28; orthogonal to additive effects and intercept:
+    Ng = scipy.linalg.null_space(A.T)
+    dip_idx = np.array([dip_index[(min(a, b), max(a, b))] for a, b in zip(hap1, hap2)])
+
     with total_model:
         _hap1 = pm.Data("hap1", hap1, dims="samples")
         _hap2 = pm.Data("hap2", hap2, dims="samples")
@@ -99,6 +115,12 @@ def make_total_model(
         beta = pm.ZeroSumNormal("beta", sigma=2, dims="haplotypes")
         beta_male = pm.Normal("beta_male", sigma=2)
         beta_DO_wave = pm.ZeroSumNormal("beta_DO_wave", sigma=0.5, dims="DO_waves")
+
+        # per-diplotype effects:
+        sigma_nu_total = 0.1  # expect small diplotype effects
+        nu_total_raw = pm.Normal("nu_total_raw", 0.0, 1.0, shape=Ng.shape[1])
+        nu_total = pm.Deterministic("nu_total", sigma_nu_total * (Ng @ nu_total_raw))
+
         log_disp = pm.Normal("log_disp", mu=np.log(0.01), sigma=2)
         mu = pm.Deterministic(
             "mu",
@@ -107,7 +129,11 @@ def make_total_model(
                 + pm.math.exp(beta[_hap2] + pm.math.log(_eff_len2))
             )
             * pm.math.exp(
-                intercept + sex * beta_male + beta_DO_wave[DO_wave] + pm.math.log(_sf)
+                intercept
+                + sex * beta_male
+                + beta_DO_wave[DO_wave]
+                + pm.math.log(_sf)
+                + nu_total[dip_idx]
             ),
             dims="samples",
         )

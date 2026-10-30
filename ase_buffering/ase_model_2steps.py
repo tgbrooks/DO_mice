@@ -56,8 +56,6 @@ DEFAULTS = dict(
     # --- stage 2 ---
     gamma_mode="mvn",  # or "zero"
     sigma_beta=2.0,
-    sigma_gamma_sd=1.0,
-    sigma_u_sd=0.3,
     stage2_cov="full",  # "full" or "diag"
 )
 
@@ -116,7 +114,7 @@ def prepare_gene_data(
         .filter(
             # All-zero samples are useless for ASE model
             # (though they still need to be retained for the total counts model)
-            pl.col("total_counts") > 0 if config["drop_all_zeros"] else True,
+            pl.col("total_counts") > 0 if config.get("drop_all_zeros", True) else True,
             pl.col("genotype_confidence") > config["min_genotype_confidence"],
             pl.col("mouse_id").is_in(gene_class_counts.ids),
         )
@@ -438,7 +436,7 @@ def fit_stage2_gls(d, lik, sigma_u_max=5.0, tol=1e-8):
     return dict(beta=beta, cov_beta=cov_beta, sigma_u=sigma_u, identified=identified)
 
 
-def fit_stage2_eb(d, lik, sigma_beta=0.5, bound=5.0):
+def fit_stage2_eb(d, lik, sigma_beta=2.0, bound=5.0):
     """
     Extract beta values via ridge regression
 

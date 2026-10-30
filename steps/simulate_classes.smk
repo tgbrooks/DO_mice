@@ -12,11 +12,11 @@ rule simulate_classes:
         buffering_results = f"results/{SIM_REF_TISSUE}/buffering_with_bias.ndjson",
         emase = expand("processed/{SIM_REF_TISSUE}/gbrs/{mouse_id}.compressed.h5", SIM_REF_TISSUE=[SIM_REF_TISSUE], mouse_id=SIM_MOUSE_IDS), # a consequence of allele_unique and too messy to include
     output:
-        "processed/simulated_counts/gene_truths.parquet",
-        "processed/simulated_counts/sample_truths.parquet",
-        expand("processed/simulated_counts/gbrs/{mouse_id}.compressed.h5", mouse_id = SIM_MOUSE_IDS),
+        "processed/simulated_classes/gene_truths.parquet",
+        "processed/simulated_classes/sample_truths.parquet",
+        expand("processed/simulated_classes/gbrs/{mouse_id}.compressed.h5", mouse_id = SIM_MOUSE_IDS),
     params:
-        outdir ="processed/simulated_counts/",
+        outdir ="processed/simulated_classes/",
     resources:
             mem_mb = 24_000,
     shell:

@@ -68,7 +68,7 @@ def default_targets() -> list[str]:
     targets += [
             "processed/genotypes.parquet",
             "geno/kinship/1.txt",
-            "processed/simulated_counts/gene_truths.parquet",
+            "processed/simulated_classes/gene_truths.parquet",
             "processed/simulated_counts/report.txt",
             "processed/simulated_reads/source_counts_by_gene.txt",
             "processed/simulated_reads/allele_unique_reads.parquet",
