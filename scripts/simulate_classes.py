@@ -523,10 +523,31 @@ new = load_compressed_emase(
     haplotypes=[f"h{h}" for h in range(n_haps)],
 )
 for gene_idx, gene_id in enumerate(gene_ids):
-    sim_output: CompatClassesDf = get_gene_class_counts(
+    roundtrip_output: CompatClassesDf = get_gene_class_counts(
         gene_id,
         tx_annot,
         {mouse_id: new},
     )
-    assert np.all(sim_output.compat == compats[gene_idx])
-    assert np.all(sim_output.counts == class_counts[gene_idx][mouse_idx])
+
+    # Check match with simulated up to permutation of the class order
+    roundtrip_cc = pl.DataFrame(
+        {
+            "compat": roundtrip_output.compat,
+            "counts": roundtrip_output.counts[0],
+        }
+    )
+    expected_cc = pl.DataFrame(
+        {
+            "compat": compats[gene_idx],
+            "counts": class_counts[gene_idx][mouse_idx],
+        }
+    )
+    comparison = roundtrip_cc.join(
+        expected_cc,
+        "compat",
+        how="full",
+        suffix="_expected",
+    )
+    assert comparison.select(
+        (pl.col("counts") == pl.col("counts_expected")).all()
+    ).item()

@@ -26,6 +26,7 @@ include: "steps/gbrs.smk"
 include: "steps/analyze.smk"
 # Simulations to test our models
 include: "steps/simulations.smk"
+include: "steps/simulate_classes.smk"
 # Read-level simulations to test our pipeline
 include: "steps/simulate_reads.smk"
 # Transcriptomes from liftoff and latest Ensembl (v116) strain-specific releases
@@ -67,6 +68,7 @@ def default_targets() -> list[str]:
     targets += [
             "processed/genotypes.parquet",
             "geno/kinship/1.txt",
+            "processed/simulated_counts/gene_truths.parquet",
             "processed/simulated_counts/report.txt",
             "processed/simulated_reads/source_counts_by_gene.txt",
             "processed/simulated_reads/allele_unique_reads.parquet",
