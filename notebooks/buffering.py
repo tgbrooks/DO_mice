@@ -864,6 +864,8 @@ def _(HAPLOTYPES, json, np):
                         "beta_se": [get(f"total_model.beta.beta[{hap}].sd") for hap in HAPLOTYPES],
                         "diagnostic": get("total_model.diagnostic"),
                         "info": get("total_model.info"),
+                        "log_disp": get("total_model.core.log_disp.mean"),
+                        "log_disp_se": get("total_model.core.log_disp.sd"),
                     },
                     'buffering':  get("buffering"),
                     'runtime': get("runtime"),
@@ -944,6 +946,8 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
             total_min_ess_tail_beta = extract_field("total_model.diagnostic.min_ess_tail_beta"),
             total_min_ess_tail_core = extract_field("total_model.diagnostic.min_ess_tail_core"),
             total_min_ess_tail_rest = extract_field("total_model.diagnostic.min_ess_tail_rest"),
+            total_log_disp = extract_field("total_model.log_disp"),
+            total_log_disp_se = extract_field("total_model.log_disp_se"),
         ).with_columns(
             ase_success = (
                 (pl.col("ase_n_diverging_chains") == 0)

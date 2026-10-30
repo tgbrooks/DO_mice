@@ -43,6 +43,7 @@ from ase_buffering.ase_model import (
 
 DEFAULTS = dict(
     min_genotype_confidence=0.90,
+    drop_all_zeros=True,
     # --- stage 1 ---
     sigma_q=0.5,
     eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
@@ -54,7 +55,7 @@ DEFAULTS = dict(
     max_abs_skew=0.5,  # flag mice whose stage-1 posterior is clearly non-Gaussian
     # --- stage 2 ---
     gamma_mode="mvn",  # or "zero"
-    sigma_beta=0.5,
+    sigma_beta=2.0,
     sigma_gamma_sd=1.0,
     sigma_u_sd=0.3,
     stage2_cov="full",  # "full" or "diag"
@@ -72,6 +73,8 @@ class GeneData:
     counts: np.ndarray  # samples x classes
     hap1: np.ndarray
     hap2: np.ndarray
+    eff_len1: np.ndarray  # effective length of hap1 per sample
+    eff_len2: np.ndarray
     log_eff_ratio: np.ndarray  # log(eff_len1) - log(eff_len2), per mouse
     haplotypes: list
     class_names: list
@@ -113,7 +116,7 @@ def prepare_gene_data(
         .filter(
             # All-zero samples are useless for ASE model
             # (though they still need to be retained for the total counts model)
-            pl.col("total_counts") > 0,
+            pl.col("total_counts") > 0 if config["drop_all_zeros"] else True,
             pl.col("genotype_confidence") > config["min_genotype_confidence"],
             pl.col("mouse_id").is_in(gene_class_counts.ids),
         )
@@ -158,9 +161,9 @@ def prepare_gene_data(
     hap2 = gene_diplotypes.select(pl.col("hap2").replace_strict(hap_to_num))[
         "hap2"
     ].to_numpy()
-    log_eff_ratio = np.log(gene_diplotypes["eff_len1"].to_numpy()) - np.log(
-        gene_diplotypes["eff_len2"].to_numpy()
-    )
+    eff_len1 = gene_diplotypes["eff_len1"].to_numpy()
+    eff_len2 = gene_diplotypes["eff_len2"].to_numpy()
+    log_eff_ratio = np.log(eff_len1) - np.log(eff_len2)
 
     counts = gene_class_counts.counts
     n_samples, n_classes = counts.shape
@@ -201,6 +204,8 @@ def prepare_gene_data(
         counts=counts,
         hap1=hap1,
         hap2=hap2,
+        eff_len1=eff_len1,
+        eff_len2=eff_len2,
         log_eff_ratio=log_eff_ratio,
         haplotypes=haplotypes,
         class_names=class_names,
@@ -546,6 +551,7 @@ def summarize_ase_models(idata_ase1, stage2, gene_data) -> dict:
             "cov_gamma": stage2["cov_gamma"].tolist(),
             "cov_delta": stage2["cov_delta"].tolist(),
         },
+        "q": idata_ase1.posterior["q"].mean(axis=(0, 1)).tolist(),
         "stage2_info": {
             "sigma_u": stage2["sigma_u"],
             "sigma_gamma": stage2["sigma_gamma"],
