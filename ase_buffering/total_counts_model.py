@@ -160,6 +160,7 @@ def summarize_total_model(idata):
     core_summary = _summary(
         idata, var_names=["intercept", "log_disp", "beta_DO_wave", "beta_male"]
     )
+    nu = idata.posterior.nu.mean(axis=(0, 1))
     # Sample-specific effects, less important
     rest_summary = _summary(idata, var_names=["mu"])
     beta_draws = az.extract(idata, "posterior")["beta"].to_numpy()
@@ -169,6 +170,7 @@ def summarize_total_model(idata):
         "beta": beta_summary.rows_by_key("variable", unique=True, named=True),
         "core": core_summary.rows_by_key("variable", unique=True, named=True),
         "beta_cov": beta_cov.tolist(),
+        "nu": nu.tolist(),
         "diagnostic": {
             "max_rhat_beta": beta_summary["r_hat"].max(),
             "max_rhat_core": core_summary["r_hat"].max(),
