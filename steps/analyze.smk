@@ -41,7 +41,7 @@ checkpoint chunk_chromosomes:
     input:
         annot = "gbrs_ref/v116/reference.gtf.gz",
     output:
-        outdir = directory('processed/{tissue}/chromosome_chunks')
+        outdir = directory('processed/{tissue_real}/chromosome_chunks')
     params:
         chromosomes = config['chromosomes'],
     run:
@@ -58,7 +58,7 @@ checkpoint chunk_chromosomes:
                 chunk.select('gene_id').write_csv(outdir / f"{chrom}.{i}.genes.txt")
 
 def get_chunk_genes(wildcards):
-    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir)
+    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue_real).output.outdir)
     import polars as pl
     genes = pl.read_csv(chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt", separator="\t")
     return list(genes['gene_id'])
@@ -72,7 +72,7 @@ rule model_buffering:
         phenotypes = "phenotypes.csv.gz",
         genotypes = "processed/genotypes.parquet",
         kinship = "geno/kinship/{chromosome}.txt",
-        chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
+        chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
     output:
         outfile = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.txt"
     params:
@@ -88,13 +88,13 @@ rule model_buffering:
 
 def get_all_model_chunk_results(dir):
     def inner(wildcards):
-        chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue).output.outdir)
+        chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue_real).output.outdir)
         temp = []
         for file in chunkdir.glob("*.genes.txt"):
             chromosome, chunk_num, *_ = file.name.split(".")
             if chromosome == "X":
                 continue
-            temp.append(f"processed/{wildcards.tissue}/{dir}/{chromosome}.{chunk_num}.txt")
+            temp.append(f"processed/{wildcards.tissue_real}/{dir}/{chromosome}.{chunk_num}.txt")
         return temp
     return inner
 
@@ -102,7 +102,7 @@ rule collect_buffering_results:
     input:
         results = get_all_model_chunk_results("buffering"),
     output:
-        results = "results/{tissue}/buffering.txt"
+        results = "results/{tissue_real}/buffering.txt"
     resources:
         mem_mb = 6_000
     run:
@@ -118,7 +118,7 @@ rule collect_buffering_results:
         pl.concat(temp).write_csv(output.results, separator="\t")
 
 def get_chunk_file(wildcards):
-    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue_real).output.outdir)
+    chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue_real).output.outdir)
     return chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt"
 rule model_buffering_with_bias:
     """ Run bias-correcting ASE models and total count models """
@@ -140,7 +140,7 @@ rule collect_buffering_with_bias_results:
     input:
         results = get_all_model_chunk_results("buffering_with_bias"),
     output:
-        results = "results/{tissue}/buffering_with_bias.ndjson"
+        results = "results/{tissue_real}/buffering_with_bias.ndjson"
     resources:
         mem_mb = 6_000
     run:
@@ -221,13 +221,13 @@ rule salmon:
 
 rule gather_effective_lengths:
     input:
-        data_dirs = lambda w: expand("processed/{{tissue}}/salmon/{mouse}", mouse=MICE[w.tissue]),
+        data_dirs = lambda w: expand("processed/{{tissue_real}}/salmon/{mouse}", mouse=MICE[w.tissue_real]),
         index = "gbrs_ref/v116/salmon_all_haps/",
         geno = "processed/genotypes.parquet",
         gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
-        "processed/{tissue}/effective_lengths.parquet",
-        "processed/{tissue}/effective_lengths.by_gene.parquet",
+        "processed/{tissue_real}/effective_lengths.parquet",
+        "processed/{tissue_real}/effective_lengths.by_gene.parquet",
     resources:
         mem_mb=24_000
     script:
