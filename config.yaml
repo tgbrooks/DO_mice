@@ -45,18 +45,27 @@ ensembl_haplotypes_full: {
 ## so the same mouse can appear in several tissues and shares one genotype.
 run:
   - Adipose
+  - Liver
 
 tissues:
   Adipose:
     ## GEO series accession. scripts/setup_geo_samples.py turns this into
     ## samples/Adipose.tsv (mouse ID <-> SRA run) before Snakemake runs.
     geo: "GSE266549"
-    ## Optional: SRA study accession, if the GEO -> SRA lookup needs a hint.
-    # srp: "SRP..."
+    sra: "SRP505574"
+    # NOTE: GSE for Adipose appears to actually be skeletal muscle tissue judging by gene expression
 
-  ## Additional tissues from the same mice go here, e.g.:
-  # Liver:
-  #   geo: "GSE......"
+  Heart:
+    geo: "GSE267727"
+    srp: "SRP508309"
+
+  Liver:
+    geo: "GSE266569"
+    srp: "SRP506964"
+
+  Skeletal_muscle:
+    geo: "GSE266567"
+    srp: "SRP505760"
 
 ## Regex used by scripts/setup_geo_samples.py to pull the mouse ID out of the
 ## GEO sample title (e.g. "DO021" in "DO021 adipose").
