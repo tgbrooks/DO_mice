@@ -488,7 +488,7 @@ def fit_stage2_eb(d, lik, sigma_beta=2.0, bound=5.0):
         cov_gamma=d.P_G @ delta_cov @ d.P_G.T,
         delta=delta_mean,
         cov_delta=delta_cov,
-        converged=res.success,
+        converged=res..success0
     )
 
 
@@ -549,7 +549,7 @@ def summarize_ase_models(idata_ase1, stage2, gene_data) -> dict:
             "cov_gamma": stage2["cov_gamma"].tolist(),
             "cov_delta": stage2["cov_delta"].tolist(),
         },
-        "q": idata_ase1.posterior["q"].mean(axis=(0, 1)).tolist(),
+        "q": idata_ase1.posterior["q"].mean(axis=(0, 1)).data.tolist(),
         "stage2_info": {
             "sigma_u": stage2["sigma_u"],
             "sigma_gamma": stage2["sigma_gamma"],

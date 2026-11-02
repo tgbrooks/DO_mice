@@ -160,7 +160,7 @@ def summarize_total_model(idata):
     core_summary = _summary(
         idata, var_names=["intercept", "log_disp", "beta_DO_wave", "beta_male"]
     )
-    nu = idata.posterior.nu.mean(axis=(0, 1))
+    nu = idata.posterior.nu.mean(axis=(0, 1)).data
     # Sample-specific effects, less important
     rest_summary = _summary(idata, var_names=["mu"])
     beta_draws = az.extract(idata, "posterior")["beta"].to_numpy()

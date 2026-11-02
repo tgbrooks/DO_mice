@@ -17,7 +17,17 @@ chromosomes: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13
 MIN_MEDIAN_COUNTS: 50
 
 # Mouse IDs of outlier / problematic mice (e.g., likely sample swap)
-outlier_ids: ["DO048", "DO122", "DO267", "DO100", "DO191", "DO158"]
+outlier_ids: 
+  Adipose: ["DO048", "DO122", "DO267", "DO100", "DO191", "DO158", "DO237", "DO098"]
+  Liver: [
+    # Expression outliers on PCA
+    "DO098", "DO060", "DO094", "DO036", "DO276",
+    # Questionable genotyping (high incompatible reads)
+    "DO152",
+    # Apparent sex-swapped samples
+    # NOTE: these all look OK in Adipose and genotype, TODO: check in other tissues
+    "DO123", "DO234", "DO111", "DO182",
+  ]
 
 # Map of EMASE genotype names to Ensembl names:
 ensembl_haplotypes: {

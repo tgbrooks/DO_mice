@@ -69,7 +69,7 @@ rng = np.random.default_rng(config["seed"])
 pipeline_config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
 HAPLOTYPES = pipeline_config["haplotypes"].split(",")
 n_haps = len(HAPLOTYPES)
-OUTLIER_MOUSE_IDS = pipeline_config["outlier_ids"]
+OUTLIER_MOUSE_IDS = pipeline_config["outlier_ids"][TISSUE]
 
 # --------------------------------------------------------------------------------
 # Utility functions

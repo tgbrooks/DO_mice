@@ -52,7 +52,7 @@ config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
 HAPLOTYPES = config["haplotypes"].split(",")
 HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
 SEX_TO_NUM = {"F": 0, "M": 1}
-OUTLIER_MOUSE_IDS = config["outlier_ids"]
+OUTLIER_MOUSE_IDS = config["outlier_ids"][TISSUE]
 
 # gene_ids = [
 #    "ENSMUSG00000053062",  # Jam2
@@ -151,7 +151,7 @@ for mouse_id in mouse_ids:
     if mouse_id in OUTLIER_MOUSE_IDS:
         continue
     all_compatibility_classes[mouse_id] = load_compressed_emase(
-        f"processed/Adipose/gbrs/{mouse_id}.compressed.h5",
+        f"processed/{TISSUE}/gbrs/{mouse_id}.compressed.h5",
         [f"h{i}" for i in range(len(HAPLOTYPES))],
     )
 

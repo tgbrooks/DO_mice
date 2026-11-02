@@ -43,7 +43,7 @@ rule bowtie_align:
         # Use our custom-made index
         index = multiext("gbrs_ref/v116/bowtie_index/all_haps", ".1.ebwt", ".2.ebwt", ".3.ebwt", ".4.ebwt", ".rev.1.ebwt", ".rev.2.ebwt"),
     output:
-        bam = temp("processed/{tissue}/gbrs/{mouse}.{end}.bam"),
+        bam = "processed/{tissue}/gbrs/{mouse}.{end}.bam",
     params:
         index = "gbrs_ref/v116/bowtie_index/all_haps",
         log = "processed/{tissue}/gbrs/{mouse}.{end}.bowtie.log",

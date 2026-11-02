@@ -39,8 +39,22 @@ def _(pl):
 
 
 @app.cell
-def _(pl):
-    size_factors = pl.read_csv("processed/Adipose/size_factors.txt", separator="\t")
+def _(config, mo):
+    TISSUES = config['run']
+    tissue_selector = mo.ui.dropdown(TISSUES, value="Adipose")
+    tissue_selector
+    return (tissue_selector,)
+
+
+@app.cell
+def _(tissue_selector):
+    TISSUE = tissue_selector.value
+    return (TISSUE,)
+
+
+@app.cell
+def _(TISSUE, pl):
+    size_factors = pl.read_csv(f"processed/{TISSUE}/size_factors.txt", separator="\t")
     return (size_factors,)
 
 
@@ -55,8 +69,13 @@ def _(lp, yaml):
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     HAPLOTYPES = config["haplotypes"].split(",")
     HAPLOTYPE_COLORS = lp.scale_color_brewer(palette="Dark2").palette( len(HAPLOTYPES) )
-    OUTLIER_MOUSE_IDS = config['outlier_ids']
-    return HAPLOTYPES, HAPLOTYPE_COLORS, OUTLIER_MOUSE_IDS
+    return HAPLOTYPES, HAPLOTYPE_COLORS, config
+
+
+@app.cell
+def _(TISSUE, config):
+    OUTLIER_MOUSE_IDS = config['outlier_ids'][TISSUE]
+    return (OUTLIER_MOUSE_IDS,)
 
 
 @app.cell
@@ -101,8 +120,8 @@ def _(HAPLOTYPES, pl):
 
 
 @app.cell
-def _(pl):
-    allele_unique = pl.read_parquet("processed/Adipose/allele_unique_reads.parquet")
+def _(TISSUE, pl):
+    allele_unique = pl.read_parquet(f"processed/{TISSUE}/allele_unique_reads.parquet")
     allele_unique
     return (allele_unique,)
 
@@ -119,7 +138,21 @@ def _(mo):
 def _(OUTLIER_MOUSE_IDS, allele_unique, lp, mo, pl):
     # Check genotyping quality
     def _():
-        df = allele_unique.group_by("mouse_id").agg(
+        # Some genes give a large number of incompat reads by themselves, due to being high expressed
+        # and likely having reference sequence errors. We'll drop those from the analysis.
+        top_dip_incompat_genes = (
+            allele_unique
+                .group_by("gene_id")
+            .agg(
+                pl.col("diplotype_incompat_reads").median()
+            )
+            .filter(pl.col("diplotype_incompat_reads") > 10_000)
+            ['gene_id']
+            .to_list()
+        )
+        df = allele_unique.filter(
+            pl.col("gene_id").is_in(top_dip_incompat_genes).not_()
+        ).group_by("mouse_id").agg(
             pl.col("total_reads").sum(),
             pl.col("diplotype_incompat_reads").sum(),
             pl.col("allele_specific_reads").sum(),
@@ -627,9 +660,9 @@ def _(mo):
 
 
 @app.cell
-def _(pl):
+def _(TISSUE, pl):
     buffering_all = pl.read_csv(
-        "results/Adipose/buffering.txt", separator="\t"
+        f"results/{TISSUE}/buffering.txt", separator="\t"
     )
     buffering_all
     return (buffering_all,)
@@ -822,13 +855,13 @@ def _(mo):
 
 
 @app.cell
-def _(HAPLOTYPES, json, np):
+def _(HAPLOTYPES, TISSUE, json, np):
     def _():
         error_genes = []
         out = []
         eta_out = []
         beta_covs_out = {}
-        with open("results/Adipose/buffering_with_bias.ndjson") as f:
+        with open(f"results/{TISSUE}/buffering_with_bias.ndjson") as f:
             def get(field_str):
                 entries = field_str.split(".")
                 temp = record
