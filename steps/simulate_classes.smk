@@ -22,17 +22,6 @@ rule simulate_classes:
     shell:
         f"python scripts/simulate_classes.py --tissue {SIM_REF_TISSUE} --gene_id_file {{input.gene_ids}} --outdir {{params.outdir}}"
 
-    #rule get_allele_unique_reads_simulated_classes:
-    #    """ Count how many reads distinguish allele-specificity in each gene """
-    #    input:
-    #        h5 = "processed/simulated_classes/gbrs/{mouse}.compressed.h5",
-    #        genotypes = "geno/gbrs_genotypes/{mouse}.genotypes.tsv",
-    #        gtf = "gbrs_ref/v116/reference.gtf.gz",
-    #    output:
-    #        gene_unique = "processed/simulated_classes/gbrs_allele_unique_reads/{mouse}.allele_unique_reads.parquet",
-    #    script:
-    #        "../scripts/get_allele_unique_reads.py"
-
 rule combine_allele_unique_reads_simulated_classes:
     input:
         allele_unique = lambda w: expand("processed/simulated_classes/gbrs_allele_unique_reads/{mouse_id}.allele_unique_reads.parquet",
@@ -42,6 +31,20 @@ rule combine_allele_unique_reads_simulated_classes:
         allele_unique = "processed/simulated_classes/allele_unique_reads.parquet"
     script:
         "../scripts/combine_allele_unique_reads.py"
+
+rule copy_from_ref:
+    """ Make duplicates of some files from the reference tissue """
+    input:
+        f"processed/{SIM_REF_TISSUE}/size_factors.txt",
+        f"processed/{SIM_REF_TISSUE}/effective_lengths.by_gene.parquet",
+    output:
+        "processed/simulated_classes/size_factors.txt",
+        "processed/simulated_classes/effective_lengths.by_gene.parquet",
+    run:
+        import pathlib
+        for (infile, outfile) in zip(input, output):
+            data = pathlib.Path(infile).read_bytes()
+            pathlib.Path(outfile).write_bytes(data)
 
 n_chunks = 10
 rule chunk_simulated_classes:
@@ -58,9 +61,9 @@ rule model_buffering_with_bias_simulated_classes:
     """ Run bias-correcting ASE models and total count models """
     input:
         allele_unique_reads = "processed/simulated_classes/allele_unique_reads.parquet",
-        size_factors = f"processed/{SIM_REF_TISSUE}/size_factors.txt",
+        size_factors = f"processed/simulated_classes/size_factors.txt",
         phenotypes = "phenotypes.csv.gz",
-        effective_lengths = f"processed/{SIM_REF_TISSUE}/effective_lengths.by_gene.parquet",
+        effective_lengths = f"processed/simulated_classes/effective_lengths.by_gene.parquet",
         gene_list = "processed/simulated_classes/chromosome_chunks/{i}.genes.txt"
     output:
         outfile = "processed/simulated_classes/buffering_with_bias/{i}.txt"
@@ -68,7 +71,7 @@ rule model_buffering_with_bias_simulated_classes:
     resources:
         mem_mb = 24_000,
     shell:
-        "python scripts/model_buffering_2stage.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list} --ase_config \"{{}}\""
+        "python scripts/model_buffering_2stage.py --tissue simulated_classes --outfile {output} --gene_ids_file {input.gene_list} --ase_config \"{{}}\""
 
 
 rule collect_buffering_with_bias_results_simulated_classes:

@@ -56,10 +56,10 @@ config: dict[str, Any] = dict(
     log_sigma_gamma_std=0.9,
     # Parameters not estimated from real data
     beta_frac_zero=0.33,
-    beta_std=0.3,
+    beta_std=0.25,
     buffering_frac=0.5,
+    buffering_factor_lo=0.0,
     buffering_factor_hi=0.5,
-    buffering_factor_lo=0.5,
     sex_effect_std=0.1,
     DO_wave_effect_std=0.05,
 )

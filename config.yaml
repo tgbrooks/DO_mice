@@ -28,6 +28,7 @@ outlier_ids:
     # NOTE: these all look OK in Adipose and genotype, TODO: check in other tissues
     "DO123", "DO234", "DO111", "DO182",
   ]
+  simulated_classes: []
 
 # Map of EMASE genotype names to Ensembl names:
 ensembl_haplotypes: {

@@ -44,7 +44,7 @@ transcript_genotypes = genotypes.join(
 assert not transcript_genotypes["transcript_id"].is_null().any(), (
     "all genotyped genes should be annotated"
 )
-assert np.isin(data.lname, annot["transcript_id"]).all(), (
+assert np.isin(data.lname.astype(str), annot["transcript_id"]).all(), (
     "all quantified transcripts should be annotated"
 )
 # NOTE: some quantified genes are not genotyped
