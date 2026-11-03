@@ -694,7 +694,7 @@ def _(buffering_all, gene_annot, mo, pl):
 
 
 @app.cell
-def _(buffering, good_genes5, lp, np, pl):
+def _(np):
     def moving_median(x,y, eval_pts, sd):
         x = np.asarray(x)
         y = np.asarray(y)
@@ -710,6 +710,12 @@ def _(buffering, good_genes5, lp, np, pl):
         median_idx = np.minimum(y.shape[0]-1, median_idx)
         medians = y[order][median_idx]
         return medians
+
+    return (moving_median,)
+
+
+@app.cell
+def _(buffering, good_genes5, lp, moving_median, np, pl):
     _dat = buffering.filter(
         pl.col('gene_id').is_in(good_genes5),
     ).with_columns(
@@ -742,7 +748,7 @@ def _(buffering, good_genes5, lp, np, pl):
         + lp.ggmarginal(sides="tr", layer=lp.geom_density())
         + lp.scale_color_viridis(option="magma")
     )
-    return (moving_median,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -929,7 +935,7 @@ def _(eta_objs, pl):
     return (etas,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(pl):
     def extract_field(field_str):
         entries = field_str.split(".")

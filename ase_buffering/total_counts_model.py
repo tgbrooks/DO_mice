@@ -117,9 +117,9 @@ def make_total_model(
         beta_DO_wave = pm.ZeroSumNormal("beta_DO_wave", sigma=0.5, dims="DO_waves")
 
         # per-diplotype effects:
-        sigma_nu_total = 0.1  # expect small diplotype effects
-        nu_total_raw = pm.Normal("nu_total_raw", 0.0, 1.0, shape=Ng.shape[1])
-        nu_total = pm.Deterministic("nu_total", sigma_nu_total * (Ng @ nu_total_raw))
+        sigma_nu = 0.1  # expect small diplotype effects
+        nu_raw = pm.Normal("nu_raw", 0.0, 1.0, shape=Ng.shape[1])
+        nu = pm.Deterministic("nu", sigma_nu * (Ng @ nu_raw))
 
         log_disp = pm.Normal("log_disp", mu=np.log(0.01), sigma=2)
         mu = pm.Deterministic(
@@ -133,7 +133,7 @@ def make_total_model(
                 + sex * beta_male
                 + beta_DO_wave[DO_wave]
                 + pm.math.log(_sf)
-                + nu_total[dip_idx]
+                + nu[dip_idx]
             ),
             dims="samples",
         )
@@ -160,7 +160,7 @@ def summarize_total_model(idata):
     core_summary = _summary(
         idata, var_names=["intercept", "log_disp", "beta_DO_wave", "beta_male"]
     )
-    nu = idata.posterior.nu.mean(axis=(0, 1)).data
+    nu = idata.posterior["nu"].mean(axis=(0, 1)).data
     # Sample-specific effects, less important
     rest_summary = _summary(idata, var_names=["mu"])
     beta_draws = az.extract(idata, "posterior")["beta"].to_numpy()

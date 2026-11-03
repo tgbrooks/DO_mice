@@ -132,7 +132,7 @@ rule model_buffering_with_bias:
         outfile = "processed/{tissue_real}/buffering_with_bias/{chromosome}.{chunk_num}.txt"
     threads: 4
     resources:
-        mem_mb = 24_000,
+        mem_mb = 32_000,
     shell:
         "python scripts/model_buffering_2stage.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list} --ase_config \"{{}}\""
 

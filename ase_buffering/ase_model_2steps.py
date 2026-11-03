@@ -488,7 +488,7 @@ def fit_stage2_eb(d, lik, sigma_beta=2.0, bound=5.0):
         cov_gamma=d.P_G @ delta_cov @ d.P_G.T,
         delta=delta_mean,
         cov_delta=delta_cov,
-        converged=res..success0
+        converged=res.success,
     )
 
 
