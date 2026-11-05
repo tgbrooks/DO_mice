@@ -92,7 +92,6 @@ for mouse_id in mouse_ids:
     )
 
 quiet = len(gene_ids) > 1
-idata_part1 = load_results(PART1_FILE)
 results = []
 for gene_id in gene_ids:
     try:
