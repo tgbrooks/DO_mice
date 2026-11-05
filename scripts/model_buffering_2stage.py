@@ -29,7 +29,7 @@ parser.add_argument("--gene_ids_file", help="file with one gene id per line")
 parser.add_argument("--cores", type=int, help="how many cores to use", default=4)
 parser.add_argument("--chains", type=int, help="how many chains to make", default=4)
 parser.add_argument(
-    "--ase_config",
+    "--config",
     type=str,
     help="json dict as string of ASE model config",
     default=None,
@@ -42,7 +42,7 @@ TISSUE = args.tissue
 OUTFILE = args.outfile
 CORES = args.cores
 CHAINS = args.chains
-ASE_CONFIG = json.loads(args.ase_config) if args.ase_config else None
+ASE_CONFIG = json.loads(args.config) if args.config else {}
 assert isinstance(ASE_CONFIG, dict)
 
 gene_ids = [x.strip() for x in open(args.gene_ids_file).read().splitlines()]
@@ -279,6 +279,11 @@ for gene_id in gene_ids:
                 "gene_id": gene_id,
                 "ase_model": ase_summary,
                 "total_model": total_summary,
+                "gene_data": {
+                    "alpha": gene_data.alpha,
+                    "info": gene_data.info,
+                    "q_hat": gene_data.q_hat,
+                },
                 "buffering": buffering_res,
                 "runtime": time.time() - _gene_start,
                 "error": "none",
@@ -288,5 +293,4 @@ for gene_id in gene_ids:
         print(f"Encountered an error in {gene_id}:\n{e}")
         results.append({"gene_id": gene_id, "error": f"Exception: {e}"})
 
-with open(OUTFILE, "wt") as outfile:
-    json.dump(results, outfile)
+pl.DataFrame(results).write_parquet(OUTFILE)

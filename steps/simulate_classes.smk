@@ -9,8 +9,8 @@ rule simulate_classes:
         allele_unique = f"processed/{SIM_REF_TISSUE}/allele_unique_reads.parquet",
         genotypes = "processed/genotypes.parquet",
         pheontypes = "phenotypes.csv.gz",
-        buffering_results = f"results/{SIM_REF_TISSUE}/buffering_with_bias.ndjson",
-        emase = expand("processed/{SIM_REF_TISSUE}/gbrs/{mouse_id}.compressed.h5", SIM_REF_TISSUE=[SIM_REF_TISSUE], mouse_id=SIM_MOUSE_IDS), # a consequence of allele_unique and too messy to include
+        buffering_results = f"results/{SIM_REF_TISSUE}/buffering_full_results.parquet",
+        #emase = expand(f"processed/{SIM_REF_TISSUE}/gbrs/{mouse_id}.compressed.h5", SIM_REF_TISSUE=[SIM_REF_TISSUE], mouse_id=SIM_MOUSE_IDS), # a consequence of allele_unique and too messy to include
     output:
         "processed/simulated_classes/gene_truths.parquet",
         "processed/simulated_classes/sample_truths.parquet",
@@ -64,9 +64,9 @@ rule model_buffering_with_bias_simulated_classes:
         size_factors = f"processed/simulated_classes/size_factors.txt",
         phenotypes = "phenotypes.csv.gz",
         effective_lengths = f"processed/simulated_classes/effective_lengths.by_gene.parquet",
-        gene_list = "processed/simulated_classes/chromosome_chunks/{i}.genes.txt"
+        gene_list = "processed/simulated_classes/chromosome_chunks/{i}.genes.txt",
     output:
-        outfile = "processed/simulated_classes/buffering_with_bias/{i}.txt"
+        outfile = "processed/simulated_classes/buffering_with_bias/{i}.parquet"
     threads: 4
     resources:
         mem_mb = 24_000,
@@ -76,21 +76,12 @@ rule model_buffering_with_bias_simulated_classes:
 
 rule collect_buffering_with_bias_results_simulated_classes:
     input:
-        results = expand("processed/simulated_classes/buffering_with_bias/{i}.txt", i=range(n_chunks))
+        results = expand("processed/simulated_classes/buffering_with_bias/{i}.parquet", i=range(n_chunks))
     output:
-        results = "results/simulated_classes/buffering_with_bias.ndjson"
+        results = "results/simulated_classes/buffering_full_results.parquet"
     resources:
-        mem_mb = 6_000
+        mem_mb = 18_000
     run:
-        import json
-        with open(output.results, "wt") as ndjson:
-            for r in input.results:
-                try:
-                    data = json.load(open(r))
-                except FileNotFoundError:
-                    print(f"Skipping {r} - file not found")
-                    continue
-                for gene in data:
-                    json.dump(gene, ndjson)
-                    ndjson.write("\n")
-
+        import polars as pl
+        input = pl.concat([pl.read_parquet(infile) for infile in input.results])
+        input.write_parquet(output.results)

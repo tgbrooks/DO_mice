@@ -140,44 +140,7 @@ mouse_ids = sorted(allele_unique["mouse_id"].unique())
 # Load model results
 # --------------------------------------------------------------------------------
 
-
-def load_model_results():
-    error_genes = []
-    out = []
-    with open(f"results/{TISSUE}/buffering_with_bias.ndjson") as f:
-
-        def get(field_str):
-            entries = field_str.split(".")
-            temp = record
-            for entry in entries:
-                temp = temp[entry]
-            return temp
-
-        for line in f:
-            record = json.loads(line.strip())
-            if record.get("error", "error") != "none":
-                error_genes.append(record)
-                continue
-
-            gene_id = get("gene_id")
-            if gene_id not in config["gene_ids"]:
-                continue
-            out.append(
-                {
-                    "gene_id": gene_id,
-                    "total_model": {
-                        "log_disp": get("total_model.core.log_disp.mean"),
-                        "log_disp_se": get("total_model.core.log_disp.sd"),
-                    },
-                }
-            )
-
-    # print(f"Skipped {len(error_genes)} genes with errors")
-    return out
-
-
-buffering_with_bias_objs = load_model_results()
-buffering_res_all = pl.DataFrame(buffering_with_bias_objs)
+buffering_res_all = pl.DataFrame(f"results/{TISSUE}/buffering_full_results.parquet")
 total_fits = buffering_res_all.select(
     "gene_id",
     log_disp=pl.col("total_model").struct.field("log_disp"),

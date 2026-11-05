@@ -63,29 +63,6 @@ def get_chunk_genes(wildcards):
     genes = pl.read_csv(chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt", separator="\t")
     return list(genes['gene_id'])
 
-rule model_buffering:
-    """ Compute buffering factors for each gene of a chromosome """
-    input:
-        #counts = "processed/{tissue_real}/{tissue_real}.diploid.genes.founder_expected_read_counts.parquet",
-        allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
-        size_factors = "processed/{tissue_real}/size_factors.txt",
-        phenotypes = "phenotypes.csv.gz",
-        genotypes = "processed/genotypes.parquet",
-        kinship = "geno/kinship/{chromosome}.txt",
-        chunks = lambda wildcards: checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue_real).output.outdir # indicates we need the checkpoint for params.genes
-    output:
-        outfile = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.txt"
-    params:
-        min_median_counts = config['MIN_MEDIAN_COUNTS'],
-        genes = get_chunk_genes,
-        outlier_ids = config['outlier_ids'], # Remove these mice
-    resources:
-        mem_mb = 18_000,
-    container:
-        "images/rgeneral.sif"
-    script:
-        "../scripts/model_buffering.R"
-
 def get_all_model_chunk_results(dir):
     def inner(wildcards):
         chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue_real).output.outdir)
@@ -94,67 +71,83 @@ def get_all_model_chunk_results(dir):
             chromosome, chunk_num, *_ = file.name.split(".")
             if chromosome == "X":
                 continue
-            temp.append(f"processed/{wildcards.tissue_real}/{dir}/{chromosome}.{chunk_num}.txt")
+            temp.append(f"processed/{wildcards.tissue_real}/{dir}/{chromosome}.{chunk_num}.results.parquet")
         return temp
     return inner
-
-rule collect_buffering_results:
-    input:
-        results = get_all_model_chunk_results("buffering"),
-    output:
-        results = "results/{tissue_real}/buffering.txt"
-    resources:
-        mem_mb = 6_000
-    run:
-        import polars as pl
-        temp =[]
-        for r in input.results:
-            try:
-                data = pl.read_csv(r, separator="\t", null_values="NA", schema_overrides={"binom_p_gof": pl.Float64})
-            except pl.exceptions.NoDataError:
-                print(f"No results in {r} - skipping")
-                continue
-            temp.append(data)
-        pl.concat(temp).write_csv(output.results, separator="\t")
 
 def get_chunk_file(wildcards):
     chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue_real).output.outdir)
     return chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt"
-rule model_buffering_with_bias:
-    """ Run bias-correcting ASE models and total count models """
+
+rule run_ase_model_part1:
+    """ Run ASE part 1 model to compute sample-level allelic-imbalance """
+    input:
+        allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
+        effective_lengths = "processed/{tissue_real}/effective_lengths.by_gene.parquet",
+        gene_list = get_chunk_file
+    output:
+        output = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part1.nc"
+    threads: 4
+    resources:
+        mem_mb=24_000
+    shell:
+        "python scripts/run_ase_model_part1.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list}"
+
+rule run_ase_model_part2:
+    """ Compute haplotype-level beta effects and summarize"""
+    input:
+        allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
+        effective_lengths = "processed/{tissue_real}/effective_lengths.by_gene.parquet",
+        part1 = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part1.nc",
+        gene_list = get_chunk_file
+    output:
+        "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part2.json"
+    resources:
+        mem_mb=12_000
+    shell:
+        "python scripts/run_ase_model_part2.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list} --part1 {input.part1}"
+
+rule run_total_model:
+    """ Compute model of total counts """
     input:
         allele_unique_reads = "processed/{tissue_real}/allele_unique_reads.parquet",
         size_factors = "processed/{tissue_real}/size_factors.txt",
         phenotypes = "phenotypes.csv.gz",
         effective_lengths = "processed/{tissue_real}/effective_lengths.by_gene.parquet",
-        gene_list = get_chunk_file
+        gene_list = get_chunk_file,
     output:
-        outfile = "processed/{tissue_real}/buffering_with_bias/{chromosome}.{chunk_num}.txt"
+        "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.total_model.nc",
     threads: 4
     resources:
-        mem_mb = 32_000,
+        mem_mb=24_000
     shell:
-        "python scripts/model_buffering_2stage.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list} --ase_config \"{{}}\""
+        "python scripts/run_total_model.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list}"
 
-rule collect_buffering_with_bias_results:
+
+rule run_buffering_model:
+    """ Combine ASE and total models to model buffering"""
     input:
-        results = get_all_model_chunk_results("buffering_with_bias"),
+        ase_part1 = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part1.nc",
+        ase_aprt2 = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part2.json",
+        total_model = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.total_model.nc",
     output:
-        results = "results/{tissue_real}/buffering_with_bias.ndjson"
+        outfile = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.results.parquet"
     resources:
-        mem_mb = 6_000
+        mem_mb = 16_000,
+    shell:
+        "python scripts/run_buffering_model.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list} --ase_part1 {input.ase_part1} --ase_part2 {input.ase_part2} --total {input.total}"
+
+rule collect_buffering_results:
+    input:
+        results = get_all_model_chunk_results("buffering"),
+    output:
+        results = "results/{tissue_real}/buffering_full_results.parquet"
+    resources:
+        mem_mb = 18_000
     run:
-        import json
-        with open(output.results, "wt") as ndjson:
-            for r in input.results:
-                try:
-                    data = json.load(open(r))
-                except FileNotFoundError:
-                    print(f"Skipping {r} - file not found")
-                    continue
-                for gene in data:
-                    json.dump(gene, ndjson)
-                    ndjson.write("\n")
+        import polars as pl
+        input = pl.concat([pl.read_parquet(infile) for infile in input.results])
+        input.write_parquet(output.results)
 
 
 rule compute_coverage:
