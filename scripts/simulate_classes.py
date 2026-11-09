@@ -6,7 +6,6 @@ import argparse
 from typing import Any
 import pathlib
 
-import json
 import yaml
 import numpy as np
 import polars as pl
@@ -140,11 +139,18 @@ mouse_ids = sorted(allele_unique["mouse_id"].unique())
 # Load model results
 # --------------------------------------------------------------------------------
 
-buffering_res_all = pl.DataFrame(f"results/{TISSUE}/buffering_full_results.parquet")
+
+buffering_res_all = pl.read_parquet(f"results/{TISSUE}/buffering_full_results.parquet")
 total_fits = buffering_res_all.select(
     "gene_id",
-    log_disp=pl.col("total_model").struct.field("log_disp"),
-    log_disp_se=pl.col("total_model").struct.field("log_disp_se"),
+    log_disp=pl.col("total_model")
+    .struct.field("core")
+    .struct.field("log_disp")
+    .struct.field("mean"),
+    log_disp_se=pl.col("total_model")
+    .struct.field("core")
+    .struct.field("log_disp")
+    .struct.field("sd"),
 )
 
 # --------------------------------------------------------------------------------

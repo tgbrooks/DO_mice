@@ -147,7 +147,7 @@ rule collect_buffering_results:
         mem_mb = 18_000
     run:
         import polars as pl
-        data = pl.concat([pl.read_parquet(infile) for infile in input.results])
+        data = pl.DataFrame([x for infile in input.results for x in pl.read_parquet(infile).to_dicts()])
         data.write_parquet(output.results)
 
 
