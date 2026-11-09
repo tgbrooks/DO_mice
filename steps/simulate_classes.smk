@@ -46,42 +46,13 @@ rule copy_from_ref:
             data = pathlib.Path(infile).read_bytes()
             pathlib.Path(outfile).write_bytes(data)
 
-n_chunks = 10
+n_chunks = config['simulated_classes']['n_chunks']
 rule chunk_simulated_classes:
     input: gene_ids="resources/simulated_gene_ids.txt"
-    output: chunk="processed/simulated_classes/chromosome_chunks/{i}.genes.txt"
+    output: chunk="processed/simulated_classes/chromosome_chunks/1.{i}.genes.txt"
     run:
         ids = [x.strip() for x in open(input.gene_ids).read().strip().splitlines()]
         i = int(wildcards.i)
         out_ids = ids[int(i)::n_chunks]
         import polars as pl
         pl.DataFrame({"gene_id": out_ids}).write_csv(output.chunk)
-
-rule model_buffering_with_bias_simulated_classes:
-    """ Run bias-correcting ASE models and total count models """
-    input:
-        allele_unique_reads = "processed/simulated_classes/allele_unique_reads.parquet",
-        size_factors = f"processed/simulated_classes/size_factors.txt",
-        phenotypes = "phenotypes.csv.gz",
-        effective_lengths = f"processed/simulated_classes/effective_lengths.by_gene.parquet",
-        gene_list = "processed/simulated_classes/chromosome_chunks/{i}.genes.txt",
-    output:
-        outfile = "processed/simulated_classes/buffering_with_bias/{i}.parquet"
-    threads: 4
-    resources:
-        mem_mb = 24_000,
-    shell:
-        "python scripts/model_buffering_2stage.py --tissue simulated_classes --outfile {output} --gene_ids_file {input.gene_list} --ase_config \"{{}}\""
-
-
-rule collect_buffering_with_bias_results_simulated_classes:
-    input:
-        results = expand("processed/simulated_classes/buffering_with_bias/{i}.parquet", i=range(n_chunks))
-    output:
-        results = "results/simulated_classes/buffering_full_results.parquet"
-    resources:
-        mem_mb = 18_000
-    run:
-        import polars as pl
-        input = pl.concat([pl.read_parquet(infile) for infile in input.results])
-        input.write_parquet(output.results)

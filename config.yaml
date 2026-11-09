@@ -144,3 +144,6 @@ gbrs:
   ## Which genotypes to use for the diploid quantification:
   ## "downloaded" (from the .RData above) or "reconstructed" (from GBRS).
   genotype_source: "downloaded"
+
+simulated_classes:
+  n_chunks: 10

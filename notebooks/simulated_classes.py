@@ -22,7 +22,6 @@ def _():
 
     return (
         get_gene_class_counts,
-        json,
         load_compressed_emase,
         lp,
         mo,
@@ -127,78 +126,29 @@ def _(pl):
 
 
 @app.cell
-def _(HAPLOTYPES, TISSUE, json, np):
-    def load_objects(TISSUE):
-        error_genes = []
-        out = []
-        eta_out = []
-        beta_covs_out = {}
-        with open(f"results/{TISSUE}/buffering_with_bias.ndjson") as f:
-            def get(field_str):
-                entries = field_str.split(".")
-                temp = record
-                for entry in entries:
-                    temp = temp[entry]
-                return temp
-            def sd(mat):
-                return np.sqrt(np.diag(np.array(mat))).tolist()
-            #for line, i  in zip(f, range(500)):
-            for line in f:
-                record = json.loads(line.strip())
-                if record.get('error', 'error') != 'none':
-                    error_genes.append(record)
-                    continue
-
-                gene_id = get('gene_id')
-                out.append({
-                    "gene_id": gene_id,
-                    'ase_model': {
-                        'beta': get("ase_model.beta"),
-                        'gamma': get("ase_model.gamma"),
-                        'delta': get("ase_model.delta"),
-                        'beta_se': sd(get("ase_model.cov.cov_beta")),
-                        'gamma_se': sd(get("ase_model.cov.cov_gamma")),
-                        'delta_se': sd(get("ase_model.cov.cov_delta")),
-                        "sigma_u": get("ase_model.stage2_info.sigma_u"),
-                        "sigma_gamma": get("ase_model.stage2_info.sigma_gamma"),
-                        "pymc_info": get("ase_model.pymc_info"),
-                        "stage2_converged": get("ase_model.stage2_info.converged"),
-                    },
-                    "total_model": {
-                        "beta": [get(f"total_model.beta.beta[{hap}].mean") for hap in HAPLOTYPES],
-                        "beta_se": [get(f"total_model.beta.beta[{hap}].sd") for hap in HAPLOTYPES],
-                        "diagnostic": get("total_model.diagnostic"),
-                        "info": get("total_model.info"),
-                        "log_disp": get("total_model.core.log_disp.mean"),
-                        "log_disp_se": get("total_model.core.log_disp.sd"),
-                    },
-                    'buffering':  get("buffering"),
-                    'runtime': get("runtime"),
-                })
-
-                eta_out.append({
-                    "gene_id": gene_id,
-                    "eta": [x['mean'] for x in get("ase_model.eta").values()],
-                    "eta_se": [x['sd'] for x in get("ase_model.eta").values()],
-                    "mouse_id": [x.removeprefix("eta[").removesuffix("]") for x in get("ase_model.eta").keys()]
-                })
-                beta_covs_out[gene_id] = {"ase_cov": get("ase_model.cov.cov_beta"), "total_cov": get("total_model.beta_cov")}
-        print(f"Skipped {len(error_genes)} genes with errors")
-        return out, eta_out, beta_covs_out
-    buffering_with_bias_objs, eta_objs, beta_covs = load_objects(TISSUE)
-    ref_objs, _, _ = load_objects("Adipose")
-    return beta_covs, buffering_with_bias_objs, eta_objs, ref_objs
-
-
-@app.cell
-def _(buffering_with_bias_objs, pl):
-    buffering_all2 = pl.DataFrame(buffering_with_bias_objs)
+def _(pl):
+    buffering_all2 = pl.read_parquet("results/simulated_classes/buffering_full_results.parquet")
     return (buffering_all2,)
 
 
 @app.cell
-def _(eta_objs, pl):
-    etas = pl.DataFrame(eta_objs).explode(['eta', 'eta_se', 'mouse_id'])
+def _(allele_unique, buffering_all2, extract_field, pl, sample_truth):
+    #etas = pl.DataFrame(eta_objs).explode(['eta', 'eta_se', 'mouse_id'])
+    _mouse_ids = sorted(allele_unique['mouse_id'].unique())
+    _etas = pl.concat([
+        buffering_all2.select(
+            "gene_id",
+            mouse_id = pl.lit(mouse_id),
+            eta_dump  = extract_field(f"ase_model.eta.eta[{mouse_id}]")
+        )
+        for mouse_id in _mouse_ids
+    ])
+    etas = _etas.select(
+        "gene_id",
+        "mouse_id",
+        eta= extract_field("eta_dump.mean"),
+        eta_se= extract_field("eta_dump.sd"),
+    ).join(sample_truth.select('gene_id', 'mouse_id', eta_true='eta'), ['gene_id', 'mouse_id'])
     return (etas,)
 
 
@@ -217,19 +167,19 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
             deming_p_gof = pl.col("buffering").struct.field("p_gof"),
             **{f"effect_{hap}": extract_field(f"ase_model.beta").list.get(i)
                for i, hap in enumerate(HAPLOTYPES)},
-            **{f"effect_{hap}_se": extract_field(f"ase_model.beta_se").list.get(i)
+            **{f"effect_{hap}_se": extract_field(f"ase_model.cov.cov_beta").list.get(i).list.get(i).sqrt()
                for i, hap in enumerate(HAPLOTYPES)},
-            **{f"total_{hap}": extract_field(f"total_model.beta").list.get(i)
+            **{f"total_{hap}": extract_field(f"total_model.beta.beta[{hap}].mean")
                for i, hap in enumerate(HAPLOTYPES)},
-            **{f"total_{hap}_se": extract_field(f"total_model.beta_se").list.get(i)
+            **{f"total_{hap}_se": extract_field(f"total_model.beta.beta[{hap}].sd")
                for i, hap in enumerate(HAPLOTYPES)},
-            sigma_u = extract_field("ase_model.sigma_u"),
-            sigma_gamma = extract_field("ase_model.sigma_gamma"),
+            sigma_u = extract_field("ase_model.stage2_info.sigma_u"),
+            sigma_gamma = extract_field("ase_model.stage2_info.sigma_gamma"),
             ase_median_rhat_eta = extract_field("ase_model.pymc_info.median_rhat_eta"),
             ase_min_ess_bulk_eta = extract_field("ase_model.pymc_info.min_ess_bulk_eta"),
             ase_min_ess_tail_eta = extract_field("ase_model.pymc_info.min_ess_tail_eta"),
             ase_n_diverging_chains = extract_field("ase_model.pymc_info.n_diverging_chains"),
-            ase_stage2_converged = extract_field("ase_model.stage2_converged"),
+            ase_stage2_converged = extract_field("ase_model.stage2_info.converged"),
             total_n_diverging = extract_field("total_model.info.n_diverging"),
             total_max_rhat_beta = extract_field("total_model.diagnostic.max_rhat_beta"),
             total_max_rhat_core = extract_field("total_model.diagnostic.max_rhat_core"),
@@ -240,8 +190,8 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
             total_min_ess_tail_beta = extract_field("total_model.diagnostic.min_ess_tail_beta"),
             total_min_ess_tail_core = extract_field("total_model.diagnostic.min_ess_tail_core"),
             total_min_ess_tail_rest = extract_field("total_model.diagnostic.min_ess_tail_rest"),
-            total_log_disp = extract_field("total_model.log_disp"),
-            total_log_disp_se = extract_field("total_model.log_disp_se"),
+            total_log_disp = extract_field("total_model.core.log_disp.mean"),
+            total_log_disp_se = extract_field("total_model.core.log_disp.sd"),
         ).with_columns(
             ase_success = (
                 (pl.col("ase_n_diverging_chains") == 0)
@@ -267,25 +217,33 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
 
 
 @app.cell
-def _(extract_field, pl, ref_objs):
+def _(SIM_REF_TISSUE, extract_field, pl):
     ref_buffering2 = (
-        pl.DataFrame(ref_objs)
+        pl.read_parquet(f"results/{SIM_REF_TISSUE}/buffering_full_results.parquet")
         .select(
             "gene_id",
             ase_beta = extract_field("ase_model.beta"),
-            ase_beta_se = extract_field("ase_model.beta_se"),
-            total_log_disp = extract_field("total_model.log_disp"),
-            total_log_disp_se = extract_field("total_model.log_disp_se"),
+            #ase_beta_se = extract_field("ase_model.beta_se"),
+            total_log_disp = extract_field("total_model.core.log_disp.mean"),
+            total_log_disp_se = extract_field("total_model.core.log_disp.sd"),
         )
     )
     return (ref_buffering2,)
 
 
 @app.cell
+def _(buffering_all2, extract_field):
+    _ase_beta_covs = buffering_all2.select('gene_id', ase_cov = extract_field('ase_model.cov.cov_beta')).rows_by_key("gene_id", unique=True, named=True)
+    _total_beta_covs = buffering_all2.select('gene_id', total_cov = extract_field('total_model.beta_cov')).rows_by_key("gene_id", unique=True, named=True)
+    beta_covs = {g: {**_ase_beta_covs[g], **_total_beta_covs[g]} for g in _ase_beta_covs.keys()}
+    return (beta_covs,)
+
+
+@app.cell
 def _(pl):
     gene_truth = pl.read_parquet("processed/simulated_classes/gene_truths.parquet")
     sample_truth = pl.read_parquet("processed/simulated_classes/sample_truths.parquet")
-    return (gene_truth,)
+    return gene_truth, sample_truth
 
 
 @app.cell
@@ -535,7 +493,7 @@ def _(lp, pl, results, scipy):
         ),
         (
             lp.ggplot(null_ps, lp.aes("expected_p", "buffering_factor_p"))
-                + lp.geom_point()
+                + lp.geom_point(tooltips=lp.layer_tooltips(["gene_id"]))
                 + lp.scale_x_log10()
                 + lp.scale_y_log10()
                 + lp.geom_abline(slope=1, intercept=1, linetype="dashed")
@@ -581,7 +539,7 @@ def _(HAPLOTYPES, Q_ase, Q_total, dof_ase, dof_total, lp, np, pl, scipy):
             "density": scipy.stats.chi2.pdf(_t, df=len(HAPLOTYPES)-1),
         }),
     ])
-    
+
     _Q = pl.concat([
         pl.DataFrame({
             "Q": Q_ase,
@@ -936,7 +894,7 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
 
 
 @app.cell(hide_code=True)
-def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, pl):
+def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, mo, pl):
     # Plot the etas for this gene by genotype
     def _():
         max_mice_per_group=8
@@ -956,6 +914,7 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, pl):
             etas
                 .filter(gene_id = gene_selector.value)
                 .join(genotypes.filter(gene_id = gene_selector.value), "mouse_id")
+                .with_columns(genotype="diplotype")
                 .with_columns(
                     eta_lo = pl.col("eta") - 1.96 * pl.col("eta_se"),
                     eta_hi = pl.col("eta") + 1.96 * pl.col("eta_se"),
@@ -985,7 +944,11 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, pl):
         )
         #return gene_etas
         return plt
-    _()
+    mo.vstack([
+        lp.ggplot(etas.filter(gene_id=gene_selector.value).join(genotypes, ["gene_id", "mouse_id"]), lp.aes(x="eta", y="eta_true"))
+            + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id", "diplotype"])),
+        _()
+    ])
     return
 
 

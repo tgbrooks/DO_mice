@@ -119,7 +119,7 @@ rule gbrs_compress:
     input:
         emase_h5,
     output:
-        h5 = "processed/{tissue}/gbrs/{mouse}.compressed.h5",
+        h5 = "processed/{tissue_real}/gbrs/{mouse}.compressed.h5",
     resources:
         mem_mb = lambda wildcards, attempt: 20000 + 12000*attempt,
         runtime = '12h',
