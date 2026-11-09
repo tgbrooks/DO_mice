@@ -10,7 +10,7 @@ import json
 
 from util.compressed_emase import load_compressed_emase
 from util.compat_classes import get_gene_class_counts
-import util.netcdf import load_result
+from util.netcdf import load_result
 from ase_buffering.total_counts_model import summarize_total_model
 from ase_buffering.covariance_deming_regression import covariance_deming_regression
 from ase_buffering.ase_model_2steps import (
@@ -28,12 +28,6 @@ parser.add_argument("--outfile", help="which file to write json output to")
 parser.add_argument("--gene_ids_file", help="file with one gene id per line")
 parser.add_argument("--cores", type=int, help="how many cores to use", default=4)
 parser.add_argument("--chains", type=int, help="how many chains to make", default=4)
-parser.add_argument(
-    "--config",
-    type=str,
-    help="json dict as string of ASE model config",
-    default=None,
-)
 args = parser.parse_args()
 
 TISSUE = args.tissue
@@ -43,8 +37,6 @@ CHAINS = args.chains
 ASE_PART1_FILE = args.ase_part1
 ASE_PART2_FILE = args.ase_part2
 TOTAL_FILE = args.total
-ASE_CONFIG = json.loads(args.config) if args.config else {}
-assert isinstance(ASE_CONFIG, dict)
 
 gene_ids = [x.strip() for x in open(args.gene_ids_file).read().splitlines()]
 print(f"Running on {len(gene_ids)} genes (gene_ids={gene_ids[:5]}...")
@@ -102,7 +94,7 @@ for mouse_id in mouse_ids:
 
 with open(ASE_PART2_FILE) as f:
     stage2 = json.load(f)
-    assert isinstance(stage2, dict)
+    stage2 = {g["gene_id"]: g for g in stage2}
 
 quiet = len(gene_ids) > 1
 results = []
@@ -135,17 +127,25 @@ for gene_id in gene_ids:
         )
 
         ##### BUFFERING MODEL
-        if stage2[gene_id]["error"] != "None":
+        if stage2[gene_id]["error"] != "none":
             print(
-                f"Skipping {gene_id} due to error in ASE model: {stage2[gene_id]['error']}"
+                f"Skipping {gene_id} due to error in ASE model stage 2: {stage2[gene_id]['error']}"
             )
             continue
 
-        beta_ase = stage2[gene_id]["beta"]
-        cov_ase = stage2[gene_id]["cov_beta"]
+        beta_ase = np.asarray(stage2[gene_id]["beta"])
+        cov_ase = np.asarray(stage2[gene_id]["cov_beta"])
 
-        idata_ase1 = load_result(ASE_PART1_FILE, gene_id)
-        idata_total = load_result(TOTAL_FILE, gene_id)
+        idata_ase1, err_ase = load_result(ASE_PART1_FILE, gene_id)
+        if err_ase is not None:
+            # NOTE: in theory we won't reach this since it'll also have triggered an error in part 2, handled above
+            print(f"Skipping {gene_id} due to error in ASE model part 1: {err_ase}")
+            continue
+
+        idata_total, err_total = load_result(TOTAL_FILE, gene_id)
+        if err_total is not None:
+            print(f"Skipping {gene_id} due to error in total model: {err_total}")
+            continue
 
         beta_total_draws = az.extract(idata_total, "posterior")["beta"].to_numpy()
         cov_total = np.cov(beta_total_draws)
@@ -155,7 +155,7 @@ for gene_id in gene_ids:
         )
 
         # Report results
-        ase_summary = summarize_ase_models(idata_ase1, stage2, gene_data)
+        ase_summary = summarize_ase_models(idata_ase1, stage2[gene_id], gene_data)
         total_summary = summarize_total_model(idata_total)
 
         results.append(

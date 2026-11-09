@@ -31,7 +31,7 @@ PART1_FILE = args.part1
 OUTFILE = args.outfile
 CORES = args.cores
 CHAINS = args.chains
-stage1_config = dict(
+CONFIG = dict(
     eta_prior_sd=3.0,
     min_eta_info=2.0,  # mice with less plug-in information are not fit for eta
     min_n_informative=50,
@@ -144,11 +144,19 @@ for gene_id in gene_ids:
         ###### ASE MODEL - STAGE 2
         stage2 = fit_stage2_eb(gene_data, handoff)
         results.append(
-            {
-                "gene_id": gene_id,
-                **stage2,
-                "error": "none",
-            }
+            dict(
+                gene_id=gene_id,
+                sigma_u=float(stage2["sigma_u"]),
+                sigma_gamma=float(stage2["sigma_gamma"]),
+                beta=stage2["beta"].tolist(),
+                cov_beta=stage2["cov_beta"].tolist(),
+                gamma=stage2["gamma"].tolist(),
+                cov_gamma=stage2["cov_gamma"].tolist(),
+                delta=stage2["delta"].tolist(),
+                cov_delta=stage2["cov_delta"].tolist(),
+                converged=stage2["converged"],
+                error="none",
+            )
         )
 
     except Exception as e:

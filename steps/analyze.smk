@@ -103,7 +103,7 @@ rule run_ase_model_part2:
     output:
         "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part2.json"
     resources:
-        mem_mb=12_000
+        mem_mb=24_000
     shell:
         "python scripts/run_ase_model_part2.py --tissue {wildcards.tissue_real} --outfile {output} --gene_ids_file {input.gene_list} --part1 {input.part1}"
 
@@ -128,8 +128,9 @@ rule run_buffering_model:
     """ Combine ASE and total models to model buffering"""
     input:
         ase_part1 = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part1.nc",
-        ase_aprt2 = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part2.json",
-        total_model = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.total_model.nc",
+        ase_part2 = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.ase_model_part2.json",
+        total = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.total_model.nc",
+        gene_list = get_chunk_file,
     output:
         outfile = "processed/{tissue_real}/buffering/{chromosome}.{chunk_num}.results.parquet"
     resources:
@@ -146,8 +147,8 @@ rule collect_buffering_results:
         mem_mb = 18_000
     run:
         import polars as pl
-        input = pl.concat([pl.read_parquet(infile) for infile in input.results])
-        input.write_parquet(output.results)
+        data = pl.concat([pl.read_parquet(infile) for infile in input.results])
+        data.write_parquet(output.results)
 
 
 rule compute_coverage:

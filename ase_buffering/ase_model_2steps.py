@@ -51,7 +51,7 @@ DEFAULTS = dict(
     min_n_informative=100,
     sigma_log_total_reads=1.0,
     # --- handoff ---
-    cov_shrink=0.1,  # shrink stage-1 posterior correlations toward 0 (full mode)
+    cov_shrink=0.0,  # shrink stage-1 posterior correlations toward 0 (full mode)
     max_abs_skew=0.5,  # flag mice whose stage-1 posterior is clearly non-Gaussian
     # --- stage 2 ---
     gamma_mode="mvn",  # or "zero"
@@ -540,14 +540,14 @@ def _summary(idata, **kwargs):
 def summarize_ase_models(idata_ase1, stage2, gene_data) -> dict:
     eta_summary = _summary(idata_ase1, var_names=["eta"])
     return {
-        "beta": stage2["beta"].tolist(),
-        "gamma": stage2["gamma"].tolist(),
-        "delta": stage2["delta"].tolist(),
+        "beta": np.asarray(stage2["beta"]).tolist(),
+        "gamma": np.asarray(stage2["gamma"]).tolist(),
+        "delta": np.asarray(stage2["delta"]).tolist(),
         "eta": eta_summary.rows_by_key("variable", unique=True, named=True),
         "cov": {
-            "cov_beta": stage2["cov_beta"].tolist(),
-            "cov_gamma": stage2["cov_gamma"].tolist(),
-            "cov_delta": stage2["cov_delta"].tolist(),
+            "cov_beta": np.asarray(stage2["cov_beta"]).tolist(),
+            "cov_gamma": np.asarray(stage2["cov_gamma"]).tolist(),
+            "cov_delta": np.asarray(stage2["cov_delta"]).tolist(),
         },
         "q": idata_ase1.posterior["q"].mean(axis=(0, 1)).data.tolist(),
         "stage2_info": {
