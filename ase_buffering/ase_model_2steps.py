@@ -493,6 +493,184 @@ def fit_stage2_eb(d, lik, sigma_beta=2.0, bound=5.0):
 
 
 # ---------------------------------------------------------------------------
+# Sandwich variant: the noisy n x n stage-1 covariance is never inverted
+# ---------------------------------------------------------------------------
+#
+# Notation (matches fit_stage2_eb):
+#   S        n_obs x n_pairs sign/design matrix (eta = S delta + u + e)
+#   Sigma    stage-1 posterior covariance of eta (estimated by np.cov of draws)
+#   C        stage-1 *likelihood* covariance of eta, C = Sigma (I - Sigma/tau^2)^-1
+#   R        C + sigma_u^2 I, the residual covariance of y around S delta
+#
+# fit_stage2_eb inverts M = S Sd S' + C_hat + sigma_u^2 I with a noisy C_hat. When C has
+# shared-q correlation (aligned with the beta directions), the resulting cov_delta is
+# too small, increasingly so with fewer draws (in synthetic tests ~1.5x at 400 draws,
+# ~1.1-1.2x at 2000; fine without shared-q correlation). Here the weights W come from
+# a working covariance built only from per-mouse variances (each estimated from all
+# draws, so nearly noise-free), and the actual error variance W R W' uses the full C
+# only through that small (n_pairs x n_pairs) quadratic form: C is never inverted, and
+# the cross-mouse correlation from shared q is kept.
+
+
+def stage1_draws(idata, d: GeneData, config: dict) -> dict:
+    """Per-mouse stage-1 summaries for fit_stage2_sandwich (prior divided out).
+
+    Returns dict with:
+        index           mouse indices (into d.ids) used in stage 2
+        mean            likelihood mean for eta, per mouse
+        var_diag        likelihood variance for eta, per mouse (marginal only)
+        cov             full likelihood covariance C (used only as W C W' in stage 2)
+        tau2            stage-1 prior variance on eta
+        skew, flagged   as in stage1_likelihood
+    """
+    i_fit = np.nonzero(stage1_fit_mask(d, config))[0]
+    draws = (
+        idata.posterior["eta"]
+        .stack(s=("chain", "draw"))
+        .transpose("fit_samples", "s")
+        .values
+    )  # (n_fit, n_draws)
+    return _stage1_draws_from_array(draws, d, i_fit, config)
+
+
+def _stage1_draws_from_array(draws, d: GeneData, i_fit, config: dict) -> dict:
+    n_draws = draws.shape[1]
+    post_mean = draws.mean(axis=1)
+    Dc = (draws - post_mean[:, None]) / np.sqrt(n_draws - 1)
+    skew = scipy.stats.skew(draws, axis=1)
+
+    tau2 = config["eta_prior_sd"] ** 2
+    prior_mean = d.log_eff_ratio[i_fit]
+    n_fit = len(i_fit)
+    # Exact Gaussian prior division without inverting Sigma:
+    #   C = (Sigma^-1 - I/tau^2)^-1 = Sigma (I - Sigma/tau^2)^-1
+    #   mean_lik = C (Sigma^-1 m - m0/tau^2) = m + C (m - m0) / tau^2
+    # (Sigma and I - Sigma/tau^2 commute; the latter has eigenvalues near 1.)
+    Sigma = Dc @ Dc.T
+    divisor = np.eye(n_fit) - Sigma / tau2
+    C = np.linalg.solve(divisor, Sigma)
+    C = 0.5 * (C + C.T)
+    lik_mean = post_mean + C @ (post_mean - prior_mean) / tau2
+
+    # Diagnostics: how strongly correlated are the mice's stage-1 etas?
+    post_sd = np.sqrt(np.diag(Sigma))
+    corr = Sigma / np.outer(post_sd, post_sd)
+    off = corr[~np.eye(n_fit, dtype=bool)]
+
+    return dict(
+        index=i_fit,
+        mean=lik_mean,
+        var_diag=np.diag(C).copy(),
+        cov=C,
+        tau2=tau2,
+        post_mean=post_mean,
+        post_var=np.diag(Sigma).copy(),
+        n_draws=n_draws,
+        # Must be > 0 for the prior division to be valid; near 1 normally
+        min_eig_prior_division=float(np.linalg.eigvalsh(divisor).min()),
+        mean_abs_corr=float(np.abs(off).mean()) if off.size else 0.0,
+        max_abs_corr=float(np.abs(off).max()) if off.size else 0.0,
+        skew=skew,
+        flagged=[
+            d.ids[i] for i, s in zip(i_fit, skew) if abs(s) > config["max_abs_skew"]
+        ],
+    )
+
+
+def fit_stage2_sandwich(d, lik, sigma_beta=2.0, bound=5.0):
+    """
+    Same model and point estimator as fit_stage2_eb, but with a working diagonal
+    stage-1 covariance for the weights and a draw-based (sandwich) variance.
+
+    Model:
+        y = eta_lik - offsets = S delta + u + e
+        delta ~ N(0, Sd),  Sd = n_h sigma_beta^2 P_B + sigma_gamma^2 P_G
+        u ~ N(0, sigma_u^2 I),  e ~ N(0, C)
+
+    Steps:
+        1. sigma_u, sigma_gamma by ML with C replaced by C_w = diag(var_diag)
+        2. delta_hat = W y,  W = Sd S' (S Sd S' + C_w + sigma_u^2 I)^-1
+        3. cov(delta_hat - delta) = (W S - I) Sd (W S - I)' + W C W' + sigma_u^2 W W'
+           with C the full stage-1 likelihood covariance from stage1_draws.
+       If C really were C_w, step 3 equals the usual posterior covariance
+       Sd - W S Sd (returned as cov_*_working, for comparison).
+    """
+    i = lik["index"]
+    y = lik["mean"] - d.log_eff_ratio[i]
+    c_w = lik["var_diag"]
+    C = lik["cov"]
+    n_obs, n_pairs, n_h = len(i), len(d.pairs), len(d.haplotypes)
+    S = np.zeros((n_obs, n_pairs))
+    S[np.arange(n_obs), d.idx[i]] = d.sign[i]
+
+    def Sigma_delta(sg):
+        return n_h * sigma_beta**2 * d.P_B + sg**2 * d.P_G
+
+    def working_M(su, sg):
+        return S @ Sigma_delta(sg) @ S.T + np.diag(c_w + su**2)
+
+    def nll(params):
+        L = scipy.linalg.cho_factor(working_M(*params))
+        return np.log(np.diag(L[0])).sum() + 0.5 * y @ scipy.linalg.cho_solve(L, y)
+
+    res = scipy.optimize.minimize(
+        nll, x0=[0.1, 0.1], bounds=[(0, bound), (0, bound)], method="L-BFGS-B"
+    )
+    su, sg = res.x
+
+    Sd = Sigma_delta(sg)
+    L = scipy.linalg.cho_factor(working_M(su, sg))
+    W = scipy.linalg.cho_solve(L, S @ Sd).T  # n_pairs x n_obs (M is symmetric)
+    delta_mean = W @ y
+
+    # Prior / shrinkage part (large along directions the data do not identify)
+    A = W @ S - np.eye(n_pairs)
+    prior_part = A @ Sd @ A.T
+    # Stage-1 noise part: C enters only through this small quadratic form, never inverted
+    noise_part = W @ C @ W.T
+    delta_cov = prior_part + noise_part + su**2 * (W @ W.T)
+    delta_cov = 0.5 * (delta_cov + delta_cov.T)
+    delta_cov_working = Sd - W @ S @ Sd
+    delta_cov_working = 0.5 * (delta_cov_working + delta_cov_working.T)
+
+    T = d.Bm.T / n_h  # beta = T @ delta
+
+    # Diagnostics
+    def tr_beta(M):
+        return float(np.trace(T @ M @ T.T))
+
+    noise_part_diag = W @ np.diag(np.diag(C)) @ W.T
+    resid = y - S @ delta_mean
+    return dict(
+        sigma_u=su,
+        sigma_gamma=sg,
+        beta=T @ delta_mean,
+        cov_beta=T @ delta_cov @ T.T,
+        gamma=d.P_G @ delta_mean,
+        cov_gamma=d.P_G @ delta_cov @ d.P_G.T,
+        delta=delta_mean,
+        cov_delta=delta_cov,
+        cov_beta_working=T @ delta_cov_working @ T.T,
+        converged=res.success,
+        diagnostics=dict(
+            nll=float(res.fun),
+            optimizer_message=str(res.message),
+            n_obs=int(n_obs),
+            # trace of cov_beta split by source (sums to tr(cov_beta))
+            tr_cov_beta_prior_part=tr_beta(prior_part),
+            tr_cov_beta_noise_part=tr_beta(noise_part),
+            tr_cov_beta_sigma_u_part=tr_beta(su**2 * (W @ W.T)),
+            # > 1 when cross-mouse correlation in C (e.g. shared q) adds variance
+            noise_part_vs_diagonal_C=tr_beta(noise_part) / tr_beta(noise_part_diag),
+            # sandwich vs. model-based (working, diagonal C) covariance of beta
+            tr_cov_beta_over_working=tr_beta(delta_cov) / tr_beta(delta_cov_working),
+            # ~1 if the working variances (C_w + sigma_u^2) fit the residuals
+            mean_sq_std_resid=float(np.mean(resid**2 / (c_w + su**2))),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
