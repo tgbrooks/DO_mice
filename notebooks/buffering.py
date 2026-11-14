@@ -1305,7 +1305,7 @@ def _(
                         variable_name="class",
                         value_name="expr",
                     )
-                    .sort("mouse_id")
+                    .sort("total", "mouse_id", "class")
                     .with_columns(
                         mouse_idx = pl.col("mouse_id").is_first_distinct().cast(int).cum_sum(),
                         total_expr = pl.col("expr").sum().over("mouse_id"),

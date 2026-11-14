@@ -163,6 +163,7 @@ for gene_id in gene_ids:
                 "gene_id": gene_id,
                 "ase_model": ase_summary,
                 "total_model": total_summary,
+                "mouse_ids_used": gene_data.ids,  # same order as alpha.shape[0], and info. Not all get 'etas' in ase_model tho
                 "gene_data": {
                     "alpha": gene_data.alpha,
                     "info": gene_data.info,
@@ -177,4 +178,6 @@ for gene_id in gene_ids:
         print(f"Encountered an error in {gene_id}:\n{e}")
         results.append({"gene_id": gene_id, "error": f"Exception: {e}"})
 
-pl.DataFrame(results).write_parquet(OUTFILE)
+pl.DataFrame(results).with_columns(
+    pl.col("mouse_ids_used").cast(pl.List(pl.Enum(mouse_ids)))
+).write_parquet(OUTFILE)

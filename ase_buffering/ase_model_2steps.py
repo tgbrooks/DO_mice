@@ -543,7 +543,9 @@ def summarize_ase_models(idata_ase1, stage2, gene_data) -> dict:
         "beta": np.asarray(stage2["beta"]).tolist(),
         "gamma": np.asarray(stage2["gamma"]).tolist(),
         "delta": np.asarray(stage2["delta"]).tolist(),
-        "eta": eta_summary.rows_by_key("variable", unique=True, named=True),
+        "eta": eta_summary.with_columns(
+            mouse_id=pl.col("variable").str.extract(r"eta\[(.*)\]", 1)
+        ).to_dicts(),
         "cov": {
             "cov_beta": np.asarray(stage2["cov_beta"]).tolist(),
             "cov_gamma": np.asarray(stage2["cov_gamma"]).tolist(),

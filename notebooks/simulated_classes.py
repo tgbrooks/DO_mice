@@ -63,6 +63,12 @@ def _(lp, yaml):
 
 
 @app.cell
+def _(HAPLOTYPES):
+    HAP_TO_HAPNUM = {hap: i for i, hap in enumerate(HAPLOTYPES)}
+    return (HAP_TO_HAPNUM,)
+
+
+@app.cell
 def _(TISSUE, config):
     OUTLIER_MOUSE_IDS = config['outlier_ids'][TISSUE]
     return (OUTLIER_MOUSE_IDS,)
@@ -133,21 +139,14 @@ def _(pl):
 
 @app.cell
 def _(allele_unique, buffering_all2, extract_field, pl, sample_truth):
-    #etas = pl.DataFrame(eta_objs).explode(['eta', 'eta_se', 'mouse_id'])
     _mouse_ids = sorted(allele_unique['mouse_id'].unique())
-    _etas = pl.concat([
-        buffering_all2.select(
-            "gene_id",
-            mouse_id = pl.lit(mouse_id),
-            eta_dump  = extract_field(f"ase_model.eta.eta[{mouse_id}]")
-        )
-        for mouse_id in _mouse_ids
-    ])
-    etas = _etas.select(
+    etas =  buffering_all2.select(
         "gene_id",
-        "mouse_id",
-        eta= extract_field("eta_dump.mean"),
-        eta_se= extract_field("eta_dump.sd"),
+        eta = extract_field("ase_model.eta").list.eval(pl.element().struct.field("mean")),
+        eta_se = extract_field("ase_model.eta").list.eval(pl.element().struct.field("sd")),
+        mouse_id = extract_field("ase_model.eta").list.eval(pl.element().struct.field("mouse_id")),
+    ).explode(
+        ["eta", "mouse_id", "eta_se"], empty_as_null=False
     ).join(sample_truth.select('gene_id', 'mouse_id', eta_true='eta'), ['gene_id', 'mouse_id'])
     return (etas,)
 
@@ -226,6 +225,7 @@ def _(SIM_REF_TISSUE, extract_field, pl):
             #ase_beta_se = extract_field("ase_model.beta_se"),
             total_log_disp = extract_field("total_model.core.log_disp.mean"),
             total_log_disp_se = extract_field("total_model.core.log_disp.sd"),
+            alpha = extract_field("gene_data.alpha"),
         )
     )
     return (ref_buffering2,)
@@ -526,11 +526,23 @@ def _(beta_covs, np, results):
 
     Q_ase, dof_ase = calibration(ase_betas, covs_ase, true_betas)
     Q_total, dof_total = calibration(total_betas, covs_total, true_betas)
-    return Q_ase, Q_total, dof_ase, dof_total
+    return Q_ase, Q_total, dof_ase, dof_total, gids
 
 
 @app.cell
-def _(HAPLOTYPES, Q_ase, Q_total, dof_ase, dof_total, lp, np, pl, scipy):
+def _(
+    HAPLOTYPES,
+    Q_ase,
+    Q_total,
+    dof_ase,
+    dof_total,
+    gids,
+    lp,
+    np,
+    pl,
+    results,
+    scipy,
+):
     max_Q = 100
     _t = np.geomspace(1, max_Q, 201)
     _expected = pl.concat([
@@ -542,16 +554,30 @@ def _(HAPLOTYPES, Q_ase, Q_total, dof_ase, dof_total, lp, np, pl, scipy):
 
     _Q = pl.concat([
         pl.DataFrame({
+            "gene_id": gids,
             "Q": Q_ase,
             "dof": dof_ase,
             "type": "ASE",
         }),
         pl.DataFrame({
+            "gene_id": gids,
             "Q": Q_total,
             "dof": dof_total,
             "type": "total",
         })
-    ])
+    ]).join(
+        results.select("gene_id", "sigma_u", "sigma_u_true", "sigma_gamma", "sigma_gamma_true", "ase_success", "total_success"),
+        "gene_id",
+    ).filter(
+        "ase_success",
+        "total_success",
+        #pl.col("sigma_u") < 0.25,
+        #pl.col("sigma_gamma") < 0.25,
+        #pl.col('sigma_u_true') > 0,
+        #pl.col('sigma_u') > 0,
+        pl.col('sigma_gamma_true') > 0.08,
+        pl.col("sigma_gamma") > 0.08,
+    )
     (
         lp.ggplot(_Q, lp.aes(x="Q"))
             + lp.geom_density()
@@ -560,6 +586,217 @@ def _(HAPLOTYPES, Q_ase, Q_total, dof_ase, dof_total, lp, np, pl, scipy):
             + lp.scale_x_continuous(limits=(0,max_Q))
             #+ lp.scale_y_log10()
             #+ lp.scale_x_log10()
+    )
+    return
+
+
+@app.cell
+def _(buffering_all2, extract_field, lp, mo, pl, results, scipy):
+    lrt = buffering_all2.select(
+        'gene_id',
+        Q_hat = extract_field("buffering.Q"),
+        Q_1 = extract_field("buffering.chi2"),
+        chi2_p = extract_field('buffering.chi2_p'),
+    ).with_columns(
+        lr = pl.col("Q_1") - pl.col("Q_hat"),
+    ).join(
+        results.select('gene_id', 'has_buffering', 'ase_success', 'total_success', 'sigma_u', 'sigma_gamma'),
+        'gene_id',
+    )
+    lrt = lrt.with_columns(
+        # Compute LRT p-values
+        lrt_p =  scipy.stats.chi2.sf(lrt['lr'].to_numpy(), df=1)
+    ).join(results.filter(
+        pl.col("sigma_u") < 0.25,
+        pl.col('sigma_gamma') < 0.25,
+        ase_success=True,
+        total_success=True,
+    ).select('gene_id'), how="right", on="gene_id")
+    _plt = lp.ggplot(lrt, lp.aes("chi2_p", "lrt_p")) + lp.geom_point(tooltips=lp.layer_tooltips(['gene_id'])) + lp.scale_x_log10() + lp.scale_y_log10() + lp.geom_abline(slope=1, intercept=1)
+
+    _null_ps = (
+        lrt
+            .filter(
+                pl.col("sigma_u") < 0.25,
+                pl.col('sigma_gamma') < 0.25,
+                has_buffering=False,
+                ase_success=True,
+                total_success=True,
+            )
+            .sort("lrt_p")
+            .with_columns(
+                expected_p = (pl.row_index() + 0.5)/(pl.len()+1),
+            )
+    )
+    _qq_plt = (
+        lp.ggplot(_null_ps, lp.aes("expected_p", "lrt_p"))
+            + lp.geom_point(tooltips=lp.layer_tooltips(['gene_id']))
+            + lp.scale_x_log10()
+            + lp.scale_y_log10()
+            + lp.geom_abline(slope=1, intercept=1)
+    )
+
+    mo.vstack([
+        "Compare LRT p-values to Chi2 test p-values",
+        lp.gggrid([
+            _plt,
+            _qq_plt,
+        ]) + lp.ggsize(800,300)
+    ])
+    return
+
+
+@app.cell
+def _(buffering_all2, extract_field, lp, pl, ref_buffering2, results):
+    # Compare alphas
+    alphas = buffering_all2.select(
+        'gene_id',
+        est_alpha = extract_field('gene_data.alpha'),
+        q = extract_field('gene_data.q_hat'),
+    ).join(
+        ref_buffering2.select(
+            'gene_id',
+            true_alpha = "alpha"),
+        'gene_id',
+        how='left'
+    ).join(
+        results.filter(
+            pl.col("sigma_u") < 0.25,
+            pl.col('sigma_gamma') < 0.25,
+            ase_success=True,
+            total_success=True,
+        ).select('gene_id'),
+        how="right",
+        on="gene_id",
+    ).explode(
+        ["est_alpha", "true_alpha"],
+        empty_as_null=True,
+    ).explode(
+        ["est_alpha", "true_alpha"],
+        empty_as_null=True,
+    ).with_columns(
+        ratio = pl.col("est_alpha") / pl.col("true_alpha")
+    )
+
+    lp.gggrid([
+        (
+            lp.ggplot(alphas.sample(5_000), lp.aes("true_alpha", "est_alpha"))
+                 + lp.geom_pointdensity(show_legend=False)
+                + lp.scale_color_viridis(option="magma")
+                + lp.geom_abline(slope=1, intercept=1)
+                + lp.scale_x_log10()
+                + lp.scale_y_log10()
+        ),
+        (
+            lp.ggplot(alphas.sample(5_000), lp.aes("ratio"))
+                + lp.geom_density()
+                + lp.geom_vline(xintercept=1)
+                + lp.scale_x_log10()
+                + lp.labs(x="est. alpha / true alpha")
+        )
+    ]) + lp.ggsize(800,400)
+    return
+
+
+@app.cell
+def _(
+    HAP_TO_HAPNUM,
+    buffering_all2,
+    etas,
+    extract_field,
+    genotypes,
+    lp,
+    np,
+    pl,
+    ref_buffering2,
+    sample_truth,
+):
+    # Compute information using true alphas
+    # This assess the impact of alpha estimation error on estimated covariance
+    def _():
+        data = buffering_all2.select(
+            'gene_id',
+            est_alpha = extract_field('gene_data.alpha'),
+            est_q = extract_field('ase_model.q'),
+            mouse_id = "mouse_ids_used",
+        ).join(
+            ref_buffering2.select(
+                'gene_id',
+                true_alpha = 'alpha',
+            ),
+            how='left',
+            on='gene_id'
+        ).explode(
+            ["mouse_id", "est_alpha", "true_alpha"],
+            empty_as_null=False,
+        ).join(
+            genotypes,
+            how="left",
+            on=["gene_id", "mouse_id"],
+        ).with_columns(
+            hap1 = pl.col("diplotype").str.slice(0,1).replace_strict(HAP_TO_HAPNUM),
+            hap2 = pl.col("diplotype").str.slice(1,1).replace_strict(HAP_TO_HAPNUM),
+        ).join(
+            sample_truth.select('gene_id', 'mouse_id', 'mu', 'p'),
+            ['gene_id', 'mouse_id'],
+        ).join(
+            etas,
+            ['gene_id', 'mouse_id'],
+        ).group_by(
+            "gene_id"
+        ).agg(
+            "est_alpha", "true_alpha", "hap1", "hap2", "mu", "p", 'eta', pl.col("est_q").first()
+        )
+        results = []
+        for gene_id, dat in data.rows_by_key("gene_id", unique=True, named=True).items():
+            alpha_true = np.array(dat['true_alpha'])
+            alpha_est = np.array(dat['est_alpha'])
+            q = np.array(dat['est_q']) # estimated q
+            p = np.array(dat['p']) # note: true p
+            hap1 = np.array(dat['hap1'])
+            hap2 = np.array(dat['hap2'])
+            mu = np.array(dat['mu'])
+            total_mean = mu.sum(axis=1)
+            def info(mu, alpha):
+                return mu / (1 + mu / alpha)
+            # per gene: mu (samples x classes, true means), alpha_true, alpha_est, informative-mouse mask
+            i_true = info(mu, alpha_true)
+            i_est = info(mu, alpha_est)
+            # restrict to classes that inform eta: weight by squared sensitivity to p, d mu / d eta
+            dmu = total_mean[:, None] * p[:, None] * (1 - p[:, None]) * (q[hap1] - q[hap2])
+            w_true = dmu**2 / mu * (i_true / mu)        # Fisher info about eta per class, true alpha
+            w_est = dmu**2 / mu * (i_est / mu)          # same, with estimated alpha
+            #inflation = (w_est**2 / w_true).sum(axis=1) / w_est.sum(axis=1)   # per mouse
+            ratio_terms = np.divide(w_est**2, w_true, out=np.zeros_like(w_est), where=w_true > 0)
+            inflation = ratio_terms.sum(axis=1) / w_est.sum(axis=1)
+            # only the mice present at this point are the informative ones with estimated 'etas'
+            gene_inflation = np.median(inflation)
+            results.append({"gene_id": gene_id, "gene_inflation": gene_inflation})
+        return pl.DataFrame(results)
+    _df = _().join(
+        buffering_all2.select('gene_id', extract_field('buffering.Q')),
+        'gene_id'
+    )
+    lp.ggplot(_df, lp.aes("Q", "gene_inflation")) + lp.geom_point()
+    return
+
+
+@app.cell
+def _(etas, lp, np, pl, scipy):
+    # Check eta standard variances
+    _df = etas.select(
+        z = (pl.col('eta') - pl.col("eta_true")) / pl.col('eta_se')
+    )
+    _t = np.linspace(-4,4, 101)
+    _expected = pl.DataFrame({
+        "z": _t,
+        "density": scipy.stats.norm.pdf(_t),
+    })
+    (
+        lp.ggplot(_df, lp.aes("z"))
+            + lp.geom_density()
+            + lp.geom_line(lp.aes("z", "density"), data=_expected, color="red", linetype="dashed")
+            + lp.labs(x="eta z-score ((est - true) / se)")
     )
     return
 
@@ -944,9 +1181,15 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, mo, pl):
         )
         #return gene_etas
         return plt
+    _df = etas.filter(gene_id=gene_selector.value).join(genotypes,['gene_id', 'mouse_id']).with_columns(
+            eta_lo = pl.col("eta") - 1.96 * pl.col("eta_se"),
+            eta_hi = pl.col("eta") + 1.96 * pl.col("eta_se"),
+    )
     mo.vstack([
-        lp.ggplot(etas.filter(gene_id=gene_selector.value).join(genotypes, ["gene_id", "mouse_id"]), lp.aes(x="eta", y="eta_true"))
-            + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id", "diplotype"])),
+        lp.ggplot(_df, lp.aes(x="eta_true", y="eta"))
+            + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id", "diplotype"]))
+            + lp.geom_errorbar(lp.aes(ymin="eta_lo", ymax="eta_hi"))
+            + lp.geom_abline(slope=1, intercept=0),
         _()
     ])
     return

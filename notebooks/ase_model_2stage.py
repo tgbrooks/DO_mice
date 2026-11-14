@@ -34,6 +34,20 @@ def _():
 
 
 @app.cell
+def _(config, mo):
+    TISSUES = config['run'] + ["simulated_classes"]
+    tissue_selector = mo.ui.dropdown(TISSUES, value="Adipose")
+    tissue_selector
+    return (tissue_selector,)
+
+
+@app.cell
+def _(tissue_selector):
+    TISSUE = tissue_selector.value
+    return (TISSUE,)
+
+
+@app.cell
 def _():
     import marimo as mo
     import lets_plot as lp
@@ -42,14 +56,14 @@ def _():
 
 
 @app.cell
-def _():
-    size_factors = pl.read_csv("processed/Adipose/size_factors.txt", separator="\t")
+def _(TISSUE):
+    size_factors = pl.read_csv(f"processed/{TISSUE}/size_factors.txt", separator="\t")
     return (size_factors,)
 
 
 @app.cell
-def _(config):
-    OUTLIER_MOUSE_IDS = config["outlier_ids"]
+def _(TISSUE, config):
+    OUTLIER_MOUSE_IDS = config["outlier_ids"][TISSUE]
     return (OUTLIER_MOUSE_IDS,)
 
 
@@ -86,16 +100,16 @@ def _():
 
 
 @app.cell
-def _():
-    allele_unique = pl.read_parquet("processed/Adipose/allele_unique_reads.parquet")
+def _(TISSUE):
+    allele_unique = pl.read_parquet(f"processed/{TISSUE}/allele_unique_reads.parquet")
     allele_unique
     return (allele_unique,)
 
 
 @app.cell
-def _():
+def _(TISSUE):
     effective_lengths = pl.read_parquet(
-        f"processed/Adipose/effective_lengths.by_gene.parquet"
+        f"processed/{TISSUE}/effective_lengths.by_gene.parquet"
     )
     return (effective_lengths,)
 
@@ -126,14 +140,14 @@ def _(mo):
 
 
 @app.cell
-def _(HAPLOTYPES, OUTLIER_MOUSE_IDS, mouse_ids):
+def _(HAPLOTYPES, OUTLIER_MOUSE_IDS, TISSUE, mouse_ids):
     # Load ALL the read compatibility data form all the mice
     all_compatibility_classes = {}
     for mouse_id in mouse_ids:
         if mouse_id in OUTLIER_MOUSE_IDS:
             continue
         all_compatibility_classes[mouse_id] = load_compressed_emase(
-            f"processed/Adipose/gbrs/{mouse_id}.compressed.h5",
+            f"processed/{TISSUE}/gbrs/{mouse_id}.compressed.h5",
             [f"h{i}" for i in range(len(HAPLOTYPES))],
         )
     return (all_compatibility_classes,)
@@ -210,7 +224,7 @@ def _(gene_data):
         sigma_q_sd=0.3,
         min_counts_to_center=5,
         eta_prior_sd=3.0,  # weak independent prior on each mouse's eta (divided out later)
-        min_eta_info=2.0,  # mice with less plug-in information are not fit for eta
+        min_eta_info=1.0,  # mice with less plug-in information are not fit for eta
         min_n_informative=50,
         sigma_log_total_reads=1.0,
         sigma_log_kappa=1.0,
@@ -585,7 +599,7 @@ def _(gene_data, gene_diplotypes, idata_ase1, lp, mo, stage2):
                     )
                     + lp.geom_point(
                         lp.aes(x="hap_pair", y="resid"),
-                        data=sample_resid_df,
+                        data=sample_resid_df.filter(pl.col("hap")==pl.col("hap1")),
                         position=lp.position_nudge(x=0.4),
                         tooltips=lp.layer_tooltips(['hap1', 'hap2', "mouse_id"]),
                         color="blue",
