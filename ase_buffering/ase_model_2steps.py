@@ -547,9 +547,15 @@ def _stage1_draws_from_array(draws, d: GeneData, i_fit, config: dict) -> dict:
     #   mean_lik = C (Sigma^-1 m - m0/tau^2) = m + C (m - m0) / tau^2
     # (Sigma and I - Sigma/tau^2 commute; the latter has eigenvalues near 1.)
     Sigma = Dc @ Dc.T
-    C = np.linalg.solve(np.eye(n_fit) - Sigma / tau2, Sigma)
+    divisor = np.eye(n_fit) - Sigma / tau2
+    C = np.linalg.solve(divisor, Sigma)
     C = 0.5 * (C + C.T)
     lik_mean = post_mean + C @ (post_mean - prior_mean) / tau2
+
+    # Diagnostics: how strongly correlated are the mice's stage-1 etas?
+    post_sd = np.sqrt(np.diag(Sigma))
+    corr = Sigma / np.outer(post_sd, post_sd)
+    off = corr[~np.eye(n_fit, dtype=bool)]
 
     return dict(
         index=i_fit,
@@ -557,6 +563,13 @@ def _stage1_draws_from_array(draws, d: GeneData, i_fit, config: dict) -> dict:
         var_diag=np.diag(C).copy(),
         cov=C,
         tau2=tau2,
+        post_mean=post_mean,
+        post_var=np.diag(Sigma).copy(),
+        n_draws=n_draws,
+        # Must be > 0 for the prior division to be valid; near 1 normally
+        min_eig_prior_division=float(np.linalg.eigvalsh(divisor).min()),
+        mean_abs_corr=float(np.abs(off).mean()) if off.size else 0.0,
+        max_abs_corr=float(np.abs(off).max()) if off.size else 0.0,
         skew=skew,
         flagged=[
             d.ids[i] for i, s in zip(i_fit, skew) if abs(s) > config["max_abs_skew"]
@@ -621,6 +634,13 @@ def fit_stage2_sandwich(d, lik, sigma_beta=2.0, bound=5.0):
     delta_cov_working = 0.5 * (delta_cov_working + delta_cov_working.T)
 
     T = d.Bm.T / n_h  # beta = T @ delta
+
+    # Diagnostics
+    def tr_beta(M):
+        return float(np.trace(T @ M @ T.T))
+
+    noise_part_diag = W @ np.diag(np.diag(C)) @ W.T
+    resid = y - S @ delta_mean
     return dict(
         sigma_u=su,
         sigma_gamma=sg,
@@ -632,6 +652,21 @@ def fit_stage2_sandwich(d, lik, sigma_beta=2.0, bound=5.0):
         cov_delta=delta_cov,
         cov_beta_working=T @ delta_cov_working @ T.T,
         converged=res.success,
+        diagnostics=dict(
+            nll=float(res.fun),
+            optimizer_message=str(res.message),
+            n_obs=int(n_obs),
+            # trace of cov_beta split by source (sums to tr(cov_beta))
+            tr_cov_beta_prior_part=tr_beta(prior_part),
+            tr_cov_beta_noise_part=tr_beta(noise_part),
+            tr_cov_beta_sigma_u_part=tr_beta(su**2 * (W @ W.T)),
+            # > 1 when cross-mouse correlation in C (e.g. shared q) adds variance
+            noise_part_vs_diagonal_C=tr_beta(noise_part) / tr_beta(noise_part_diag),
+            # sandwich vs. model-based (working, diagonal C) covariance of beta
+            tr_cov_beta_over_working=tr_beta(delta_cov) / tr_beta(delta_cov_working),
+            # ~1 if the working variances (C_w + sigma_u^2) fit the residuals
+            mean_sq_std_resid=float(np.mean(resid**2 / (c_w + su**2))),
+        ),
     )
 
 

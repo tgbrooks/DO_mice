@@ -119,6 +119,8 @@ for gene_id in gene_ids:
             genotypes,
             sample_info,
             gene_effective_lengths,
+            # Same genotype filter as the ASE model (prepare_gene_data)
+            min_genotype_confidence=0.9,
         )
         with total_model:
             idata_total = pm.sample(

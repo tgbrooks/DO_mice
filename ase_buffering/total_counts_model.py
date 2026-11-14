@@ -16,6 +16,7 @@ def make_total_model(
     diplotypes: pl.DataFrame,
     sample_info: pl.DataFrame,
     gene_effective_lengths: pl.DataFrame,
+    min_genotype_confidence: float = 0.9,
 ) -> pm.Model:
     """Create a model of the total counts
 
@@ -24,7 +25,20 @@ def make_total_model(
         and size_factor (float, tximport+DESeq2-style library size factors).
     gene_effective_lengths should have mouse_id and effective_length (Salmon-style)
         and haplotype columns. Only haplotypes in each mouse's diplotype are needed.
+    min_genotype_confidence: mice whose call for this gene has genotype_confidence at
+        or below this are dropped (if the column is present). Keep this the same as
+        prepare_gene_data's threshold so both models use the same genotypes.
     """
+
+    diplotypes = diplotypes.filter(gene_id=gene_id)
+    if "genotype_confidence" in diplotypes.columns:
+        diplotypes = diplotypes.filter(
+            pl.col("genotype_confidence") > min_genotype_confidence
+        )
+    genotyped = set(diplotypes["mouse_id"])
+    gene_class_counts = gene_class_counts.subset_samples(
+        [m for m in gene_class_counts.ids if m in genotyped]
+    )
 
     gene_totals = get_gene_totals(gene_id, gene_class_counts, diplotypes)
 
@@ -62,7 +76,7 @@ def make_total_model(
     total_model = pm.Model(
         coords={
             "haplotypes": gene_class_counts.haplotypes,
-            "samples": gene_class_counts.ids,
+            "samples": gene_totals["mouse_id"].to_list(),
             "DO_waves": sorted(sample_info["DOwave"].unique()),
         }
     )
