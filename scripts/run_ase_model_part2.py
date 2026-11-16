@@ -194,6 +194,7 @@ for gene_id in gene_ids:
                 mean_abs_corr_eta=handoff["mean_abs_corr"],
                 max_abs_corr_eta=handoff["max_abs_corr"],
                 n_flagged_skew=len(handoff["flagged"]),
+                n_dropped_vague=len(handoff["dropped_vague"]),
                 max_abs_skew=float(np.abs(handoff["skew"]).max()),
                 **eta_convergence(idata_ase1),
             ),
@@ -213,6 +214,7 @@ for gene_id in gene_ids:
                 eta_lik_var=tolist(handoff["var_diag"]),
                 skew=tolist(handoff["skew"]),
                 flagged_skew=handoff["flagged"],
+                dropped_vague=handoff["dropped_vague"],
             ),
             error="none",
         )

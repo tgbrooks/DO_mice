@@ -544,12 +544,22 @@ def stage1_draws(idata, d: GeneData, config: dict) -> dict:
 
 
 def _stage1_draws_from_array(draws, d: GeneData, i_fit, config: dict) -> dict:
+    tau2 = config["eta_prior_sd"] ** 2
+    # Mice whose posterior is nearly as wide as the prior (one-sided likelihoods, e.g.
+    # near-monoallelic expression) make the prior division ill-posed: I - Sigma/tau^2
+    # becomes (near-)singular and Monte Carlo noise can make C indefinite. Their
+    # likelihood sd is then >~ tau, i.e. essentially uninformative, so drop them.
+    max_frac = config.get("max_post_var_frac", 0.5)
+    vague = draws.var(axis=1, ddof=1) > max_frac * tau2
+    dropped_vague = [d.ids[i] for i in np.asarray(i_fit)[vague]]
+    i_fit = np.asarray(i_fit)[~vague]
+    draws = draws[~vague]
+
     n_draws = draws.shape[1]
     post_mean = draws.mean(axis=1)
     Dc = (draws - post_mean[:, None]) / np.sqrt(n_draws - 1)
     skew = scipy.stats.skew(draws, axis=1)
 
-    tau2 = config["eta_prior_sd"] ** 2
     prior_mean = d.log_eff_ratio[i_fit]
     n_fit = len(i_fit)
     # Exact Gaussian prior division without inverting Sigma:
@@ -558,6 +568,13 @@ def _stage1_draws_from_array(draws, d: GeneData, i_fit, config: dict) -> dict:
     # (Sigma and I - Sigma/tau^2 commute; the latter has eigenvalues near 1.)
     Sigma = Dc @ Dc.T
     divisor = np.eye(n_fit) - Sigma / tau2
+    min_eig = float(np.linalg.eigvalsh(divisor).min())
+    if min_eig < 0.05:
+        raise ValueError(
+            f"Prior division ill-conditioned (min eigenvalue of I - Sigma/tau^2 = "
+            f"{min_eig:.3g}): the stage-1 eta posterior is nearly as wide as the prior "
+            "in some direction shared across mice."
+        )
     C = np.linalg.solve(divisor, Sigma)
     C = 0.5 * (C + C.T)
     lik_mean = post_mean + C @ (post_mean - prior_mean) / tau2
@@ -577,7 +594,9 @@ def _stage1_draws_from_array(draws, d: GeneData, i_fit, config: dict) -> dict:
         post_var=np.diag(Sigma).copy(),
         n_draws=n_draws,
         # Must be > 0 for the prior division to be valid; near 1 normally
-        min_eig_prior_division=float(np.linalg.eigvalsh(divisor).min()),
+        min_eig_prior_division=min_eig,
+        # Fit mice dropped because their posterior was nearly as wide as the prior
+        dropped_vague=dropped_vague,
         mean_abs_corr=float(np.abs(off).mean()) if off.size else 0.0,
         max_abs_corr=float(np.abs(off).max()) if off.size else 0.0,
         skew=skew,
