@@ -241,6 +241,13 @@ def q_information(counts, q_hat, hap1, hap2, alpha, p=0.5):
 
 def _make_q(d: GeneData, config: dict):
     n_haps, n_classes = d.q_hat.shape
+    if config.get("q_fixed") is not None:
+        # Oracle / diagnostic mode: q is known, not sampled
+        q_fixed = np.asarray(config["q_fixed"], dtype=float)
+        assert q_fixed.shape == (n_haps, n_classes)
+        return pm.Deterministic(
+            "q", pt.as_tensor_variable(q_fixed), dims=("haplotypes", "classes")
+        )
     log_q_hat = np.log(d.q_hat)
 
     # Pin the largest class of each haplotype (softmax invariance); tiny classes have
@@ -524,12 +531,15 @@ def stage1_draws(idata, d: GeneData, config: dict) -> dict:
         skew, flagged   as in stage1_likelihood
     """
     i_fit = np.nonzero(stage1_fit_mask(d, config))[0]
-    draws = (
-        idata.posterior["eta"]
-        .stack(s=("chain", "draw"))
-        .transpose("fit_samples", "s")
-        .values
-    )  # (n_fit, n_draws)
+    eta = idata.posterior["eta"]
+    # Stage 2 recomputes which mice were fit; make sure that matches stage 1 exactly
+    fit_ids = [str(x) for x in eta["fit_samples"].values]
+    if fit_ids != [d.ids[i] for i in i_fit]:
+        raise ValueError(
+            "Stage-1 fit_samples do not match the mice selected by stage1_fit_mask "
+            f"({len(fit_ids)} vs {len(i_fit)}); was stage 1 run with different data/config?"
+        )
+    draws = eta.stack(s=("chain", "draw")).transpose("fit_samples", "s").values
     return _stage1_draws_from_array(draws, d, i_fit, config)
 
 

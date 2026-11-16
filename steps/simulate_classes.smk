@@ -56,3 +56,55 @@ rule chunk_simulated_classes:
         out_ids = ids[int(i)::n_chunks]
         import polars as pl
         pl.DataFrame({"gene_id": out_ids}).write_csv(output.chunk)
+
+# ------------------------------------------------------------------------------
+# Oracle runs: ASE model with the true alpha and/or q plugged in, to isolate which
+# estimated input is responsible for miscalibrated ASE beta covariances.
+# Run with:  snakemake ase_oracle_tests
+# Only touches processed/simulated_classes/; nothing for the real tissues reruns.
+# ------------------------------------------------------------------------------
+ORACLE_CHUNKS = [1, 2]  # ~100 simulated genes before the expression filter
+
+rule run_ase_model_part1_oracle:
+    input:
+        gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
+        truths = "processed/simulated_classes/sample_truths.parquet",
+    output:
+        "processed/simulated_classes/oracle_{oracle}/1.{chunk_num}.ase_model_part1.nc"
+    wildcard_constraints:
+        oracle = "none|alpha|q|both",
+    threads: 4
+    resources:
+        mem_mb = 32_000,
+    shell:
+        "python scripts/run_ase_model_part1.py --tissue simulated_classes"
+        " --oracle {wildcards.oracle} --ref_tissue {SIM_REF_TISSUE}"
+        " --outfile {output} --gene_ids_file {input.gene_list}"
+
+rule run_ase_model_part2_oracle:
+    input:
+        gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
+        part1 = "processed/simulated_classes/oracle_{oracle}/1.{chunk_num}.ase_model_part1.nc",
+    output:
+        "processed/simulated_classes/oracle_{oracle}/1.{chunk_num}.ase_model_part2.json"
+    wildcard_constraints:
+        oracle = "none|alpha|q|both",
+    resources:
+        mem_mb = 24_000,
+    shell:
+        "python scripts/run_ase_model_part2.py --tissue simulated_classes"
+        " --outfile {output} --gene_ids_file {input.gene_list} --part1 {input.part1}"
+
+rule ase_oracle_tests:
+    input:
+        part2 = expand(
+            "processed/simulated_classes/oracle_{oracle}/1.{chunk_num}.ase_model_part2.json",
+            oracle = ["none", "alpha", "q", "both"],
+            chunk_num = ORACLE_CHUNKS,
+        ),
+        gene_truths = "processed/simulated_classes/gene_truths.parquet",
+        sample_truths = "processed/simulated_classes/sample_truths.parquet",
+    output:
+        "processed/simulated_classes/oracle_tests.txt"
+    shell:
+        "python scripts/check_ase_oracle.py --outfile {output} {input.part2}"

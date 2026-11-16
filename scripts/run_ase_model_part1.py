@@ -31,6 +31,17 @@ parser.add_argument(
     help="json dict as string of ASE model config",
     default=None,
 )
+parser.add_argument(
+    "--oracle",
+    choices=["none", "alpha", "q", "both"],
+    default="none",
+    help="simulated data only: replace estimated alpha and/or q with the true values",
+)
+parser.add_argument(
+    "--ref_tissue",
+    default="Adipose",
+    help="with --oracle: the real tissue the simulation was based on (source of true q)",
+)
 args = parser.parse_args()
 
 TISSUE = "Adipose"
@@ -96,6 +107,73 @@ for mouse_id in mouse_ids:
         [f"h{i}" for i in range(len(HAPLOTYPES))],
     )
 
+ORACLE = args.oracle
+if ORACLE != "none":
+    # Truth as simulate_classes.py defines it:
+    #   q     = q_hat of the real reference-tissue data (min_genotype_confidence=0.9)
+    #   alpha = per sample x class values saved in sample_truths.parquet
+    # Both are in the reference data's class order and are mapped to this data's
+    # classes by class name.
+    REF_TISSUE = args.ref_tissue
+    sample_truths = pl.read_parquet(f"processed/{TISSUE}/sample_truths.parquet")
+    ref_effective_lengths = pl.read_parquet(
+        f"processed/{REF_TISSUE}/effective_lengths.by_gene.parquet"
+    )
+    # Needed for both oracles: true q, and the class order the true alpha is stored in
+    ref_compatibility_classes = {}
+    for mouse_id in sorted(
+        pl.read_parquet(f"processed/{REF_TISSUE}/allele_unique_reads.parquet")[
+            "mouse_id"
+        ].unique()
+    ):
+        if mouse_id in config["outlier_ids"][REF_TISSUE]:
+            continue
+        ref_compatibility_classes[mouse_id] = load_compressed_emase(
+            f"processed/{REF_TISSUE}/gbrs/{mouse_id}.compressed.h5",
+            [f"h{i}" for i in range(len(HAPLOTYPES))],
+        )
+
+    def apply_oracle(gene_id, gene_data):
+        """Overwrite gene_data.alpha and/or return the true q (else None).
+
+        gene_data.info (and so which mice are fit for eta) is deliberately left as
+        computed from the estimated alpha, so part 2 selects the same mice.
+        """
+        q_true, ref_names = load_ref(gene_id)
+        # The simulated classes come from the reference compat matrix, so the class
+        # sets must match; map by name since the class order can differ.
+        mismatch = set(gene_data.class_names) ^ set(ref_names)
+        if mismatch:
+            raise ValueError(f"Class mismatch with reference data: {sorted(mismatch)}")
+        perm = [ref_names.index(n) for n in gene_data.class_names]
+        q_fixed = None
+        if ORACLE in ("alpha", "both"):
+            truth = sample_truths.filter(gene_id=gene_id)
+            if truth.height == 0:
+                raise ValueError(f"No sample truths for {gene_id}")
+            true_alpha = {
+                m: np.asarray(a)[perm]
+                for m, a in zip(truth["mouse_id"], truth["alpha"].to_list())
+            }
+            gene_data.alpha = np.stack([true_alpha[m] for m in gene_data.ids])
+        if ORACLE in ("q", "both"):
+            q_fixed = q_true[:, perm]
+        return q_fixed
+
+    def load_ref(gene_id):
+        """Reference-tissue gene data, built exactly as simulate_classes.py does."""
+        gcc = get_gene_class_counts(gene_id, tx_annot, ref_compatibility_classes)
+        ref = prepare_gene_data(
+            gene_id,
+            gcc,
+            genotypes,
+            ref_effective_lengths.filter(gene_id=gene_id).select(
+                "mouse_id", "haplotype", "effective_length"
+            ),
+            config=dict(min_genotype_confidence=0.9, drop_all_zeros=True),
+        )
+        return ref.q_hat, ref.class_names
+
 quiet = len(gene_ids) > 1
 results = {}
 for gene_id in gene_ids:
@@ -143,6 +221,10 @@ for gene_id in gene_ids:
             ),
             **CONFIG,
         }
+        if ORACLE != "none":
+            q_fixed = apply_oracle(gene_id, gene_data)
+            if q_fixed is not None:
+                stage1_config["q_fixed"] = q_fixed
         ase_model1 = make_stage1_model(
             gene_data,
             stage1_config,
