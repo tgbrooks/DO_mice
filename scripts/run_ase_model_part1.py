@@ -243,6 +243,9 @@ for gene_id in gene_ids:
             )
         _end = time.time()
         ase_model_time1 = _end - _start
+        # Record the stage-1 settings part 2 must use (prior division, fit-mouse mask)
+        for key in ("eta_prior_sd", "min_eta_info", "sigma_q"):
+            idata_ase1.posterior.attrs[f"stage1_{key}"] = float(stage1_config[key])
 
         results[gene_id] = idata_ase1
     except Exception as e:

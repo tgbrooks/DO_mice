@@ -161,8 +161,24 @@ for gene_id in gene_ids:
             continue
 
         ###### ASE MODEL - STAGE 1 -> 2 HANDOFF
+        # Use the eta prior / fit mask that part 1 actually used, if it recorded them
+        # (older part-1 files did not; then CONFIG's values are assumed).
+        stage1_attrs = idata_ase1.posterior.attrs
+        cfg = dict(CONFIG)
+        for key in ("eta_prior_sd", "min_eta_info"):
+            if f"stage1_{key}" in stage1_attrs:
+                cfg[key] = float(stage1_attrs[f"stage1_{key}"])
+        stage1_settings = dict(
+            eta_prior_sd=cfg["eta_prior_sd"],
+            min_eta_info=cfg["min_eta_info"],
+            sigma_q=float(stage1_attrs["stage1_sigma_q"])
+            if "stage1_sigma_q" in stage1_attrs
+            else None,
+            recorded_by_part1="stage1_eta_prior_sd" in stage1_attrs,
+        )
+
         # Likelihood for eta (prior divided out exactly), per-mouse and full covariance
-        handoff = stage1_draws(idata_ase1, gene_data, config=CONFIG)
+        handoff = stage1_draws(idata_ase1, gene_data, config=cfg)
 
         ###### ASE MODEL - STAGE 2 (sandwich variance)
         stage2 = fit_stage2_sandwich(gene_data, handoff)
@@ -181,6 +197,7 @@ for gene_id in gene_ids:
             cov_delta=tolist(stage2["cov_delta"]),
             converged=bool(stage2["converged"]),
             stage2_method="sandwich",
+            stage1_settings=stage1_settings,
             # Model-based covariance under the working (diagonal stage-1) covariance.
             # cov_beta / cov_beta_working >> 1 means cross-mouse correlation matters.
             cov_beta_working=tolist(stage2["cov_beta_working"]),
@@ -228,9 +245,9 @@ for gene_id in gene_ids:
                     config=dict(
                         stage2_cov="full",
                         cov_shrink=0.0,
-                        max_abs_skew=CONFIG["max_abs_skew"],
-                        eta_prior_sd=CONFIG["eta_prior_sd"],
-                        min_eta_info=CONFIG["min_eta_info"],
+                        max_abs_skew=cfg["max_abs_skew"],
+                        eta_prior_sd=cfg["eta_prior_sd"],
+                        min_eta_info=cfg["min_eta_info"],
                     ),
                 )
                 eb = fit_stage2_eb(gene_data, lik_eb)
