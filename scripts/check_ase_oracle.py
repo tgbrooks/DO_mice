@@ -1,7 +1,9 @@
 """
-Summarize ASE beta calibration of the oracle runs on simulated data.
+Summarize ASE beta calibration of the oracle / sigma_q-sweep runs on simulated data.
 
-For each oracle setting (none / alpha / q / both) reports, over genes:
+Each input file's run is labelled by its directory: oracle_<setting> -> <setting>
+(none / alpha / q / both), anything else (e.g. sigmaq_1) as is. For each run reports,
+over genes:
   * Q = (beta_hat - beta)' V^+ (beta_hat - beta), with V = cov_beta (sandwich) and,
     for comparison, the previous stage-2 method (eb_comparison). Under correct
     calibration Q ~ chi2_7: mean/7 = 1, median/6.35 = 1, 5% above 14.07.
@@ -66,6 +68,9 @@ for path in args.part2:
             sigma_u=s["sigma_u"],
             sigma_gamma=s["sigma_gamma"],
             tr_cov_beta_over_working=s["diagnostics"]["tr_cov_beta_over_working"],
+            # stage-1 sampling health (absent if ESS/R-hat could not be computed)
+            min_ess_bulk_eta=s["diagnostics"].get("min_ess_bulk_eta"),
+            max_rhat_eta=s["diagnostics"].get("max_rhat_eta"),
         )
         eb = s.get("eb_comparison", {})
         if "cov_beta" in eb:
@@ -113,6 +118,8 @@ summary = (
         Q_eb_mean_ratio=pl.col("Q_eb").mean() / 7,
         Q_eb_median_ratio=pl.col("Q_eb").median() / CHI2_7_MEDIAN,
         median_sandwich_over_working=pl.col("tr_cov_beta_over_working").median(),
+        median_min_ess_bulk_eta=pl.col("min_ess_bulk_eta").median(),
+        frac_rhat_eta_gt_1_01=(pl.col("max_rhat_eta") > 1.01).mean(),
     )
     .join(
         groups.group_by("oracle").agg(
@@ -126,7 +133,15 @@ summary = (
         genes.group_by("oracle").agg(n_errors=(pl.col("error") != "none").sum()),
         "oracle",
     )
-    .sort(pl.col("oracle").replace_strict({"none": 0, "alpha": 1, "q": 2, "both": 3}))
+    .with_columns(
+        _order=pl.col("oracle").replace_strict(
+            {"none": 0, "alpha": 1, "q": 2, "both": 3}, default=4, return_dtype=pl.Int64
+        ),
+        # sigma_q sweep runs (directories sigmaq_<value>) sort numerically
+        _sigma_q=pl.col("oracle").str.extract(r"^sigmaq_(.+)$").cast(pl.Float64, strict=False),
+    )
+    .sort("_order", "_sigma_q")
+    .drop("_order", "_sigma_q")
 )
 
 out = pathlib.Path(args.outfile)

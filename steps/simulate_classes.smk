@@ -108,3 +108,61 @@ rule ase_oracle_tests:
         "processed/simulated_classes/oracle_tests.txt"
     shell:
         "python scripts/check_ase_oracle.py --outfile {output} {input.part2}"
+
+# ------------------------------------------------------------------------------
+# sigma_q sweep: width of the stage-1 prior on q around q_hat (default 0.3, i.e. the
+# oracle_none run). Tests whether the q posterior is overconfident because the prior
+# is centered on a q_hat estimated from the same counts.
+# Run with:  snakemake sigma_q_sweep_tests
+# ------------------------------------------------------------------------------
+SIGMA_Q_SWEEP = ["1", "3", "10"]
+
+rule run_ase_model_part1_sigma_q:
+    input:
+        gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
+    output:
+        "processed/simulated_classes/sigmaq_{sigma_q}/1.{chunk_num}.ase_model_part1.nc"
+    wildcard_constraints:
+        sigma_q = r"[0-9]+(\.[0-9]+)?",
+    threads: 4
+    resources:
+        mem_mb = 32_000,
+    shell:
+        "python scripts/run_ase_model_part1.py --tissue simulated_classes"
+        " --config '{{\"sigma_q\": {wildcards.sigma_q}}}'"
+        " --outfile {output} --gene_ids_file {input.gene_list}"
+
+rule run_ase_model_part2_sigma_q:
+    input:
+        gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
+        part1 = "processed/simulated_classes/sigmaq_{sigma_q}/1.{chunk_num}.ase_model_part1.nc",
+    output:
+        "processed/simulated_classes/sigmaq_{sigma_q}/1.{chunk_num}.ase_model_part2.json"
+    wildcard_constraints:
+        sigma_q = r"[0-9]+(\.[0-9]+)?",
+    resources:
+        mem_mb = 24_000,
+    shell:
+        "python scripts/run_ase_model_part2.py --tissue simulated_classes"
+        " --outfile {output} --gene_ids_file {input.gene_list} --part1 {input.part1}"
+
+rule sigma_q_sweep_tests:
+    input:
+        part2 = [
+            # sigma_q = 0.3 (the default) is the oracle_none run
+            *expand(
+                "processed/simulated_classes/oracle_none/1.{chunk_num}.ase_model_part2.json",
+                chunk_num = ORACLE_CHUNKS,
+            ),
+            *expand(
+                "processed/simulated_classes/sigmaq_{sigma_q}/1.{chunk_num}.ase_model_part2.json",
+                sigma_q = SIGMA_Q_SWEEP,
+                chunk_num = ORACLE_CHUNKS,
+            ),
+        ],
+        gene_truths = "processed/simulated_classes/gene_truths.parquet",
+        sample_truths = "processed/simulated_classes/sample_truths.parquet",
+    output:
+        "processed/simulated_classes/sigma_q_sweep_tests.txt"
+    shell:
+        "python scripts/check_ase_oracle.py --outfile {output} {input.part2}"
