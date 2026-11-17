@@ -88,13 +88,16 @@ def make_joint_model(d: GeneData, config: dict) -> pm.Model:
     return model
 
 
-def _convergence(post, var):
+def _convergence(post, var, mask=None):
+    """Worst R-hat / ESS over the entries of `var` (only where `mask`, if given)."""
     # Select the variable rather than pass var_names: arviz 1.3 fails to find scalar
     # variables by var_names
     sub = post[[var]]
     ess_bulk = np.atleast_1d(az.ess(sub, method="bulk")[var].values)
     ess_tail = np.atleast_1d(az.ess(sub, method="tail")[var].values)
     rhat = np.atleast_1d(az.rhat(sub)[var].values)
+    if mask is not None:
+        ess_bulk, ess_tail, rhat = ess_bulk[mask], ess_tail[mask], rhat[mask]
     return dict(
         max_rhat=float(np.max(rhat)),
         min_ess_bulk=float(np.min(ess_bulk)),
@@ -102,8 +105,16 @@ def _convergence(post, var):
     )
 
 
-def summarize_joint_model(idata, d: GeneData) -> dict:
-    """beta and its posterior covariance (the results), plus QC and convergence."""
+# q entries with less posterior mass than this are left out of the q diagnostics: their
+# logits (q_hat floored at 1e-5) are barely touched by the data and wander harmlessly.
+MIN_Q_FOR_DIAGNOSTICS = 5e-4
+
+
+def summarize_joint_model(idata) -> dict:
+    """beta and its posterior covariance (the results), plus QC and convergence.
+
+    Uses only the sampled InferenceData / DataTree, so it can run from a saved .nc.
+    """
     post = idata.posterior
     post = post.to_dataset() if hasattr(post, "to_dataset") else post
     beta_draws = post["beta"].stack(s=("chain", "draw")).transpose("haplotypes", "s")
@@ -126,8 +137,8 @@ def summarize_joint_model(idata, d: GeneData) -> dict:
         # Per-chain beta means: chains settling on different solutions show up here
         beta_chain_means=post["beta"].mean("draw").values.tolist(),
         diagnostics=dict(
-            n_samples=len(d.ids),
-            n_het=int((d.sign != 0).sum()),
+            n_samples=int(post.sizes["samples"]),
+            n_het=int(post.sizes["het_samples"]),
             n_chains=int(post.sizes["chain"]),
             n_draws=int(post.sizes["draw"]),
             n_divergences=int(stats["diverging"].sum()),
@@ -138,6 +149,10 @@ def summarize_joint_model(idata, d: GeneData) -> dict:
             sigma_u=_convergence(post, "sigma_u"),
             sigma_gamma=_convergence(post, "sigma_gamma"),
             u=_convergence(post, "u"),
-            q=_convergence(post, "q"),
+            q=_convergence(
+                post,
+                "q",
+                mask=post["q"].mean(("chain", "draw")).values > MIN_Q_FOR_DIAGNOSTICS,
+            ),
         ),
     )

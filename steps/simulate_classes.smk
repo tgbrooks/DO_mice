@@ -228,32 +228,56 @@ rule eta_prior_sweep_tests:
 
 # ------------------------------------------------------------------------------
 # Joint ASE model (ase_buffering/ase_model_joint.py), one pass, on the same simulated
-# chunks at sigma_q = 1 and 3; compared against the two-stage model (sigma_q = 1)
-# and the oracle-q run.
+# chunks; compared against the two-stage model (sigma_q = 1) and the oracle-q run.
+# Sampling (.nc) and summarizing (.json) are separate steps, so summaries can be
+# changed without re-sampling.
 # Run with:  snakemake ase_joint_tests
 # ------------------------------------------------------------------------------
-JOINT_SIGMA_Q = ["1", "3"]
+import json as _json
+
+# label -> sampler settings. Add variants here.
+JOINT_RUNS = {
+    "joint_sigmaq_1": dict(config={"sigma_q": 1}, draws=500),
+    "joint_ta09_d1000": dict(config={"sigma_q": 1, "target_accept": 0.9}, draws=1000),
+}
 
 rule run_ase_model_joint:
     input:
         gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
     output:
-        "processed/simulated_classes/joint_sigmaq_{sigma_q}/1.{chunk_num}.ase_model_joint.json"
+        "processed/simulated_classes/{joint_run}/1.{chunk_num}.ase_model_joint.nc"
     wildcard_constraints:
-        sigma_q = r"[0-9]+(\.[0-9]+)?",
+        joint_run = "|".join(JOINT_RUNS),
+    params:
+        config = lambda w: _json.dumps(JOINT_RUNS[w.joint_run]["config"]),
+        draws = lambda w: JOINT_RUNS[w.joint_run]["draws"],
     threads: 4
     resources:
         mem_mb = 32_000,
     shell:
         "python scripts/run_ase_model_joint.py --tissue simulated_classes"
-        " --config '{{\"sigma_q\": {wildcards.sigma_q}}}'"
+        " --config '{params.config}' --draws {params.draws}"
         " --outfile {output} --gene_ids_file {input.gene_list}"
+
+rule summarize_ase_model_joint:
+    input:
+        samples = "processed/simulated_classes/{joint_run}/1.{chunk_num}.ase_model_joint.nc",
+        gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
+    output:
+        "processed/simulated_classes/{joint_run}/1.{chunk_num}.ase_model_joint.json"
+    wildcard_constraints:
+        joint_run = "|".join(JOINT_RUNS),
+    resources:
+        mem_mb = 16_000,
+    shell:
+        "python scripts/summarize_ase_model_joint.py --samples {input.samples}"
+        " --gene_ids_file {input.gene_list} --outfile {output}"
 
 rule ase_joint_tests:
     input:
         joint = expand(
-            "processed/simulated_classes/joint_sigmaq_{sigma_q}/1.{chunk_num}.ase_model_joint.json",
-            sigma_q = JOINT_SIGMA_Q,
+            "processed/simulated_classes/{joint_run}/1.{chunk_num}.ase_model_joint.json",
+            joint_run = list(JOINT_RUNS),
             chunk_num = ORACLE_CHUNKS,
         ),
         two_stage = expand(

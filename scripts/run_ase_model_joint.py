@@ -1,7 +1,9 @@
 """
-Fit the joint ASE model (ase_buffering/ase_model_joint.py) to each gene and write a
-JSON list of per-gene summaries: beta, cov_beta, QC quantities and convergence
-diagnostics, or {"gene_id", "error"} for genes that failed.
+Fit the joint ASE model (ase_buffering/ase_model_joint.py) to each gene and save the
+posterior samples of all genes to one .nc file (util/netcdf.py), one group per gene.
+Genes that fail or are skipped get an error group instead; skipped genes' messages
+start with SKIPPED_PREFIX. The config, draws and runtime are stored in each gene's
+posterior attrs. scripts/summarize_ase_model_joint.py turns the file into JSON.
 """
 
 import argparse
@@ -16,16 +18,13 @@ import yaml
 
 from util.compressed_emase import load_compressed_emase
 from util.compat_classes import get_gene_class_counts
+from util.netcdf import GeneError, save_results
 from ase_buffering.ase_model_2steps import prepare_gene_data
-from ase_buffering.ase_model_joint import (
-    DEFAULTS,
-    make_joint_model,
-    summarize_joint_model,
-)
+from ase_buffering.ase_model_joint import DEFAULTS, make_joint_model
 
 parser = argparse.ArgumentParser("Fit the joint ASE model to the given genes")
 parser.add_argument("--tissue", help="which tissue to use")
-parser.add_argument("--outfile", help="JSON output file")
+parser.add_argument("--outfile", help=".nc output file")
 parser.add_argument("--gene_ids_file", help="file with one gene id per line")
 parser.add_argument("--cores", type=int, default=4)
 parser.add_argument("--chains", type=int, default=4)
@@ -74,8 +73,15 @@ all_compatibility_classes = {
     if mouse_id not in OUTLIER_MOUSE_IDS
 }
 
+SKIPPED_PREFIX = "SKIPPED: "
+
+
+class SkippedGene(Exception):
+    pass
+
+
 quiet = len(gene_ids) > 1
-results = []
+results = {}
 for gene_id in gene_ids:
     try:
         start = time.time()
@@ -85,8 +91,7 @@ for gene_id in gene_ids:
         )
         median_expr = np.median(gene_class_counts.counts.sum(axis=1))
         if median_expr < 50:
-            print(f"Skipping {gene_id} - median expression too low")
-            continue
+            raise SkippedGene(f"{SKIPPED_PREFIX}median expression {median_expr} < 50")
         gene_data = prepare_gene_data(
             gene_id,
             gene_class_counts,
@@ -106,18 +111,12 @@ for gene_id in gene_ids:
                 quiet=quiet,
                 target_accept=CONFIG["target_accept"],
             )
-        results.append(
-            dict(
-                gene_id=gene_id,
-                **summarize_joint_model(idata, gene_data),
-                config=CONFIG,
-                runtime=time.time() - start,
-                error="none",
-            )
-        )
+        idata.posterior.attrs["joint_config"] = json.dumps(CONFIG)
+        idata.posterior.attrs["draws"] = args.draws
+        idata.posterior.attrs["runtime_s"] = time.time() - start
+        results[gene_id] = idata
     except Exception as e:
-        print(f"Encountered an error in {gene_id}:\n{e}")
-        results.append({"gene_id": gene_id, "error": f"{type(e).__name__}: {e}"})
+        print(f"{gene_id}: {e}")
+        results[gene_id] = GeneError(e)
 
-with open(args.outfile, "wt") as f:
-    json.dump(results, f)
+save_results(results, args.outfile)
