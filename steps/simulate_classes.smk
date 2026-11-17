@@ -225,3 +225,44 @@ rule eta_prior_sweep_tests:
         "processed/simulated_classes/eta_prior_sweep_tests.txt"
     shell:
         "python scripts/check_ase_oracle.py --outfile {output} {input.part2}"
+
+# ------------------------------------------------------------------------------
+# Joint ASE model (ase_buffering/ase_model_joint.py), one pass, on the same simulated
+# chunks at sigma_q = 1 and 3; compared against the two-stage model (sigma_q = 1)
+# and the oracle-q run.
+# Run with:  snakemake ase_joint_tests
+# ------------------------------------------------------------------------------
+JOINT_SIGMA_Q = ["1", "3"]
+
+rule run_ase_model_joint:
+    input:
+        gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
+    output:
+        "processed/simulated_classes/joint_sigmaq_{sigma_q}/1.{chunk_num}.ase_model_joint.json"
+    wildcard_constraints:
+        sigma_q = r"[0-9]+(\.[0-9]+)?",
+    threads: 4
+    resources:
+        mem_mb = 32_000,
+    shell:
+        "python scripts/run_ase_model_joint.py --tissue simulated_classes"
+        " --config '{{\"sigma_q\": {wildcards.sigma_q}}}'"
+        " --outfile {output} --gene_ids_file {input.gene_list}"
+
+rule ase_joint_tests:
+    input:
+        joint = expand(
+            "processed/simulated_classes/joint_sigmaq_{sigma_q}/1.{chunk_num}.ase_model_joint.json",
+            sigma_q = JOINT_SIGMA_Q,
+            chunk_num = ORACLE_CHUNKS,
+        ),
+        two_stage = expand(
+            "processed/simulated_classes/{run}/1.{chunk_num}.ase_model_part2.json",
+            run = ["sigmaq_1", "oracle_q"],
+            chunk_num = ORACLE_CHUNKS,
+        ),
+        gene_truths = "processed/simulated_classes/gene_truths.parquet",
+    output:
+        "processed/simulated_classes/ase_joint_tests.txt"
+    shell:
+        "python scripts/summarize_ase_joint.py --outfile {output} {input.joint} {input.two_stage}"
