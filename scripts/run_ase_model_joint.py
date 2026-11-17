@@ -19,6 +19,7 @@ import yaml
 from util.compressed_emase import load_compressed_emase
 from util.compat_classes import get_gene_class_counts
 from util.netcdf import GeneError, save_results
+from util.sim_oracle import ORACLE_MODES, SimOracle
 from ase_buffering.ase_model_2steps import prepare_gene_data
 from ase_buffering.ase_model_joint import DEFAULTS, make_joint_model
 
@@ -30,6 +31,17 @@ parser.add_argument("--cores", type=int, default=4)
 parser.add_argument("--chains", type=int, default=4)
 parser.add_argument("--draws", type=int, default=500)
 parser.add_argument("--config", default=None, help="JSON dict overriding DEFAULTS")
+parser.add_argument(
+    "--oracle",
+    choices=ORACLE_MODES,
+    default="none",
+    help="simulated data only: replace estimated alpha and/or q with the true values",
+)
+parser.add_argument(
+    "--ref_tissue",
+    default="Adipose",
+    help="with --oracle: the real tissue the simulation was based on (source of true q)",
+)
 args = parser.parse_args()
 
 TISSUE = args.tissue
@@ -73,6 +85,20 @@ all_compatibility_classes = {
     if mouse_id not in OUTLIER_MOUSE_IDS
 }
 
+oracle = (
+    SimOracle(
+        args.oracle,
+        sim_tissue=TISSUE,
+        ref_tissue=args.ref_tissue,
+        tx_annot=tx_annot,
+        genotypes=genotypes,
+        n_haplotypes=len(HAPLOTYPES),
+        ref_outlier_ids=config["outlier_ids"][args.ref_tissue],
+    )
+    if args.oracle != "none"
+    else None
+)
+
 SKIPPED_PREFIX = "SKIPPED: "
 
 
@@ -101,7 +127,12 @@ for gene_id in gene_ids:
             ),
             config=dict(min_genotype_confidence=0.9),
         )
-        with make_joint_model(gene_data, CONFIG):
+        model_config = dict(CONFIG)
+        if oracle is not None:
+            q_fixed = oracle.apply(gene_id, gene_data)  # also sets true alpha if asked
+            if q_fixed is not None:
+                model_config["q_fixed"] = q_fixed
+        with make_joint_model(gene_data, model_config):
             idata = pm.sample(
                 args.draws,
                 cores=args.cores,
@@ -111,7 +142,7 @@ for gene_id in gene_ids:
                 quiet=quiet,
                 target_accept=CONFIG["target_accept"],
             )
-        idata.posterior.attrs["joint_config"] = json.dumps(CONFIG)
+        idata.posterior.attrs["joint_config"] = json.dumps({**CONFIG, "oracle": args.oracle})
         idata.posterior.attrs["draws"] = args.draws
         idata.posterior.attrs["runtime_s"] = time.time() - start
         results[gene_id] = idata

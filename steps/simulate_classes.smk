@@ -227,8 +227,10 @@ rule eta_prior_sweep_tests:
         "python scripts/check_ase_oracle.py --outfile {output} {input.part2}"
 
 # ------------------------------------------------------------------------------
-# Joint ASE model (ase_buffering/ase_model_joint.py), one pass, on the same simulated
-# chunks; compared against the two-stage model (sigma_q = 1) and the oracle-q run.
+# Joint ASE model (ase_buffering/ase_model_joint.py), one pass, on all simulated
+# chunks, with oracle variants (true alpha and/or q plugged in). Compared against the
+# two-stage model (sigma_q = 1) and its oracle-q run, which cover ORACLE_CHUNKS only
+# (the summary's *_common columns restrict to genes every run has).
 # Sampling (.nc) and summarizing (.json) are separate steps, so summaries can be
 # changed without re-sampling.
 # Run with:  snakemake ase_joint_tests
@@ -236,10 +238,14 @@ rule eta_prior_sweep_tests:
 import json as _json
 
 # label -> sampler settings. Add variants here.
+_JOINT_BASE = dict(config={"sigma_q": 1, "target_accept": 0.9}, draws=1000)
 JOINT_RUNS = {
-    "joint_sigmaq_1": dict(config={"sigma_q": 1}, draws=500),
-    "joint_ta09_d1000": dict(config={"sigma_q": 1, "target_accept": 0.9}, draws=1000),
+    "joint_ta09_d1000": dict(_JOINT_BASE, oracle="none"),
+    "joint_oracle_alpha": dict(_JOINT_BASE, oracle="alpha"),
+    "joint_oracle_q": dict(_JOINT_BASE, oracle="q"),
+    "joint_oracle_both": dict(_JOINT_BASE, oracle="both"),
 }
+JOINT_CHUNKS = list(range(1, n_chunks + 1))  # all simulated genes
 
 rule run_ase_model_joint:
     input:
@@ -251,12 +257,14 @@ rule run_ase_model_joint:
     params:
         config = lambda w: _json.dumps(JOINT_RUNS[w.joint_run]["config"]),
         draws = lambda w: JOINT_RUNS[w.joint_run]["draws"],
+        oracle = lambda w: JOINT_RUNS[w.joint_run]["oracle"],
     threads: 4
     resources:
         mem_mb = 32_000,
     shell:
         "python scripts/run_ase_model_joint.py --tissue simulated_classes"
         " --config '{params.config}' --draws {params.draws}"
+        " --oracle {params.oracle} --ref_tissue {SIM_REF_TISSUE}"
         " --outfile {output} --gene_ids_file {input.gene_list}"
 
 rule summarize_ase_model_joint:
@@ -278,7 +286,7 @@ rule ase_joint_tests:
         joint = expand(
             "processed/simulated_classes/{joint_run}/1.{chunk_num}.ase_model_joint.json",
             joint_run = list(JOINT_RUNS),
-            chunk_num = ORACLE_CHUNKS,
+            chunk_num = JOINT_CHUNKS,
         ),
         two_stage = expand(
             "processed/simulated_classes/{run}/1.{chunk_num}.ase_model_part2.json",
