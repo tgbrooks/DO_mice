@@ -63,15 +63,7 @@ rule chunk_simulated_classes:
 # Run with:  snakemake ase_oracle_tests
 # Only touches processed/simulated_classes/; nothing for the real tissues reruns.
 # ------------------------------------------------------------------------------
-ORACLE_CHUNKS = [1, 2]
-# Code the part-2 rules depend on, so that code changes rerun them (part 2 is cheap).
-# Part 1 deliberately does not list its code: ase_model_2steps.py also holds stage 2,
-# and editing that should not trigger re-sampling. Force part 1 reruns by hand.
-ASE_PART2_CODE = [
-    "scripts/run_ase_model_part2.py",
-    "ase_buffering/ase_model_2steps.py",
-    "ase_buffering/ase_model.py",
-]  # ~100 simulated genes before the expression filter
+ORACLE_CHUNKS = [1, 2]  # ~100 simulated genes before the expression filter
 
 rule run_ase_model_part1_oracle:
     input:
@@ -93,7 +85,6 @@ rule run_ase_model_part2_oracle:
     input:
         gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
         part1 = "processed/simulated_classes/oracle_{oracle}/1.{chunk_num}.ase_model_part1.nc",
-        code = ASE_PART2_CODE,
     output:
         "processed/simulated_classes/oracle_{oracle}/1.{chunk_num}.ase_model_part2.json"
     wildcard_constraints:
@@ -145,7 +136,6 @@ rule run_ase_model_part2_sigma_q:
     input:
         gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
         part1 = "processed/simulated_classes/sigmaq_{sigma_q}/1.{chunk_num}.ase_model_part1.nc",
-        code = ASE_PART2_CODE,
     output:
         "processed/simulated_classes/sigmaq_{sigma_q}/1.{chunk_num}.ase_model_part2.json"
     wildcard_constraints:
@@ -206,7 +196,6 @@ rule run_ase_model_part2_eta_prior:
     input:
         gene_list = "processed/simulated_classes/chromosome_chunks/1.{chunk_num}.genes.txt",
         part1 = "processed/simulated_classes/etasd_{eta_sd}/1.{chunk_num}.ase_model_part1.nc",
-        code = ASE_PART2_CODE,
     output:
         "processed/simulated_classes/etasd_{eta_sd}/1.{chunk_num}.ase_model_part2.json"
     wildcard_constraints:

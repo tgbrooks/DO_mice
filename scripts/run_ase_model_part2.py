@@ -34,10 +34,8 @@ PART1_FILE = args.part1
 OUTFILE = args.outfile
 CORES = args.cores
 CHAINS = args.chains
+# eta_prior_sd and min_eta_info are taken from the part-1 results (see below)
 CONFIG = dict(
-    eta_prior_sd=3.0,
-    min_eta_info=2.0,  # mice with less plug-in information are not fit for eta
-    min_n_informative=50,
     max_abs_skew=0.5,  # flag mice whose stage-1 posterior is clearly non-Gaussian
 )
 # Also run the previous stage-2 method (full stage-1 covariance, inverted) and report
@@ -161,21 +159,27 @@ for gene_id in gene_ids:
             continue
 
         ###### ASE MODEL - STAGE 1 -> 2 HANDOFF
-        # Use the eta prior / fit mask that part 1 actually used, if it recorded them
-        # (older part-1 files did not; then CONFIG's values are assumed).
+        # Use the eta prior / fit mask that part 1 actually used (it records them)
         stage1_attrs = idata_ase1.posterior.attrs
-        cfg = dict(CONFIG)
-        for key in ("eta_prior_sd", "min_eta_info"):
-            if f"stage1_{key}" in stage1_attrs:
-                cfg[key] = float(stage1_attrs[f"stage1_{key}"])
-        stage1_settings = dict(
-            eta_prior_sd=cfg["eta_prior_sd"],
-            min_eta_info=cfg["min_eta_info"],
-            sigma_q=float(stage1_attrs["stage1_sigma_q"])
-            if "stage1_sigma_q" in stage1_attrs
-            else None,
-            recorded_by_part1="stage1_eta_prior_sd" in stage1_attrs,
-        )
+        missing = [
+            k
+            for k in ("eta_prior_sd", "min_eta_info", "sigma_q")
+            if f"stage1_{k}" not in stage1_attrs
+        ]
+        if missing:
+            raise ValueError(
+                f"Part-1 results do not record stage-1 settings {missing}; "
+                "rerun part 1 with the current code"
+            )
+        stage1_settings = {
+            k: float(stage1_attrs[f"stage1_{k}"])
+            for k in ("eta_prior_sd", "min_eta_info", "sigma_q")
+        }
+        cfg = {
+            **CONFIG,
+            "eta_prior_sd": stage1_settings["eta_prior_sd"],
+            "min_eta_info": stage1_settings["min_eta_info"],
+        }
 
         # Likelihood for eta (prior divided out exactly), per-mouse and full covariance
         handoff = stage1_draws(idata_ase1, gene_data, config=cfg)
