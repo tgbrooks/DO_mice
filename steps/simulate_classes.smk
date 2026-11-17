@@ -63,7 +63,7 @@ rule chunk_simulated_classes:
 # Run with:  snakemake ase_oracle_tests
 # Only touches processed/simulated_classes/; nothing for the real tissues reruns.
 # ------------------------------------------------------------------------------
-ORACLE_CHUNKS = [1, 2]  # ~100 simulated genes before the expression filter
+ORACLE_CHUNKS = [1, 2, 3, 4, 5, 6]  # ~100 simulated genes before the expression filter
 
 rule run_ase_model_part1_oracle:
     input:

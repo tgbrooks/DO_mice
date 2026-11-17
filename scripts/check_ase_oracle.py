@@ -53,7 +53,9 @@ for path in args.part2:
     oracle = pathlib.Path(path).parent.name.removeprefix("oracle_")
     for s in json.load(open(path)):
         if s.get("error") != "none":
-            gene_rows.append(dict(oracle=oracle, gene_id=s["gene_id"], error=s["error"]))
+            gene_rows.append(
+                dict(oracle=oracle, gene_id=s["gene_id"], error=s["error"])
+            )
             continue
         g = s["gene_id"]
         d = np.asarray(s["beta"]) - true_beta[g]
@@ -71,10 +73,13 @@ for path in args.part2:
             # stage-1 sampling health (absent if ESS/R-hat could not be computed)
             min_ess_bulk_eta=s["diagnostics"].get("min_ess_bulk_eta"),
             max_rhat_eta=s["diagnostics"].get("max_rhat_eta"),
+            n_flagged_skew=s["diagnostics"].get("n_flagged_skew"),
         )
         eb = s.get("eb_comparison", {})
         if "cov_beta" in eb:
-            row["Q_eb"] = mahalanobis(np.asarray(eb["beta"]) - true_beta[g], eb["cov_beta"])[0]
+            row["Q_eb"] = mahalanobis(
+                np.asarray(eb["beta"]) - true_beta[g], eb["cov_beta"]
+            )[0]
         gene_rows.append(row)
         p = s["per_mouse"]
         mouse_rows.append(
@@ -138,7 +143,9 @@ summary = (
             {"none": 0, "alpha": 1, "q": 2, "both": 3}, default=4, return_dtype=pl.Int64
         ),
         # sigma_q sweep runs (directories sigmaq_<value>) sort numerically
-        _sigma_q=pl.col("oracle").str.extract(r"^sigmaq_(.+)$").cast(pl.Float64, strict=False),
+        _sigma_q=pl.col("oracle")
+        .str.extract(r"^sigmaq_(.+)$")
+        .cast(pl.Float64, strict=False),
     )
     .sort("_order", "_sigma_q")
     .drop("_order", "_sigma_q")
