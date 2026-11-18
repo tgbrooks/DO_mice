@@ -361,6 +361,7 @@ def simulate_gene(gene_id, id_array):
         "beta": beta,
         "delta": delta,
         "gamma": gamma,
+        "q": q,
         "sigma_u": sigma_u,
         "sigma_gamma": sigma_gamma,
         "sigma_total": sigma_total,
@@ -372,6 +373,10 @@ def simulate_gene(gene_id, id_array):
     sample_truth = {
         "gene_id": [gene_id] * n_samples,
         "mouse_id": gene_data_all.ids,
+        "diplotype": [
+            f"{gene_data.haplotypes[h1]}{gene_data.haplotypes[h2]}"
+            for h1, h2 in zip(gene_data.hap1, gene_data.hap2)
+        ],
         "eta": eta,  # allelic-ratio including length effects
         "mu": mu,
         "alpha": alpha,
