@@ -53,7 +53,7 @@ rule chunk_simulated_classes:
     run:
         ids = [x.strip() for x in open(input.gene_ids).read().strip().splitlines()]
         i = int(wildcards.i)
-        out_ids = ids[int(i)::n_chunks]
+        out_ids = ids[i - 1::n_chunks]  # chunks are numbered 1..n_chunks
         import polars as pl
         pl.DataFrame({"gene_id": out_ids}).write_csv(output.chunk)
 
@@ -78,7 +78,7 @@ rule run_ase_model_part1_oracle:
         mem_mb = 32_000,
     shell:
         "python scripts/run_ase_model_part1.py --tissue simulated_classes"
-        " --oracle {wildcards.oracle} --ref_tissue {SIM_REF_TISSUE}"
+        " --oracle {wildcards.oracle}"
         " --outfile {output} --gene_ids_file {input.gene_list}"
 
 rule run_ase_model_part2_oracle:
@@ -264,7 +264,7 @@ rule run_ase_model_joint:
     shell:
         "python scripts/run_ase_model_joint.py --tissue simulated_classes"
         " --config '{params.config}' --draws {params.draws}"
-        " --oracle {params.oracle} --ref_tissue {SIM_REF_TISSUE}"
+        " --oracle {params.oracle}"
         " --outfile {output} --gene_ids_file {input.gene_list}"
 
 rule summarize_ase_model_joint:
@@ -298,3 +298,18 @@ rule ase_joint_tests:
         "processed/simulated_classes/ase_joint_tests.txt"
     shell:
         "python scripts/summarize_ase_joint.py --outfile {output} {input.joint} {input.two_stage}"
+
+# ------------------------------------------------------------------------------
+# End-to-end check of the buffering pipeline (joint ASE model + total model +
+# Deming regression) on the simulated data: lambda estimates and tests vs the truth.
+# Run with:  snakemake sim_buffering_tests
+# ------------------------------------------------------------------------------
+rule sim_buffering_tests:
+    input:
+        results = "results/simulated_classes/buffering_full_results.parquet",
+        truths = "processed/simulated_classes/gene_truths.parquet",
+    output:
+        "processed/simulated_classes/buffering_tests.txt"
+    shell:
+        "python scripts/summarize_buffering_sim.py --results {input.results}"
+        " --truths {input.truths} --outfile {output}"

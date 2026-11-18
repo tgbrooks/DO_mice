@@ -180,6 +180,9 @@ wildcard_constraints:
     mouse = r"[A-Za-z0-9]+",
     tissue = r"[A-Za-z0-9_]+",  # tissues, including simulated
     tissue_real = '|'.join(TISSUES), # only real, biological tissues
+    # tissues whose compressed.h5 comes from aligning reads (real tissues and the
+    # read-level simulation); simulated_classes writes its compressed.h5 directly
+    aligned_tissue = '|'.join([*TISSUES, "simulated_reads"]),
     end = r"R1|R2|SE",
     # GBRS quantification modes (multi-way across founders, or diploid).
     mode = r"multiway|diploid",

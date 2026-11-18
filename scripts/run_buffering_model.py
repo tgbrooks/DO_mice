@@ -13,16 +13,14 @@ from util.compat_classes import get_gene_class_counts
 from util.netcdf import load_result
 from ase_buffering.total_counts_model import summarize_total_model
 from ase_buffering.covariance_deming_regression import covariance_deming_regression
-from ase_buffering.ase_model_2steps import (
-    prepare_gene_data,
-    summarize_ase_models,
-)
+from ase_buffering.ase_model_2steps import prepare_gene_data
 
 
 parser = argparse.ArgumentParser("Run the models on the given genes")
 parser.add_argument("--tissue", help="which tissue to use")
-parser.add_argument("--ase_part1", help="file with results of ASE part 1")
-parser.add_argument("--ase_part2", help="file with results of ASE part 2")
+parser.add_argument(
+    "--ase", help="joint ASE model summary JSON (scripts/summarize_ase_model_joint.py)"
+)
 parser.add_argument("--total", help="file with results from total model")
 parser.add_argument("--outfile", help="which file to write json output to")
 parser.add_argument("--gene_ids_file", help="file with one gene id per line")
@@ -34,8 +32,7 @@ TISSUE = args.tissue
 OUTFILE = args.outfile
 CORES = args.cores
 CHAINS = args.chains
-ASE_PART1_FILE = args.ase_part1
-ASE_PART2_FILE = args.ase_part2
+ASE_FILE = args.ase
 TOTAL_FILE = args.total
 
 gene_ids = [x.strip() for x in open(args.gene_ids_file).read().splitlines()]
@@ -92,9 +89,8 @@ for mouse_id in mouse_ids:
         [f"h{i}" for i in range(len(HAPLOTYPES))],
     )
 
-with open(ASE_PART2_FILE) as f:
-    stage2 = json.load(f)
-    stage2 = {g["gene_id"]: g for g in stage2}
+with open(ASE_FILE) as f:
+    ase_results = {g["gene_id"]: g for g in json.load(f)}
 
 quiet = len(gene_ids) > 1
 results = []
@@ -127,24 +123,21 @@ for gene_id in gene_ids:
         )
 
         ##### BUFFERING MODEL
-        if stage2[gene_id]["error"] != "none":
-            print(
-                f"Skipping {gene_id} due to error in ASE model stage 2: {stage2[gene_id]['error']}"
-            )
+        ase = ase_results.get(gene_id)
+        if ase is None or ase["error"] != "none":
+            err = "missing from ASE results" if ase is None else ase["error"]
+            print(f"Skipping {gene_id} due to ASE model: {err}")
+            results.append({"gene_id": gene_id, "error": f"ASE model: {err}"})
             continue
-
-        beta_ase = np.asarray(stage2[gene_id]["beta"])
-        cov_ase = np.asarray(stage2[gene_id]["cov_beta"])
-
-        idata_ase1, err_ase = load_result(ASE_PART1_FILE, gene_id)
-        if err_ase is not None:
-            # NOTE: in theory we won't reach this since it'll also have triggered an error in part 2, handled above
-            print(f"Skipping {gene_id} due to error in ASE model part 1: {err_ase}")
-            continue
+        beta_ase = np.asarray(ase["beta"])
+        cov_ase = np.asarray(ase["cov_beta"])
 
         idata_total, err_total = load_result(TOTAL_FILE, gene_id)
         if err_total is not None:
             print(f"Skipping {gene_id} due to error in total model: {err_total}")
+            results.append(
+                {"gene_id": gene_id, "error": f"Total model: {err_total['error']}"}
+            )
             continue
 
         beta_total_draws = az.extract(idata_total, "posterior")["beta"].to_numpy()
@@ -155,7 +148,7 @@ for gene_id in gene_ids:
         )
 
         # Report results
-        ase_summary = summarize_ase_models(idata_ase1, stage2[gene_id], gene_data)
+        ase_summary = {k: v for k, v in ase.items() if k not in ("gene_id", "error")}
         total_summary = summarize_total_model(idata_total)
 
         results.append(
@@ -163,7 +156,7 @@ for gene_id in gene_ids:
                 "gene_id": gene_id,
                 "ase_model": ase_summary,
                 "total_model": total_summary,
-                "mouse_ids_used": gene_data.ids,  # same order as alpha.shape[0], and info. Not all get 'etas' in ase_model tho
+                "mouse_ids_used": gene_data.ids,  # same order as alpha.shape[0] and info; only hets get a u in ase_model
                 "gene_data": {
                     "alpha": gene_data.alpha,
                     "info": gene_data.info,
@@ -178,6 +171,7 @@ for gene_id in gene_ids:
         print(f"Encountered an error in {gene_id}:\n{e}")
         results.append({"gene_id": gene_id, "error": f"Exception: {e}"})
 
-pl.DataFrame(results).with_columns(
-    pl.col("mouse_ids_used").cast(pl.List(pl.Enum(mouse_ids)))
-).write_parquet(OUTFILE)
+out = pl.DataFrame(results, infer_schema_length=None)
+if "mouse_ids_used" in out.columns:
+    out = out.with_columns(pl.col("mouse_ids_used").cast(pl.List(pl.Enum(mouse_ids))))
+out.write_parquet(OUTFILE)

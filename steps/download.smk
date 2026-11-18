@@ -108,7 +108,7 @@ rule merge_fastq_single:
     input:
         lambda w: mouse_run_fastqs(w, "SE"),
     output:
-        temp("processed/{tissue}/fastq/{mouse}_SE.fastq.gz"),
+        temp("processed/{tissue_real}/fastq/{mouse}_SE.fastq.gz"),
     resources:
         runtime = '4h',
     shell:

@@ -361,7 +361,10 @@ def simulate_gene(gene_id, id_array):
         "beta": beta,
         "delta": delta,
         "gamma": gamma,
-        "q": q,
+        # True q (haplotypes x classes), in the order of class_names. Map to another
+        # run's classes by name: class order can differ between datasets.
+        "q": q.tolist(),
+        "class_names": gene_data.class_names,
         "sigma_u": sigma_u,
         "sigma_gamma": sigma_gamma,
         "sigma_total": sigma_total,
@@ -373,9 +376,10 @@ def simulate_gene(gene_id, id_array):
     sample_truth = {
         "gene_id": [gene_id] * n_samples,
         "mouse_id": gene_data_all.ids,
+        # gene_data_all: same mice / order as the other per-sample truths
         "diplotype": [
-            f"{gene_data.haplotypes[h1]}{gene_data.haplotypes[h2]}"
-            for h1, h2 in zip(gene_data.hap1, gene_data.hap2)
+            f"{gene_data_all.haplotypes[h1]}{gene_data_all.haplotypes[h2]}"
+            for h1, h2 in zip(gene_data_all.hap1, gene_data_all.hap2)
         ],
         "eta": eta,  # allelic-ratio including length effects
         "mu": mu,

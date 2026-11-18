@@ -29,18 +29,13 @@ parser.add_argument("--outfile", help=".nc output file")
 parser.add_argument("--gene_ids_file", help="file with one gene id per line")
 parser.add_argument("--cores", type=int, default=4)
 parser.add_argument("--chains", type=int, default=4)
-parser.add_argument("--draws", type=int, default=500)
+parser.add_argument("--draws", type=int, default=1000)
 parser.add_argument("--config", default=None, help="JSON dict overriding DEFAULTS")
 parser.add_argument(
     "--oracle",
     choices=ORACLE_MODES,
     default="none",
     help="simulated data only: replace estimated alpha and/or q with the true values",
-)
-parser.add_argument(
-    "--ref_tissue",
-    default="Adipose",
-    help="with --oracle: the real tissue the simulation was based on (source of true q)",
 )
 args = parser.parse_args()
 
@@ -86,15 +81,7 @@ all_compatibility_classes = {
 }
 
 oracle = (
-    SimOracle(
-        args.oracle,
-        sim_tissue=TISSUE,
-        ref_tissue=args.ref_tissue,
-        tx_annot=tx_annot,
-        genotypes=genotypes,
-        n_haplotypes=len(HAPLOTYPES),
-        ref_outlier_ids=config["outlier_ids"][args.ref_tissue],
-    )
+    SimOracle(args.oracle, sim_tissue=TISSUE)
     if args.oracle != "none"
     else None
 )

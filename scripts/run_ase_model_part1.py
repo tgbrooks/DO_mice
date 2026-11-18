@@ -38,11 +38,6 @@ parser.add_argument(
     default="none",
     help="simulated data only: replace estimated alpha and/or q with the true values",
 )
-parser.add_argument(
-    "--ref_tissue",
-    default="Adipose",
-    help="with --oracle: the real tissue the simulation was based on (source of true q)",
-)
 args = parser.parse_args()
 
 TISSUE = "Adipose"
@@ -110,15 +105,7 @@ for mouse_id in mouse_ids:
 
 ORACLE = args.oracle
 oracle = (
-    SimOracle(
-        ORACLE,
-        sim_tissue=TISSUE,
-        ref_tissue=args.ref_tissue,
-        tx_annot=tx_annot,
-        genotypes=genotypes,
-        n_haplotypes=len(HAPLOTYPES),
-        ref_outlier_ids=config["outlier_ids"][args.ref_tissue],
-    )
+    SimOracle(ORACLE, sim_tissue=TISSUE)
     if ORACLE != "none"
     else None
 )

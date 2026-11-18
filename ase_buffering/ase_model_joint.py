@@ -34,7 +34,7 @@ DEFAULTS = dict(
     sigma_u_prior_sd=0.5,  # HalfNormal scale for sigma_u
     sigma_log_total_reads=1.0,
     min_n_het=50,  # fail genes with fewer heterozygous mice than this
-    target_accept=0.8,
+    target_accept=0.9,  # 0.8 gave noticeably worse R-hat / ESS on simulated data
 )
 
 
@@ -132,7 +132,8 @@ def summarize_joint_model(idata) -> dict:
         sigma_u_sd=float(post["sigma_u"].std()),
         sigma_gamma_sd=float(post["sigma_gamma"].std()),
         gamma=mean("gamma"),
-        u=dict(zip(post["u"]["het_samples"].values.tolist(), mean("u"))),
+        # Lists rather than a dict so every gene has the same fields (parquet-friendly)
+        u=dict(mouse_id=post["u"]["het_samples"].values.tolist(), mean=mean("u")),
         q=mean("q"),
         # Per-chain beta means: chains settling on different solutions show up here
         beta_chain_means=post["beta"].mean("draw").values.tolist(),

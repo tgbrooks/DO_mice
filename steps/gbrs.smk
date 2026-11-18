@@ -108,10 +108,12 @@ rule emase_common_alignments:
 
 
 def emase_h5(wildcards) -> str:
-    """The EMASE file to quantify: the paired intersection, or the single end."""
-    if is_paired(wildcards.tissue, wildcards.mouse):
-        return f"processed/{wildcards.tissue}/gbrs/{wildcards.mouse}.merged.h5"
-    return f"processed/{wildcards.tissue}/gbrs/{wildcards.mouse}.SE.h5"
+    """The EMASE file to compress (gbrs_compress): the paired intersection, or the
+    single end."""
+    tissue = wildcards.aligned_tissue
+    if is_paired(tissue, wildcards.mouse):
+        return f"processed/{tissue}/gbrs/{wildcards.mouse}.merged.h5"
+    return f"processed/{tissue}/gbrs/{wildcards.mouse}.SE.h5"
 
 
 rule gbrs_compress:
@@ -119,7 +121,7 @@ rule gbrs_compress:
     input:
         emase_h5,
     output:
-        h5 = "processed/{tissue_real}/gbrs/{mouse}.compressed.h5",
+        h5 = "processed/{aligned_tissue}/gbrs/{mouse}.compressed.h5",
     resources:
         mem_mb = lambda wildcards, attempt: 20000 + 12000*attempt,
         runtime = '12h',

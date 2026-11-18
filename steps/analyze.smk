@@ -67,7 +67,7 @@ def get_all_model_chunk_results(dir):
                         for chunk_num in range(1,n_chunks+1)
             ]
 
-        chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue=wildcards.tissue).output.outdir)
+        chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue).output.outdir)
         temp = []
         for file in chunkdir.glob("*.genes.txt"):
             chromosome, chunk_num, *_ = file.name.split(".")
@@ -83,33 +83,32 @@ def get_chunk_file(wildcards):
     chunkdir = pathlib.Path(checkpoints.chunk_chromosomes.get(tissue_real=wildcards.tissue).output.outdir)
     return chunkdir / f"{wildcards.chromosome}.{wildcards.chunk_num}.genes.txt"
 
-rule run_ase_model_part1:
-    """ Run ASE part 1 model to compute sample-level allelic-imbalance """
+rule run_ase_model:
+    """ Fit the joint ASE model (ase_buffering/ase_model_joint.py); saves the samples """
     input:
         allele_unique_reads = "processed/{tissue}/allele_unique_reads.parquet",
         effective_lengths = "processed/{tissue}/effective_lengths.by_gene.parquet",
+        genotypes = "processed/genotypes.parquet",
         gene_list = get_chunk_file
     output:
-        output = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_part1.nc"
+        "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_joint.nc"
     threads: 4
     resources:
-        mem_mb=24_000
+        mem_mb=32_000
     shell:
-        "python scripts/run_ase_model_part1.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list}"
+        "python scripts/run_ase_model_joint.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list}"
 
-rule run_ase_model_part2:
-    """ Compute haplotype-level beta effects and summarize"""
+rule summarize_ase_model:
+    """ Per-gene beta, cov_beta, QC values and convergence from the ASE samples """
     input:
-        allele_unique_reads = "processed/{tissue}/allele_unique_reads.parquet",
-        effective_lengths = "processed/{tissue}/effective_lengths.by_gene.parquet",
-        part1 = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_part1.nc",
+        samples = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_joint.nc",
         gene_list = get_chunk_file
     output:
-        "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_part2.json"
+        "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_joint.json"
     resources:
-        mem_mb=24_000
+        mem_mb=16_000
     shell:
-        "python scripts/run_ase_model_part2.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list} --part1 {input.part1}"
+        "python scripts/summarize_ase_model_joint.py --samples {input.samples} --gene_ids_file {input.gene_list} --outfile {output}"
 
 rule run_total_model:
     """ Compute model of total counts """
@@ -131,8 +130,7 @@ rule run_total_model:
 rule run_buffering_model:
     """ Combine ASE and total models to model buffering"""
     input:
-        ase_part1 = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_part1.nc",
-        ase_part2 = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_part2.json",
+        ase = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.ase_model_joint.json",
         total = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.total_model.nc",
         gene_list = get_chunk_file,
     output:
@@ -140,7 +138,7 @@ rule run_buffering_model:
     resources:
         mem_mb = 16_000,
     shell:
-        "python scripts/run_buffering_model.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list} --ase_part1 {input.ase_part1} --ase_part2 {input.ase_part2} --total {input.total}"
+        "python scripts/run_buffering_model.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list} --ase {input.ase} --total {input.total}"
 
 rule collect_buffering_results:
     input:

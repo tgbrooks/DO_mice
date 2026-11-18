@@ -11,8 +11,13 @@ class GeneError:
 
 
 def save_results(results: dict, path: str):
-    """Write {gene_id: InferenceData | GeneError} to one file, one group per gene."""
-    mode = "w"
+    """Write {gene_id: InferenceData | GeneError} to one file, one group per gene.
+
+    The file is always created, even with no results (e.g. every gene of a chunk was
+    skipped), so that pipeline outputs exist.
+    """
+    xr.Dataset().to_netcdf(path, mode="w", engine="h5netcdf")
+    mode = "a"
     for gene_id, obj in results.items():
         if isinstance(obj, GeneError):
             xr.Dataset(
