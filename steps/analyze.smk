@@ -30,7 +30,7 @@ rule compute_size_factors:
         outfile = "processed/{tissue}/size_factors.txt",
         out_normfile = "processed/{tissue}/normalization_factors.txt",
     resources:
-        mem_mb = 12_000
+        mem_mb = 24_000
     container:
         "images/rgeneral.sif"
     shell:
@@ -136,7 +136,7 @@ rule run_buffering_model:
     output:
         outfile = "processed/{tissue}/buffering/{chromosome}.{chunk_num}.results.parquet"
     resources:
-        mem_mb = 16_000,
+        mem_mb = 24_000,
     shell:
         "python scripts/run_buffering_model.py --tissue {wildcards.tissue} --outfile {output} --gene_ids_file {input.gene_list} --ase {input.ase} --total {input.total}"
 

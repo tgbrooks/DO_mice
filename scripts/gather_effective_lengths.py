@@ -9,7 +9,7 @@ import polars_bio as pb
 import pathlib
 
 tissue = "Adipose"
-tissue = snakemake.wildcards.tissue
+tissue = snakemake.wildcards.tissue_real
 
 geno = (
     pl.scan_parquet("processed/genotypes.parquet")
