@@ -104,7 +104,7 @@ if GENOTYPED is None:
 
 def selected_mice(tissue: str) -> list[str]:
     """The mice to process for one tissue, capped at config['max_samples']."""
-    mice = sorted({m for (t, m) in MOUSE_RUNS if t == tissue})
+    mice = sorted({m for (t, m) in MOUSE_RUNS if t == tissue and is_paired(tissue, m)})
     if GENOTYPED is not None:
         without_geno = [m for m in mice if m not in GENOTYPED]
         if without_geno:
