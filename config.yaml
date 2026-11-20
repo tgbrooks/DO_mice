@@ -18,7 +18,14 @@ MIN_MEDIAN_COUNTS: 50
 
 # Mouse IDs of outlier / problematic mice (e.g., likely sample swap)
 outlier_ids: 
-  Adipose: ["DO048", "DO122", "DO267", "DO100", "DO191", "DO158", "DO237", "DO098"]
+  Adipose: [
+    # High incompatible reads - possible  genotyping mistake or sample swap
+   "DO048",  "DO100", "DO122", "DO267",  "DO473", "DO310", "DO309", "DO407", "DO308", "DO467", "DO514", "DO556", "DO322", "DO098",
+    # Expression outlier
+    "DO345", "DO191", "DO158", "DO237", 
+    # Genotyping outlier
+    "DO401", "DO113", "DO085",
+  ]
   Liver: [
     # Expression outliers on PCA
     "DO098", "DO060", "DO094", "DO036", "DO276",
