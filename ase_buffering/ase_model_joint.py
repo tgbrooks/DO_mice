@@ -4,11 +4,16 @@ Joint allele-specific expression (ASE) model, one pass.
 Same read-class layer (q) and count likelihood as stage 1 of the two-stage model, but
 each het mouse's allelic log-ratio is tied to the haplotype effects directly:
 
-    eta_j  = sign_j * delta[pair_j] + offset_j + u_j
+    eta_j  = sign_j * delta[pair_j] + u_j    (expression log-ratio, hap1 vs hap2)
+    p_j    = sigmoid(eta_j + offset_j)       (hap1's share of the reads)
     delta  = Bm beta + gamma                 (one delta per unordered haplotype pair)
     beta   ~ ZeroSumNormal(sigma_beta)       (the effects we care about)
     gamma  = sigma_gamma * G z_gamma,  z_gamma ~ N(0, I)   (non-additive pair effects)
     u_j    = sigma_u * z_j,            z_j     ~ N(0, 1)   (per-mouse deviation)
+
+eta is the biological allelic imbalance, at the level of transcripts. offset_j is the
+log ratio of the two haplotypes' effective lengths (log_eff_ratio), which turns it into
+the imbalance in reads; it is stored in the samples' constant_data.
 
 G is an orthonormal basis of the pair-effect directions orthogonal to the additive
 ones (range of P_G), so gamma never changes beta. gamma and u are non-centered: each
@@ -16,7 +21,7 @@ pair (~7 mice) and each mouse informs its own deviation only weakly relative to 
 scales, which is the regime where non-centering samples well.
 
 The beta posterior (mean and covariance of the draws) is used directly; there is no
-handoff between stages. q, gamma and u are for QC only.
+handoff between stages. q, gamma, u and eta are for QC only.
 """
 
 import numpy as np
@@ -71,11 +76,18 @@ def make_joint_model(d: GeneData, config: dict) -> pm.Model:
         z_u = pm.Normal("z_u", dims="het_samples")
         u = pm.Deterministic("u", sigma_u * z_u, dims="het_samples")
 
-        # Homozygotes: p does not enter the likelihood (q[hap1] == q[hap2])
-        eta_het = d.sign[i_het] * delta[d.idx[i_het]] + d.log_eff_ratio[i_het] + u
-        eta = pt.as_tensor(d.log_eff_ratio.astype(float))
-        eta = pt.set_subtensor(eta[i_het], eta_het)
-        p = pm.math.sigmoid(eta)
+        # Biological allelic log-ratio (hap1 vs hap2), without effective-length effects
+        eta_het = pm.Deterministic(
+            "eta", d.sign[i_het] * delta[d.idx[i_het]] + u, dims="het_samples"
+        )
+        log_eff_ratio = pm.Data(
+            "log_eff_ratio", d.log_eff_ratio[i_het].astype(float), dims="het_samples"
+        )
+        # Allelic log-ratio of the reads. Homozygotes: p does not enter the likelihood
+        # (q[hap1] == q[hap2]), so their value is arbitrary.
+        eta_reads = pt.as_tensor(d.log_eff_ratio.astype(float))
+        eta_reads = pt.set_subtensor(eta_reads[i_het], eta_het + log_eff_ratio)
+        p = pm.math.sigmoid(eta_reads)
 
         class_props = p[:, None] * q[d.hap1] + (1 - p)[:, None] * q[d.hap2]
         log_total_reads = pm.Normal(
@@ -124,6 +136,12 @@ def summarize_joint_model(idata) -> dict:
     def mean(var):
         return post[var].mean(("chain", "draw")).values.tolist()
 
+    def sd(var):
+        return post[var].std(("chain", "draw")).values.tolist()
+
+    const = idata.constant_data
+    const = const.to_dataset() if hasattr(const, "to_dataset") else const
+
     return dict(
         beta=beta_draws.mean("s").values.tolist(),
         cov_beta=np.cov(beta_draws.values).tolist(),
@@ -134,6 +152,14 @@ def summarize_joint_model(idata) -> dict:
         gamma=mean("gamma"),
         # Lists rather than a dict so every gene has the same fields (parquet-friendly)
         u=dict(mouse_id=post["u"]["het_samples"].values.tolist(), mean=mean("u")),
+        # Biological allelic log-ratio (hap1 vs hap2 of the sorted diplotype) per het
+        # mouse; eta + log_eff_ratio is the log-ratio in reads
+        eta=dict(
+            mouse_id=post["eta"]["het_samples"].values.tolist(),
+            mean=mean("eta"),
+            sd=sd("eta"),
+            log_eff_ratio=const["log_eff_ratio"].values.tolist(),
+        ),
         q=mean("q"),
         # Per-chain beta means: chains settling on different solutions show up here
         beta_chain_means=post["beta"].mean("draw").values.tolist(),
@@ -150,6 +176,7 @@ def summarize_joint_model(idata) -> dict:
             sigma_u=_convergence(post, "sigma_u"),
             sigma_gamma=_convergence(post, "sigma_gamma"),
             u=_convergence(post, "u"),
+            eta=_convergence(post, "eta"),
             q=_convergence(
                 post,
                 "q",

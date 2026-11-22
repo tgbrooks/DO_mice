@@ -13,10 +13,9 @@ def _():
     import statsmodels.api as sm
     import numpy as np
     import yaml
-    import json
     import scipy.sparse
 
-    return json, lp, mo, np, pb, pl, scipy, yaml
+    return lp, mo, np, pb, pl, scipy, yaml
 
 
 @app.cell
@@ -543,154 +542,22 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    We build two models and compare them to get the buffering rate.
+    We fit two models per gene and compare their haplotype effects $\beta$ (one per founder haplotype, summing to zero, on the natural-log scale).
 
-    ### Binomial model of ASE:
+    **ASE model** (`ase_buffering/ase_model_joint.py`): models the read-class counts of every mouse. For a heterozygous mouse with haplotypes $h_1, h_2$, the expression log-ratio of the two alleles is
+    $$
+    \eta = \beta_{h_1} - \beta_{h_2} + \gamma_{h_1 h_2} + u,
+    $$
+    where $\gamma$ is a non-additive effect of the haplotype pair and $u$ a per-mouse deviation. The share of the reads from $h_1$ is $\mathrm{expit}(\eta + \log(L_{h_1}/L_{h_2}))$, with $L$ the haplotypes' effective lengths, and the class proportions $q$ (how each haplotype's reads spread over the alignment classes) are estimated jointly. Since it compares the alleles within each mouse, covariates and library size cancel out. The posterior mean and covariance of $\beta$ are used.
 
-    First, allele-specific expression is modelled using a binomial GLM.
-    We use a matrix of 7 predictors $X_{binom}$ built by putting a 1 in the column corresponding to the first haplotype
-    and a -1 in the column corresponding to the second haplotype (ignoring all H haplotypes since those are used as the reference).
-    If a sample is homozygous, we drop it.
-    No intercept column is included (50/50 expression is the default).
-    Then the outcome variable is the binomial result `(n_successes, n_failures)` where `n_successes` is the number of reads uniquely mapping to the first haplotype (A) and `n_failures` is the number of reads uniquely mapping to the second haplotype (B).
-
-    ```
-    (hap1_unique, hap2_unique) ~ Binom( expit(X_binom beta_binom), n = hap1_unique + hap2_unique )
-    ```
-
-    ### Negative binomial model of total read counts:
-
-    Next, we use a negative binomial GLM to model the total read counts to a gene (summing over both alleles as well as all allele-ambiguous reads).
-    Here, the predictor matrix $X_{nb}$ is just the dosage of each of 7 haplotypes (again, using H as the reference).
-    Unlike the binomial model, we also include an intercept, covariates (sex and DO wave) as well as a random effect for kinship: since the binomial model always compares within the same mouse, covariates would cancel out.
-    Library size normalization factors are fit by DESeq2 first, which are likewise included only in the negative binomial model.
-
-    ```
-    total_counts ~ NBinom(exp(X_nb beta_nb + covariates))
-    ```
-
-    ### Connecting the models
-
-    Suppose for now that expression is actually simpler: just Poisson with each allele independent.
-    The (unknown) true total reads to a haplotype $i$ is $y_i$ of which $u_i$ are uniquely mapping to that haplotype.
-    We assume:
+    **Total model** (`ase_buffering/total_counts_model.py`): a negative binomial model of the total counts of the gene, with mean
     $$
-    y_i \sim \mbox{Poisson}(\lambda_i) \\
-    u_i \sim \mbox{Binom}(y_i, p)
-    $$
-    Note that we assume $p$, the fraction of reads that are unique, doesn't depend upon the haplotype.
-    Then
-    $$
-    u_i \sim \mbox{Poisson}(p \lambda _i)
-    $$
-    and the conditional distribution fo the unique reads is:
-    $$
-    u_i | u_1 + u_2 \sim \mbox{Binom}(u_1 + u_2, \quad \lambda_i/(\lambda_1 + \lambda_2))
-    $$
-    see [Wikipedia](https://en.wikipedia.org/wiki/Poisson_distribution#Sums_of_Poisson-distributed_random_variables:~:text=are%20independent%2C%20then%20the%20distribution%20of).
-    In particular, $\mbox{E}[u_1/(u_1 + u_2)] = \lambda_1 / (\lambda_1 + \lambda_2)$.
-
-    The parameter $\beta_{binom}$ from the binomial GLM with a logistic link comes from:
-    $$
-    \begin{align}
-    \mbox{E}[u_1 / (u_1 + u_2)]
-        &= \mbox{expit}(\beta_{binom, 1} - \beta_{binom, 2}) \\
-        &= \exp (\beta_{binom, 1} - \beta_{binom, 2}) / (\exp(\beta_{binom,1} - \beta_{binom,2}) + 1) \\
-        &= \exp (\beta_{binom, 1}) / (\exp(\beta_{binom,1}) + \exp(\beta_{binom, 2})) \\
-    \end{align}
-    $$
-    By the previous identity, $\exp(\beta_{binom,i}) = \lambda_i$.
-
-    Meanwhile, the negative binomial GLM with log link gives:
-    $$
-    \begin{align}
-    \mbox{E}[y_1 + y_2] &= \exp(\beta_{nb, 1} + \beta_{nb, 2}) \\
-        &\approx \exp(\beta_{nb,1}) + \exp(\beta_{nb, 2})
-    \end{align}
-    $$
-    for relatively small haplotype effects.
-    So $\exp(\beta_{nb,i}) \approx \lambda_i$.
-
-    ### With buffering
-    All this so far assumes no buffering.
-    If instead we have for heterozygous:
-    $$
-    y_i \sim \mbox{Poisson}(\lambda_i (\lambda_*/ (\lambda_1 + \lambda_2))^{1-bf})
-    $$
-    and for homozygous:
-    $$
-    y_i \sim \mbox{Poisson}(\lambda_i (\lambda_*/ (2\lambda_i))^{1-bf}).
-    $$
-    where $\lambda_*$ is the 'target' mean and $bf$ is a buffering-factor:
-    $bf$ of 0 corresponds to the total expression $\lambda_1 + \lambda_2$ being shrunk completely towards $\lambda_*$ and $bf=1$ corresponds to no buffering.
-
-    Nothing changes in the binomial model since the ratio $\mbox{E}[u_1/(u_1+u_2)]$ is unchanged.
-
-    However, in the negative binomial model, we now have for heterozygous
-    $$
-    \begin{align}
-    \mbox{E}[y_1 + y_2]
-        &= (\lambda_1 + \lambda_2) (\lambda_* / (\lambda_1 + \lambda))^{1 - bf} \\
-        &= (\lambda_1 + \lambda_2)^{bf} (\lambda_*)^{1 - bf}
-    \end{align}
-    $$
-    and for homozygous:
-    $$
-    \begin{align}
-    \mbox{E}[y_i]
-        &= 2 \lambda_i (\lambda_* / (2 \lambda_1))^{1 - bf} \\
-        &= (2 \lambda_i)^{bf} (\lambda_*)^{1-bf}
-    \end{align}
-    $$
-    So the NB GLM satisfies:
-    $$
-    \beta_{nb, i} \approx bf \log(\lambda_i)
-    $$
-    with the intercept term absorbing the $\lambda_*^{1-bf}$ part.
-    This approximation again depends upon the assumption that effect sizes are small.
-
-    Now we see that the buffering factor is estimated by the ratio:
-    $$
-    \widehat{bf} \approx \beta_{nb,i} / \beta_{binom, i}.
+    \left(e^{\beta_{h_1}} L_{h_1} + e^{\beta_{h_2}} L_{h_2}\right) \exp(\text{intercept} + \text{sex} + \text{DO wave} + \text{diplotype term}) \cdot \text{size factor}.
     $$
 
-    Since we have 8 founder types, we have 7 estimates and we instead esimate $bf$ by a Deming-like regression of $\beta_{binom, i}$ versus $\beta_{nb,i}$, accounting for the known estimation variance from each model.
+    **Buffering**: without buffering the two models' haplotype effects agree. We fit $\beta_\text{total} = \lambda \beta_\text{ASE}$ by a Deming-type regression that accounts for both models' estimation covariances. $\lambda < 1$ means total expression varies less between haplotypes than their cis effects imply (buffering). Reported: $\lambda$ with a profile confidence interval, a test of $\lambda = 1$ (`chi2_p`), and a goodness-of-fit test of a single $\lambda$ for all haplotypes (`p_gof`).
     """)
     return
-
-
-@app.cell
-def _(TISSUE, pl):
-    buffering_all = pl.read_csv(
-        f"results/{TISSUE}/buffering.txt", separator="\t"
-    )
-    buffering_all
-    return (buffering_all,)
-
-
-@app.cell
-def _(buffering_all, gene_annot, mo, pl):
-    mo.vstack(
-        [
-            "Check how many failed convergence. After this step, we exclude those from our analysis.",
-            buffering_all.select(
-                frac_binom_failed=(
-                    pl.col("convergence_code_binom") != 0
-                ).mean(),
-                frac_buffering_failed=(
-                    pl.col("convergence_code_total") != 0
-                ).mean(),
-            ),
-        ]
-    )
-    buffering = buffering_all.filter(
-        pl.col("convergence_code_binom") == 0,
-        pl.col("convergence_code_total") == 0,
-    ).join(
-        gene_annot.select("gene_id", "gene_name", "gene_biotype"),
-        "gene_id",
-    )
-    return (buffering,)
 
 
 @app.cell
@@ -715,223 +582,27 @@ def _(np):
 
 
 @app.cell
-def _(buffering, good_genes5, lp, moving_median, np, pl):
-    _dat = buffering.filter(
-        pl.col('gene_id').is_in(good_genes5),
-    ).with_columns(
-        -pl.col("anova_binom_p").log10().alias("-log10_anova_binom_p")
-    )
-
-    _eval_pts = np.linspace(_dat['-log10_anova_binom_p'].min(), _dat['-log10_anova_binom_p'].max(), 100)
-    _mm = moving_median(
-        _dat['-log10_anova_binom_p'],
-        _dat['buffering_factor'],
-        (_eval_pts),
-        sd=3
-    )
-    (
-        lp.ggplot(
-            _dat,
-            lp.aes("-log10_anova_binom_p", "buffering_factor")
-        )
-        + lp.geom_pointdensity(
-            tooltips=lp.layer_tooltips(
-                ["gene_id", "gene_name", "gene_biotype"]
-            ),
-            show_legend=False,
-        )
-        + lp.geom_line(
-            lp.aes("x", "y"),
-            data = pl.DataFrame({"x":_eval_pts, "y": _mm}),
-            color="red",
-        )
-        + lp.ggmarginal(sides="tr", layer=lp.geom_density())
-        + lp.scale_color_viridis(option="magma")
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def _(buffering, good_genes5, lp, mo, np, pl):
-    _data = buffering.filter(
-        pl.col("gene_id").is_in(good_genes5),
-        pl.col("anova_binom_p") < 1e-25, # highly significant
-    ).with_columns(
-        pl.col("buffering_factor").cut(np.linspace(-0.5,1.5,31), include_breaks=True),
-    ).with_columns(
-        buffering_factor = pl.col("buffering_factor").struct.field("breakpoint"),
-        is_significant = pl.col("buffering_factor_ci_hi") < 1.0,
-    ).group_by(
-        ["buffering_factor", "is_significant"]
-    ).agg(
-        num_genes = pl.len(),
-    )
+def _(TISSUE, mo, pl):
+    buffering_all2 = pl.read_parquet(f"results/{TISSUE}/buffering_full_results.parquet")
+    _errors = buffering_all2.filter(pl.col("error") != "none")
     mo.vstack([
-        "Buffering factors in genes that are *highly* significant for having a genotype effect on allele-specific expression.",
-        lp.ggplot(
-            _data,
-            lp.aes("buffering_factor", "num_genes", fill="is_significant")
-        ) + lp.geom_bar(stat="identity")
+        f"{_errors.height} of {buffering_all2.height} genes failed:",
+        _errors.group_by(reason=pl.col("error").str.slice(0, 80)).len().sort("len", descending=True),
     ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(buffering, good_genes5, lp, mo, np, pl):
-    _data1 = buffering.filter(
-        pl.col("gene_id").is_in(good_genes5),
-        pl.col("anova_binom_p") < 1e-25, # highly significant
-    )
-    _data2 = _data1.with_columns(
-        pl.col("binom_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
-    ).with_columns(
-        binom_p_gof = pl.col("binom_p_gof").struct.field("breakpoint"),
-    ).group_by(
-        "binom_p_gof"
-    ).agg(
-        num_genes = pl.len()
-    )
-    mo.vstack([
-        "Checking the goodness of fit tests for the ASE (binomial) models: testing whether haplotypes are consistent in ASE.",
-        lp.gggrid([
-            lp.ggplot(
-                _data2,
-                lp.aes("binom_p_gof", "num_genes"),
-            ) + lp.geom_bar(stat="identity")
-            + lp.scale_x_log10(),
-            lp.ggplot(
-                _data1.sort("binom_p_gof").with_columns(
-                    binom_p_gof = -pl.col('binom_p_gof').log10(),
-                    theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
-                ),
-                lp.aes(x="theoretical_p", y="binom_p_gof"),
-            )
-            + lp.geom_point()
-            + lp.geom_abline(intercept=0, slope=1, color='red')
-            + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
-        ]) + lp.ggsize(900, 400)
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(buffering, good_genes5, lp, mo, np, pl):
-    _data1 = buffering.filter(
-        pl.col("gene_id").is_in(good_genes5),
-        pl.col("anova_binom_p") < 1e-25, # highly significant
-    )
-    _data2 = _data1.with_columns(
-        pl.col("deming_p_gof").cut(np.geomspace(1e-10,1,31), include_breaks=True)
-    ).with_columns(
-        deming_p_gof = pl.col("deming_p_gof").struct.field("breakpoint"),
-    ).group_by(
-        "deming_p_gof"
-    ).agg(
-        num_genes = pl.len()
-    )
-    mo.vstack([
-        "Checking the goodness of fit tests for the deming models: testing whether there is a shared buffering factor common to all haplotypes.",
-        lp.gggrid([
-            lp.ggplot(
-                _data2,
-                lp.aes("deming_p_gof", "num_genes"),
-            ) + lp.geom_bar(stat="identity")
-            + lp.scale_x_log10(),
-            lp.ggplot(
-                _data1.sort("deming_p_gof").with_columns(
-                    deming_p_gof = -pl.col('deming_p_gof').log10(),
-                    theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
-                ),
-                lp.aes(x="theoretical_p", y="deming_p_gof"),
-            )
-            + lp.geom_point()
-            + lp.geom_abline(intercept=0, slope=1, color='red')
-            + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
-        ]) + lp.ggsize(900, 400)
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    # Bias model results
-    """)
-    return
-
-
-@app.cell
-def _(HAPLOTYPES, TISSUE, json, np):
-    def _():
-        error_genes = []
-        out = []
-        eta_out = []
-        beta_covs_out = {}
-        with open(f"results/{TISSUE}/buffering_with_bias.ndjson") as f:
-            def get(field_str):
-                entries = field_str.split(".")
-                temp = record
-                for entry in entries:
-                    temp = temp[entry]
-                return temp
-            def sd(mat):
-                return np.sqrt(np.diag(np.array(mat))).tolist()
-            #for line, i  in zip(f, range(500)):
-            for line in f:
-                record = json.loads(line.strip())
-                if record.get('error', 'error') != 'none':
-                    error_genes.append(record)
-                    continue
-
-                gene_id = get('gene_id')
-                out.append({
-                    "gene_id": gene_id,
-                    'ase_model': {
-                        'beta': get("ase_model.beta"),
-                        'gamma': get("ase_model.gamma"),
-                        'delta': get("ase_model.delta"),
-                        'beta_se': sd(get("ase_model.cov.cov_beta")),
-                        'gamma_se': sd(get("ase_model.cov.cov_gamma")),
-                        'delta_se': sd(get("ase_model.cov.cov_delta")),
-                        "sigma_u": get("ase_model.stage2_info.sigma_u"),
-                        "sigma_gamma": get("ase_model.stage2_info.sigma_gamma"),
-                        "pymc_info": get("ase_model.pymc_info"),
-                        "stage2_converged": get("ase_model.stage2_info.converged"),
-                    },
-                    "total_model": {
-                        "beta": [get(f"total_model.beta.beta[{hap}].mean") for hap in HAPLOTYPES],
-                        "beta_se": [get(f"total_model.beta.beta[{hap}].sd") for hap in HAPLOTYPES],
-                        "diagnostic": get("total_model.diagnostic"),
-                        "info": get("total_model.info"),
-                        "log_disp": get("total_model.core.log_disp.mean"),
-                        "log_disp_se": get("total_model.core.log_disp.sd"),
-                    },
-                    'buffering':  get("buffering"),
-                    'runtime': get("runtime"),
-                })
-
-                eta_out.append({
-                    "gene_id": gene_id,
-                    "eta": [x['mean'] for x in get("ase_model.eta").values()],
-                    "eta_se": [x['sd'] for x in get("ase_model.eta").values()],
-                    "mouse_id": [x.removeprefix("eta[").removesuffix("]") for x in get("ase_model.eta").keys()]
-                })
-                beta_covs_out[gene_id] = get("ase_model.cov.cov_beta")
-        print(f"Skipped {len(error_genes)} genes with errors")
-        return out, eta_out, beta_covs_out
-    buffering_with_bias_objs, eta_objs, beta_covs = _()
-    return buffering_with_bias_objs, eta_objs
-
-
-@app.cell
-def _(buffering_with_bias_objs, pl):
-    buffering_all2 = pl.DataFrame(buffering_with_bias_objs)
     return (buffering_all2,)
 
 
 @app.cell
-def _(eta_objs, pl):
-    etas = pl.DataFrame(eta_objs).explode(['eta', 'eta_se', 'mouse_id'])
+def _(buffering_all2, pl):
+    # Per-mouse biological allelic log-ratio (hap1 vs hap2 of the sorted diplotype) from
+    # the ASE model; eta + log_eff_ratio is the log-ratio in reads
+    etas = (
+        buffering_all2.filter(pl.col("error") == "none")
+        .select("gene_id", eta=pl.col("ase_model").struct.field("eta"))
+        .unnest("eta")
+        .explode(["mouse_id", "mean", "sd", "log_eff_ratio"])
+        .rename({"mean": "eta", "sd": "eta_se"})
+    )
     return (etas,)
 
 
@@ -949,32 +620,39 @@ def _(pl):
 
 @app.cell
 def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
+    # ASE fits with a few divergences are kept: they come from a handful of draws at
+    # large sigma_gamma and barely affect beta (see the simulation checks)
+    _MAX_ASE_DIVERGENCES = 10
     buffering2 = (
         buffering_all2
+        .filter(pl.col("error") == "none")
         .select(
             "gene_id",
-            buffering_factor = pl.col("buffering").struct.field("lambda"),
-            buffering_factor_p = pl.col("buffering").struct.field("chi2_p"),
-            buffering_factor_chi2 = pl.col("buffering").struct.field("chi2"),
-            buffering_factor_ci_lo = pl.col("buffering").struct.field("lo"),
-            buffering_factor_ci_hi = pl.col("buffering").struct.field("hi"),
-            deming_Q = pl.col("buffering").struct.field("Q"),
-            deming_p_gof = pl.col("buffering").struct.field("p_gof"),
-            **{f"effect_{hap}": extract_field(f"ase_model.beta").list.get(i)
+            buffering_factor = extract_field("buffering.lambda"),
+            buffering_factor_p = extract_field("buffering.chi2_p"),
+            buffering_factor_chi2 = extract_field("buffering.chi2"),
+            buffering_factor_ci_lo = extract_field("buffering.lo"),
+            buffering_factor_ci_hi = extract_field("buffering.hi"),
+            buffering_factor_ci_bounded = extract_field("buffering.bounded"),
+            deming_Q = extract_field("buffering.Q"),
+            deming_p_gof = extract_field("buffering.p_gof"),
+            **{f"effect_{hap}": extract_field("ase_model.beta").list.get(i)
                for i, hap in enumerate(HAPLOTYPES)},
-            **{f"effect_{hap}_se": extract_field(f"ase_model.beta_se").list.get(i)
+            **{f"effect_{hap}_se": extract_field("ase_model.cov_beta").list.get(i).list.get(i).sqrt()
                for i, hap in enumerate(HAPLOTYPES)},
-            **{f"total_{hap}": extract_field(f"total_model.beta").list.get(i)
-               for i, hap in enumerate(HAPLOTYPES)},
-            **{f"total_{hap}_se": extract_field(f"total_model.beta_se").list.get(i)
-               for i, hap in enumerate(HAPLOTYPES)},
+            **{f"total_{hap}": extract_field(f"total_model.beta.beta[{hap}].mean")
+               for hap in HAPLOTYPES},
+            **{f"total_{hap}_se": extract_field(f"total_model.beta.beta[{hap}].sd")
+               for hap in HAPLOTYPES},
             sigma_u = extract_field("ase_model.sigma_u"),
             sigma_gamma = extract_field("ase_model.sigma_gamma"),
-            ase_median_rhat_eta = extract_field("ase_model.pymc_info.median_rhat_eta"),
-            ase_min_ess_bulk_eta = extract_field("ase_model.pymc_info.min_ess_bulk_eta"),
-            ase_min_ess_tail_eta = extract_field("ase_model.pymc_info.min_ess_tail_eta"),
-            ase_n_diverging_chains = extract_field("ase_model.pymc_info.n_diverging_chains"),
-            ase_stage2_converged = extract_field("ase_model.stage2_converged"),
+            ase_n_het = extract_field("ase_model.diagnostics.n_het"),
+            ase_n_divergences = extract_field("ase_model.diagnostics.n_divergences"),
+            ase_max_rhat_beta = extract_field("ase_model.diagnostics.beta.max_rhat"),
+            ase_min_ess_bulk_beta = extract_field("ase_model.diagnostics.beta.min_ess_bulk"),
+            ase_min_ess_tail_beta = extract_field("ase_model.diagnostics.beta.min_ess_tail"),
+            ase_max_rhat_q = extract_field("ase_model.diagnostics.q.max_rhat"),
+            ase_runtime = extract_field("ase_model.runtime"),
             total_n_diverging = extract_field("total_model.info.n_diverging"),
             total_max_rhat_beta = extract_field("total_model.diagnostic.max_rhat_beta"),
             total_max_rhat_core = extract_field("total_model.diagnostic.max_rhat_core"),
@@ -985,15 +663,14 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
             total_min_ess_tail_beta = extract_field("total_model.diagnostic.min_ess_tail_beta"),
             total_min_ess_tail_core = extract_field("total_model.diagnostic.min_ess_tail_core"),
             total_min_ess_tail_rest = extract_field("total_model.diagnostic.min_ess_tail_rest"),
-            total_log_disp = extract_field("total_model.log_disp"),
-            total_log_disp_se = extract_field("total_model.log_disp_se"),
+            total_log_disp = extract_field("total_model.core.log_disp.mean"),
+            total_log_disp_se = extract_field("total_model.core.log_disp.sd"),
         ).with_columns(
             ase_success = (
-                (pl.col("ase_n_diverging_chains") == 0)
-                & (pl.col("ase_median_rhat_eta") < 1.01)
-                & (pl.col("ase_min_ess_bulk_eta") > 400)
-                & (pl.col("ase_min_ess_tail_eta") > 400)
-                & (pl.col('ase_stage2_converged'))
+                (pl.col("ase_n_divergences") <= _MAX_ASE_DIVERGENCES)
+                & (pl.col("ase_max_rhat_beta") < 1.01)
+                & (pl.col("ase_min_ess_bulk_beta") > 400)
+                & (pl.col("ase_min_ess_tail_beta") > 400)
             ),
             total_success = (
                 (pl.col("total_n_diverging") == 0)
@@ -1037,8 +714,9 @@ def _(HAPLOTYPES, buffering2, good_genes5, lp, moving_median, np, pl):
         pl.col("sigma_gamma") < 0.25,
         #pl.col("deming_p_gof") > 0.0001,
     ).with_columns(
+        # strongest haplotype effect, in either direction
         log_ase_zscore = pl.max_horizontal([
-            (pl.col(f'effect_{h}') / pl.col(f'effect_{h}_se')).log()
+            (pl.col(f'effect_{h}') / pl.col(f'effect_{h}_se')).abs().log()
             for h in HAPLOTYPES
         ])
     ).drop_nans("log_ase_zscore")
@@ -1094,8 +772,19 @@ def _(buffering2, gene_annot, good_genes5, lp, mo, pl):
             + lp.geom_point(tooltips=lp.layer_tooltips(["gene_id", 'gene_name']))
             + lp.geom_abline(intercept=0, slope=1, color='red')
             + lp.labs(x="-log10(theoretical p)", y="-log10(chi2 p)")
-            + lp.ggtitle("QQ plot of p-value for non-1 buffering factor.")
-        ]) + lp.ggsize(500, 400)
+            + lp.ggtitle("Test of buffering factor = 1"),
+            lp.ggplot(
+                _data1.sort("deming_p_gof").with_columns(
+                    deming_p_gof = -pl.col('deming_p_gof').log10(),
+                    theoretical_p = -((pl.row_index()+0.5) / pl.len()).log10(),
+                ),
+                lp.aes(x="theoretical_p", y="deming_p_gof"),
+            )
+            + lp.geom_point(tooltips=lp.layer_tooltips(["gene_id", 'gene_name']))
+            + lp.geom_abline(intercept=0, slope=1, color='red')
+            + lp.labs(x="-log10(theoretical p)", y="-log10(GOF p)")
+            + lp.ggtitle("Goodness of fit: one buffering factor for all haplotypes"),
+        ]) + lp.ggsize(1000, 400)
     ])
     return
 
@@ -1386,54 +1075,6 @@ def _(buffering2, gene_selector, mo):
     return
 
 
-@app.cell(hide_code=True)
-def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering, gene_selector, lp, mo, pl):
-    def _():
-        data = buffering.filter(gene_id = gene_selector.value)
-        buff_factor = data['buffering_factor'][0]
-        df = pl.DataFrame(dict(
-            hap = [hap for hap in HAPLOTYPES if hap != "H"],
-            x = data[[f'effect_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0], # H is refernece, always 0
-            x_se = data[[f'effect_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
-            y = data[[f'total_{hap}' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
-            y_se = data[[f'total_{hap}_se' for hap in HAPLOTYPES if hap != 'H']].to_numpy()[0],
-        )).with_columns(
-            x_min = pl.col("x") - 1.96*pl.col("x_se"),
-            x_max = pl.col("x") + 1.96*pl.col("x_se"),
-            y_min = pl.col("y") - 1.96*pl.col("y_se"),
-            y_max = pl.col("y") + 1.96*pl.col("y_se"),
-        )
-        xmin, xmax = min(df['x_min']), max(df['x_max'])
-        ymin, ymax = min(df['y_min']), max(df['y_max'])
-        lims = min(ymin,xmin), max(xmax, ymax)
-        return (
-            lp.ggplot(df, lp.aes("x", "y", color="hap"))
-            + lp.geom_point(
-                tooltips=lp.layer_tooltips(["hap"])
-            )
-            + lp.geom_errorbar(lp.aes(xmin="x_min", xmax="x_max"))
-            + lp.geom_errorbar(lp.aes(ymin="y_min", ymax="y_max"))
-            + lp.geom_point(data={"x": [0], "y": [0]}, mapping=lp.aes("x", "y"), alpha = 0, color="black") #ensure 0,0 is in view
-            + lp.labs(x="beta (ASE, binomial GLM)", y="beta (total counts, NB GLM)")
-            + lp.scale_color_manual(
-                values=HAPLOTYPE_COLORS,
-                breaks=HAPLOTYPES,
-            )
-            + lp.geom_abline(slope=buff_factor, intercept=0, color="red", linetype=2)
-            + lp.geom_abline(slope=1, intercept=0, color="black", linetype=2)
-            + lp.coord_fixed()
-            + lp.xlim(*lims)
-            + lp.ylim(*lims)
-            + lp.ggtb()
-            + lp.ggtitle("Estimated effects by model type")
-        )
-    mo.vstack([
-        "Plot the ASE (binomial) model fit parameters versus the total counts (NB GLM) fit parameters. In dash red, the buffering fit line and in black the reference diagonal line. Note that the buffering fit line takes into account covariance of the estimate, which is typically substantial and means that the fit may not line between the points (it's intercept is always 0).",
-        _(),
-    ])
-    return
-
-
 @app.cell
 def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
     def _():
@@ -1483,7 +1124,7 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
             + lp.ggtitle("Estimated effects by model type")
         )
     mo.vstack([
-        "BUFFERING BIAS MODEL: Plot the ASE model fit parameters versus the total counts fit parameters.",
+        "Haplotype effects from the ASE model versus the total-count model, with 95% intervals. Dashed: the fitted buffering line; dotted: no buffering. The fit accounts for the (often substantial) covariance between haplotypes' estimates, so it need not pass through the points; its intercept is always 0.",
         _(),
     ])
     return
@@ -1534,7 +1175,8 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, pl):
             + lp.geom_errorbar(lp.aes(ymin="eta_lo", ymax="eta_hi"), position=lp.position_dodge(width=0.7), alpha=0.4)
             + lp.geom_point(position=lp.position_dodge(width=0.7), tooltips=lp.layer_tooltips(["mouse_id", "genotype"]))
             + lp.geom_crossbar(lp.aes(y="beta_fit"), color="red")
-            + lp.labs(y="eta")
+            + lp.labs(y="eta (expression log-ratio, hap1 vs hap2)")
+            + lp.ggtitle("Per-mouse ASE (points, 95% intervals) and the haplotype-effect fit beta1 - beta2 (red)")
             + lp.ggsize(800, 400)
         )
         #return gene_etas
