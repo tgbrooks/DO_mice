@@ -120,12 +120,6 @@ def selected_mice(tissue: str) -> list[str]:
     return mice
 
 
-MICE = {t: selected_mice(t) for t in TISSUES}
-# Genotypes are per mouse and shared by every tissue that mouse appears in.
-ALL_MICE = sorted({m for mice in MICE.values() for m in mice})
-MICE['simulated_reads'] = HAP_LIST # Add in the simulated 'mice'
-
-
 def is_paired(tissue: str, mouse: str) -> bool:
     """True if a mouse's runs are paired-end. Errors on a mix of layouts."""
     if tissue not in TISSUES:
@@ -139,6 +133,12 @@ def is_paired(tissue: str, mouse: str) -> bool:
             "mice or drop the odd runs from the sample table."
         )
     return layouts.pop()
+
+
+MICE = {t: selected_mice(t) for t in TISSUES}
+# Genotypes are per mouse and shared by every tissue that mouse appears in.
+ALL_MICE = sorted({m for mice in MICE.values() for m in mice})
+MICE['simulated_reads'] = HAP_LIST # Add in the simulated 'mice'
 
 
 def read_ends(tissue: str, mouse: str) -> list[str]:

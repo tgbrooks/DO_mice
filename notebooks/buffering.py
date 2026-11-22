@@ -58,12 +58,6 @@ def _(TISSUE, pl):
 
 
 @app.cell
-def _(genotypes):
-    mouse_ids = sorted(genotypes["mouse_id"].unique())
-    return (mouse_ids,)
-
-
-@app.cell
 def _(lp, yaml):
     config = yaml.load(open("config.yaml"), Loader=yaml.Loader)
     HAPLOTYPES = config["haplotypes"].split(",")
@@ -116,6 +110,12 @@ def _(HAPLOTYPES, pl):
         return pl.col(col).is_in([f"{x}{x}" for x in HAPLOTYPES])
 
     return
+
+
+@app.cell
+def _(allele_unique):
+    mouse_ids = sorted(allele_unique["mouse_id"].unique())
+    return (mouse_ids,)
 
 
 @app.cell
@@ -528,6 +528,42 @@ def _(genotypes, lp, mo, pl):
                 + lp.labs(x = "number samples failing", y="fraction of genes")
         )
     ])
+    return
+
+
+@app.cell
+def _(OUTLIER_MOUSE_IDS, allele_unique, gene_annot, mo, pl):
+    # Check for tissue consistency
+    # If all from the same tissue, then we expect the top expressed genes to be consistently high
+    top_expr_genes = (
+        allele_unique
+            .group_by("gene_id")
+            .agg(med_expr = pl.col('total_reads').median())
+            .sort("med_expr", descending=True)
+            .head(5)
+            .join(gene_annot.select('gene_id', 'gene_name'), 'gene_id')
+            .join(
+                allele_unique
+                    .filter(pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS).not_())
+                    .group_by("gene_id")
+                    .agg(
+                        min_expr = pl.col('total_reads').min(),
+                        max_expr = pl.col('total_reads').max(),
+                    ),
+                "gene_id",
+            )
+    )
+    mo.vstack([
+        "Check for consistency in which genes are high expressed to assess if all samples were from the same tissue."
+        "Take top 5 genes by median expression and check if minimum expression across all samples is also high."
+        "If not, that would indicate a likely sample swap.",
+        top_expr_genes
+    ])
+    return
+
+
+@app.cell
+def _():
     return
 
 
