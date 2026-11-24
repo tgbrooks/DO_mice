@@ -1,5 +1,6 @@
 SIM_REF_TISSUE = "Adipose"
 SIM_MOUSE_IDS = [mouse for mouse in MICE[SIM_REF_TISSUE] if mouse not in config['outlier_ids'][SIM_REF_TISSUE]]
+MICE['simulated_classes'] = SIM_MOUSE_IDS
 rule simulate_classes:
     """ Create compressed.h5 class-level read counts for samples """
     input:
