@@ -8,15 +8,6 @@ def main(args):
     import util.compat_classes
     from util.compressed_emase import load_compressed_emase
 
-    gene_annot = (
-        pb.scan_gtf(
-            args.gtf,
-            attr_fields=["gene_id", "gene_name", "gene_biotype"],
-        )
-        .filter(pl.col("type") == "gene")
-        .collect()
-    )
-
     tx_annot = (
         pb.scan_gtf(
             args.gtf,

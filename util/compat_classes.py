@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import polars as pl
 import scipy.sparse
 import numpy as np
-import util.summarize_count_types
+from util.compressed_emase import Emase
 
 
 @dataclass
@@ -133,14 +133,20 @@ def get_gene_totals(
     )
 
 
-def get_all_gene_class_counts(tx_annot, all_compatibility_classes) -> pl.DataFrame:
+def get_all_gene_class_counts(
+    tx_annot: pl.DataFrame, all_compatibility_classes: dict[str, Emase]
+) -> pl.DataFrame:
     """
     Get class counts for all genes at once as a polars DataFrame with columns:
     gene_id, count (n_classes x n_samples), compat (n_haps x n_classes), mouse_ids (n_samples)
+
+    params:
+        tx_annot: polars DataFrame with gene_id and transcript_id columns
+        all_compatibility_classes: dictionary mapping mouse ids to Emase
     """
 
     _haps = pl.Enum(list("ABCDEFGH"))
-    mouse_ids = list(all_compatibility_classes.keys())
+    mouse_ids = list(sorted(all_compatibility_classes.keys()))
     _mouse_ids = pl.Enum(mouse_ids)
     mouse_ids_df = pl.DataFrame({"mouse_id": mouse_ids}).select(
         pl.col("mouse_id").cast(_mouse_ids)
@@ -181,22 +187,37 @@ def get_all_gene_class_counts(tx_annot, all_compatibility_classes) -> pl.DataFra
             pl.concat(mouse_data)
             .group_by("transcript_id", "class_num", "count")
             .agg(hap_list="haplotype")
-        )
+        ).join(tx_to_gene, "transcript_id")
         # combine transcripts and classes that are the same for this gene
-        mouse_gene_df = (
-            mouse_df.join(tx_to_gene, "transcript_id")
-            .group_by(
-                "gene_id",
-                "hap_list",
+        mouse_gene_df = mouse_df.group_by(
+            "gene_id",
+            "hap_list",
+        ).agg(
+            pl.col("count").sum(),
+        )
+        # Record gene-level multimapping
+        multimap = (
+            mouse_df.join_where(
+                mouse_df,
+                pl.col("gene_id") != pl.col("gene_id_right"),
+                pl.col("class_num") == pl.col("class_num_right"),
             )
-            .agg(
-                pl.col("count").sum(),
-            )
+            .group_by("gene_id", "gene_id_right", "hap_list")
+            .agg(pl.col("count").sum())
+        )
+        mg = mouse_gene_df.join(
+            multimap.group_by("gene_id", "hap_list").agg(
+                pl.col("gene_id_right").alias("multimapping_gene_ids"),
+                pl.col("count").alias("multimapping_counts"),
+            ),
+            ["gene_id", "hap_list"],
+            how="left",
+        ).with_columns(
+            pl.col("multimapping_gene_ids").fill_null([]),
+            pl.col("multimapping_counts").fill_null([]),
         )
         data.append(
-            mouse_gene_df.with_columns(
-                pl.lit(mouse_id).alias("mouse_id").cast(_mouse_ids)
-            )
+            mg.with_columns(pl.lit(mouse_id).alias("mouse_id").cast(_mouse_ids))
         )
     gene_df = pl.concat(data)
 
@@ -226,17 +247,60 @@ def get_all_gene_class_counts(tx_annot, all_compatibility_classes) -> pl.DataFra
                 mouse_ids=pl.col("mouse_id"),
             )
         )
+        mm_grid = grid.join(
+            data.explode("multimapping_gene_ids", empty_as_null=False)
+            .select("multimapping_gene_ids")
+            .unique(),
+            how="cross",
+            maintain_order="left",
+        )
+        _multimap = (
+            data.explode(
+                "multimapping_gene_ids",
+                "multimapping_counts",
+                empty_as_null=False,
+            )
+            .join(
+                mm_grid,
+                ["mouse_id", "hap_list", "multimapping_gene_ids"],
+                maintain_order="right",
+                how="right",
+            )
+            .group_by(
+                "hap_list", "mouse_id", "multimapping_gene_ids", maintain_order=True
+            )
+            .agg(count=pl.col("multimapping_counts").sum())
+            .rename({"multimapping_gene_ids": "multimapping_gene_id"})
+            .group_by(
+                "hap_list",
+                "multimapping_gene_id",
+            )
+            .agg(
+                counts=pl.col("count"),
+                # mouse_id=pl.col("mouse_id"),
+            )
+            .group_by("hap_list")
+            .agg(
+                multimapping_counts=pl.struct(
+                    pl.col("multimapping_gene_id"),
+                    pl.col("counts"),
+                    # pl.col("mouse_id"),
+                ).implode()
+            )
+        )
+        _df2 = _df.join(_multimap, "hap_list")
         # Check consistency
         for _ids in _df["mouse_ids"]:
             assert (_ids == mouse_ids_df["mouse_id"]).all()
         temp.append(
-            _df.select(
+            _df2.select(
                 pl.lit(gene_id).alias("gene_id"),
                 pl.col("mouse_ids").first(),
                 pl.col("count").implode(),
                 compat=pl.concat_list(
                     [pl.lit(h).is_in(pl.col("hap_list")) for h in "ABCDEFGH"]
                 ).implode(),
+                multimapping_counts=pl.col("multimapping_counts").implode(),
             )
         )
     by_gene = pl.concat(temp)

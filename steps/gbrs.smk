@@ -410,6 +410,6 @@ rule gather_class_counts:
     params:
         outlier_ids = lambda w: ','.join(config['outlier_ids'][w.tissue]),
     resources:
-        mem_mb = 24_000
+        mem_mb = 36_000
     shell:
         "python scripts/gather_class_counts.py --gtf {input.gtf} --input_dir processed/{wildcards.tissue}/gbrs/ --skip_ids \"{params.outlier_ids}\" --outfile {output}"
