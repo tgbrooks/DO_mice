@@ -412,4 +412,4 @@ rule gather_class_counts:
     resources:
         mem_mb = 24_000
     shell:
-        "python scripts/gather_class_counts.py --gtf {input.gtf} --input_dir processed/{wildcards.tissue}/gbrs/ --skip_ids {params.outlier_ids} --outfile {output}"
+        "python scripts/gather_class_counts.py --gtf {input.gtf} --input_dir processed/{wildcards.tissue}/gbrs/ --skip_ids \"{params.outlier_ids}\" --outfile {output}"
