@@ -50,6 +50,7 @@ def default_targets() -> list[str]:
         targets += [
             #f"results/{tissue}/buffering.txt",
             f"results/{tissue}/buffering_full_results.parquet",
+            f"processed/{tissue}/class_counts.parquet",
             #f"processed/{tissue}/frag_dist.txt",
         ]
         targets += [f"processed/{tissue}/gbrs/{mouse}.compressed.h5" for mouse in mice]
@@ -69,7 +70,8 @@ def default_targets() -> list[str]:
             "processed/genotypes.parquet",
             "geno/kinship/1.txt",
             "processed/simulated_classes/gene_truths.parquet",
-            #"processed/simulated_classes/buffering_tests.txt",
+            "processed/simulated_classes/class_counts.parquet",
+            "processed/simulated_classes/buffering_tests.txt",
             "processed/simulated_counts/report.txt",
             "processed/simulated_reads/source_counts_by_gene.txt",
             "processed/simulated_reads/allele_unique_reads.parquet",

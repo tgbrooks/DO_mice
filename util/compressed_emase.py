@@ -23,7 +23,7 @@ class Emase:
     hname: list[str]  # haplotype names
 
 
-def load_compressed_emase(H5: str, haplotypes: list[str] | None) -> Emase:
+def load_compressed_emase(H5: str, haplotypes: list[str] | None = None) -> Emase:
     with h5py.File(H5, "r") as f:
         count = np.asarray(f["count"])
         shape = pickle.load(io.BytesIO(f["/"].attrs["shape"]))
