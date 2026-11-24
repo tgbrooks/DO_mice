@@ -152,8 +152,7 @@ def summarize_joint_model(idata) -> dict:
         gamma=mean("gamma"),
         # Lists rather than a dict so every gene has the same fields (parquet-friendly)
         u=dict(mouse_id=post["u"]["het_samples"].values.tolist(), mean=mean("u")),
-<<<<<<< Updated upstream
-        # Biological allelic log-ratio (hap1 vs hap2 of the sorted diplotype) per het
+        # Allelic log-ratio (hap1 vs hap2 of the sorted diplotype) per het
         # mouse; eta + log_eff_ratio is the log-ratio in reads
         eta=dict(
             mouse_id=post["eta"]["het_samples"].values.tolist(),
@@ -161,9 +160,6 @@ def summarize_joint_model(idata) -> dict:
             sd=sd("eta"),
             log_eff_ratio=const["log_eff_ratio"].values.tolist(),
         ),
-=======
-        eta=dict(mouse_id=post["eta"]["het_samples"].values.tolist(), mean=mean("eta")),
->>>>>>> Stashed changes
         q=mean("q"),
         # Per-chain beta means: chains settling on different solutions show up here
         beta_chain_means=post["beta"].mean("draw").values.tolist(),
