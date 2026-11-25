@@ -868,6 +868,7 @@ def _(
     size_factors,
 ):
     def _():
+        max_mice_per_group=12
         au = (
             allele_unique.filter(gene_id=gene_selector.value)
             .join(size_factors, "mouse_id")
@@ -879,6 +880,11 @@ def _(
                 norm_hap2=pl.col("haplotype_2_unique") / pl.col("size_factor"),
             ).filter(
                 ~pl.col("mouse_id").is_in(OUTLIER_MOUSE_IDS)
+            )
+            .with_columns(
+                mouse_num = pl.row_index().over("diplotype").mod(max_mice_per_group).cast(int),
+            ).with_columns(
+                mouse_num = (pl.col("mouse_num") - pl.col("mouse_num").max().over("diplotype")//2),
             )
         )
         by_hap_counts = pl.concat(
@@ -931,6 +937,7 @@ def _(
                     "mouse_id",
                     "hap1",
                     "hap2",
+                    "mouse_num",
                     hap = "hap1",
                     norm_hap = "norm_hap1",
                 ),
@@ -938,6 +945,7 @@ def _(
                     "mouse_id",
                     "hap1",
                     "hap2",
+                    "mouse_num",
                     hap = "hap2",
                     norm_hap = "norm_hap2",
                 ),
@@ -945,17 +953,13 @@ def _(
         df2 = pl.concat([df2, df2.with_columns(hap1="hap2", hap2="hap1")])
         plt_uniques = (
             lp.ggplot(df2,
-                lp.aes(x=_hap2, y="norm_hap", color=_hap),
+                lp.aes(x=_hap2, y="norm_hap", color=_hap, group="mouse_num"),
             )
             + lp.facet_wrap("hap1", scales="free_x", nrow=3)
-            #+ lp.geom_boxplot(outlier_size=False)
-            + lp.geom_jitter(
-                height=0, tooltips=lp.layer_tooltips(["mouse_id"])
+            + lp.geom_point(
+                tooltips=lp.layer_tooltips(["mouse_id"]),
+                position=lp.position_dodge(width=0.7),
             )
-            # + lp.geom_hline(
-            #    yintercept = median_expr,
-            #    color="black",
-            # )
             + lp.scale_color_manual(
                 values=HAPLOTYPE_COLORS,
                 breaks=HAPLOTYPES,
@@ -1111,7 +1115,7 @@ def _(buffering2, gene_selector, mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
     def _():
         data = buffering2.filter(gene_id = gene_selector.value)
@@ -1166,7 +1170,7 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, pl):
     # Plot the etas for this gene by genotype
     def _():

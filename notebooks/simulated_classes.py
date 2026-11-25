@@ -138,47 +138,53 @@ def _(pl):
 
 
 @app.cell
-def _(allele_unique, buffering_all2, extract_field, pl, sample_truth):
-    _mouse_ids = sorted(allele_unique['mouse_id'].unique())
-    etas =  buffering_all2.select(
-        "gene_id",
-        eta = extract_field("ase_model.eta").list.eval(pl.element().struct.field("mean")),
-        eta_se = extract_field("ase_model.eta").list.eval(pl.element().struct.field("sd")),
-        mouse_id = extract_field("ase_model.eta").list.eval(pl.element().struct.field("mouse_id")),
-    ).explode(
-        ["eta", "mouse_id", "eta_se"], empty_as_null=False
-    ).join(sample_truth.select('gene_id', 'mouse_id', eta_true='eta'), ['gene_id', 'mouse_id'])
+def _(buffering_all2, pl):
+    # Per-mouse biological allelic log-ratio (hap1 vs hap2 of the sorted diplotype) from the ASE model
+    etas = (
+        buffering_all2.filter(pl.col("error") == "none")
+        .select("gene_id", eta=pl.col("ase_model").struct.field("eta"))
+        .unnest("eta")
+        .explode(["mouse_id", "mean", "sd", "log_eff_ratio"], empty_as_null=False)
+        .rename({"mean": "eta", "sd": "eta_se"})
+    )
     return (etas,)
 
 
 @app.cell
 def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
+    # ASE fits with a few divergences are kept: they come from a handful of draws at
+    # large sigma_gamma and barely affect beta (see the simulation checks)
+    _MAX_ASE_DIVERGENCES = 10
     buffering2 = (
         buffering_all2
+        .filter(pl.col("error") == "none")
         .select(
             "gene_id",
-            buffering_factor = pl.col("buffering").struct.field("lambda"),
-            buffering_factor_p = pl.col("buffering").struct.field("chi2_p"),
-            buffering_factor_chi2 = pl.col("buffering").struct.field("chi2"),
-            buffering_factor_ci_lo = pl.col("buffering").struct.field("lo"),
-            buffering_factor_ci_hi = pl.col("buffering").struct.field("hi"),
-            deming_Q = pl.col("buffering").struct.field("Q"),
-            deming_p_gof = pl.col("buffering").struct.field("p_gof"),
-            **{f"effect_{hap}": extract_field(f"ase_model.beta").list.get(i)
+            buffering_factor = extract_field("buffering.lambda"),
+            buffering_factor_p = extract_field("buffering.chi2_p"),
+            buffering_factor_chi2 = extract_field("buffering.chi2"),
+            buffering_factor_ci_lo = extract_field("buffering.lo"),
+            buffering_factor_ci_hi = extract_field("buffering.hi"),
+            buffering_factor_ci_bounded = extract_field("buffering.bounded"),
+            deming_Q = extract_field("buffering.Q"),
+            deming_p_gof = extract_field("buffering.p_gof"),
+            **{f"effect_{hap}": extract_field("ase_model.beta").list.get(i)
                for i, hap in enumerate(HAPLOTYPES)},
-            **{f"effect_{hap}_se": extract_field(f"ase_model.cov.cov_beta").list.get(i).list.get(i).sqrt()
+            **{f"effect_{hap}_se": extract_field("ase_model.cov_beta").list.get(i).list.get(i).sqrt()
                for i, hap in enumerate(HAPLOTYPES)},
             **{f"total_{hap}": extract_field(f"total_model.beta.beta[{hap}].mean")
-               for i, hap in enumerate(HAPLOTYPES)},
+               for hap in HAPLOTYPES},
             **{f"total_{hap}_se": extract_field(f"total_model.beta.beta[{hap}].sd")
-               for i, hap in enumerate(HAPLOTYPES)},
-            sigma_u = extract_field("ase_model.stage2_info.sigma_u"),
-            sigma_gamma = extract_field("ase_model.stage2_info.sigma_gamma"),
-            ase_median_rhat_eta = extract_field("ase_model.pymc_info.median_rhat_eta"),
-            ase_min_ess_bulk_eta = extract_field("ase_model.pymc_info.min_ess_bulk_eta"),
-            ase_min_ess_tail_eta = extract_field("ase_model.pymc_info.min_ess_tail_eta"),
-            ase_n_diverging_chains = extract_field("ase_model.pymc_info.n_diverging_chains"),
-            ase_stage2_converged = extract_field("ase_model.stage2_info.converged"),
+               for hap in HAPLOTYPES},
+            sigma_u = extract_field("ase_model.sigma_u"),
+            sigma_gamma = extract_field("ase_model.sigma_gamma"),
+            ase_n_het = extract_field("ase_model.diagnostics.n_het"),
+            ase_n_divergences = extract_field("ase_model.diagnostics.n_divergences"),
+            ase_max_rhat_beta = extract_field("ase_model.diagnostics.beta.max_rhat"),
+            ase_min_ess_bulk_beta = extract_field("ase_model.diagnostics.beta.min_ess_bulk"),
+            ase_min_ess_tail_beta = extract_field("ase_model.diagnostics.beta.min_ess_tail"),
+            ase_max_rhat_q = extract_field("ase_model.diagnostics.q.max_rhat"),
+            ase_runtime = extract_field("ase_model.runtime"),
             total_n_diverging = extract_field("total_model.info.n_diverging"),
             total_max_rhat_beta = extract_field("total_model.diagnostic.max_rhat_beta"),
             total_max_rhat_core = extract_field("total_model.diagnostic.max_rhat_core"),
@@ -193,11 +199,10 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
             total_log_disp_se = extract_field("total_model.core.log_disp.sd"),
         ).with_columns(
             ase_success = (
-                (pl.col("ase_n_diverging_chains") == 0)
-                & (pl.col("ase_median_rhat_eta") < 1.01)
-                & (pl.col("ase_min_ess_bulk_eta") > 400)
-                & (pl.col("ase_min_ess_tail_eta") > 400)
-                & (pl.col('ase_stage2_converged'))
+                (pl.col("ase_n_divergences") <= _MAX_ASE_DIVERGENCES)
+                & (pl.col("ase_max_rhat_beta") < 1.01)
+                & (pl.col("ase_min_ess_bulk_beta") > 400)
+                & (pl.col("ase_min_ess_tail_beta") > 400)
             ),
             total_success = (
                 (pl.col("total_n_diverging") == 0)
@@ -212,6 +217,7 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
         )
     )
     buffering2
+
     return (buffering2,)
 
 
@@ -233,7 +239,7 @@ def _(SIM_REF_TISSUE, extract_field, pl):
 
 @app.cell
 def _(buffering_all2, extract_field):
-    _ase_beta_covs = buffering_all2.select('gene_id', ase_cov = extract_field('ase_model.cov.cov_beta')).rows_by_key("gene_id", unique=True, named=True)
+    _ase_beta_covs = buffering_all2.select('gene_id', ase_cov = extract_field('ase_model.cov_beta')).rows_by_key("gene_id", unique=True, named=True)
     _total_beta_covs = buffering_all2.select('gene_id', total_cov = extract_field('total_model.beta_cov')).rows_by_key("gene_id", unique=True, named=True)
     beta_covs = {g: {**_ase_beta_covs[g], **_total_beta_covs[g]} for g in _ase_beta_covs.keys()}
     return (beta_covs,)
@@ -430,7 +436,7 @@ def _(beta_comparison, lp, scale_gene_type):
     (
         lp.ggplot(beta_comparison, lp.aes("beta", "total_beta", color="gene_type"))
         + lp.facet_grid(x="gene_type")
-        + lp.geom_point()
+        + lp.geom_point(tooltips=lp.layer_tooltips(["gene_id"]))
         + lp.geom_abline(slope=1, intercept=0, color="black")
         + scale_gene_type
     )
@@ -498,6 +504,7 @@ def _(lp, pl, results, scipy):
                 + lp.scale_y_log10()
                 + lp.geom_abline(slope=1, intercept=1, linetype="dashed")
                 + lp.labs(x="p-value (theoretical)", y="p-value (reported)")
+                + lp.ggtitle(f"QQ on {len(null_ps)} null genes")
         )
     ]) + lp.ggsize(800,500)
     return
@@ -1131,7 +1138,18 @@ def _(HAPLOTYPES, HAPLOTYPE_COLORS, buffering2, gene_selector, lp, mo, pl):
 
 
 @app.cell(hide_code=True)
-def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, mo, pl):
+def _(
+    HAPLOTYPES,
+    buffering2,
+    etas,
+    extract_field,
+    gene_selector,
+    gene_truth,
+    genotypes,
+    lp,
+    mo,
+    pl,
+):
     # Plot the etas for this gene by genotype
     def _():
         max_mice_per_group=8
@@ -1146,6 +1164,15 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, mo, pl):
             .with_columns(
                 pl.col("hap").str.strip_prefix("effect_")
             )
+        )
+        gene_beta_truth = (
+            gene_truth
+            .filter(gene_id = gene_selector.value)
+            .select(
+                extract_field('beta'),
+                hap=pl.lit(HAPLOTYPES),
+            )
+            .explode("hap", "beta")
         )
         gene_etas = (
             etas
@@ -1164,8 +1191,11 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, mo, pl):
                 .sort("genotype")
                 .join(gene_betas.select(hap1="hap", beta1="beta"), on="hap1")
                 .join(gene_betas.select(hap2="hap", beta2="beta"), on="hap2")
+                .join(gene_beta_truth.select(hap1="hap", true_beta1="beta"), on="hap1")
+                .join(gene_beta_truth.select(hap2="hap", true_beta2="beta"), on="hap2")
                 .with_columns(
                     beta_fit = pl.col("beta1") - pl.col("beta2"),
+                    true_beta_fit = pl.col("true_beta1") - pl.col("true_beta2"),
                 )
         )
         plt = (
@@ -1176,6 +1206,7 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, mo, pl):
             + lp.geom_errorbar(lp.aes(ymin="eta_lo", ymax="eta_hi"), position=lp.position_dodge(width=0.7), alpha=0.4)
             + lp.geom_point(position=lp.position_dodge(width=0.7), tooltips=lp.layer_tooltips(["mouse_id", "genotype"]))
             + lp.geom_crossbar(lp.aes(y="beta_fit"), color="red")
+            + lp.geom_crossbar(lp.aes(y="true_beta_fit"), color="magenta")
             + lp.labs(y="eta")
             + lp.ggsize(800, 400)
         )
@@ -1186,12 +1217,65 @@ def _(HAPLOTYPES, buffering2, etas, gene_selector, genotypes, lp, mo, pl):
             eta_hi = pl.col("eta") + 1.96 * pl.col("eta_se"),
     )
     mo.vstack([
-        lp.ggplot(_df, lp.aes(x="eta_true", y="eta"))
-            + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id", "diplotype"]))
-            + lp.geom_errorbar(lp.aes(ymin="eta_lo", ymax="eta_hi"))
-            + lp.geom_abline(slope=1, intercept=0),
+    #    lp.ggplot(_df, lp.aes(x="eta_true", y="eta"))
+    #        + lp.geom_point(tooltips=lp.layer_tooltips(["mouse_id", "diplotype"]))
+    #        + lp.geom_errorbar(lp.aes(ymin="eta_lo", ymax="eta_hi"))
+    #        + lp.geom_abline(slope=1, intercept=0),
         _()
     ])
+    return
+
+
+@app.cell
+def _(
+    HAPLOTYPES,
+    HAPLOTYPE_COLORS,
+    buffering_all2,
+    extract_field,
+    gene_selector,
+    gene_truth,
+    lp,
+    pl,
+):
+    # True versus estimated betas for both ASE and total models
+    def _():
+        df = (
+            buffering_all2.filter(gene_id = gene_selector.value)
+            .select(
+                "gene_id",
+                ase_beta = extract_field("ase_model.beta"),
+                total_beta = pl.list([extract_field(f"total_model.beta.beta[{h}].mean") for h in HAPLOTYPES]),
+                hap = HAPLOTYPES,
+            ).explode("ase_beta", "total_beta", "hap", empty_as_null=False)
+
+            .join(
+                gene_truth.select(
+                    "gene_id",
+                    true_beta = "beta",
+                    hap = HAPLOTYPES
+                ).explode("true_beta", "hap", empty_as_null=False),
+                ["gene_id", "hap"],
+            )
+        )
+        df_long = df.unpivot(
+            ["ase_beta", "total_beta"],
+            index=["hap", "true_beta"],
+            value_name = "est_beta",
+            variable_name = "model",
+        )
+        plt = (
+            lp.ggplot(df_long, lp.aes("true_beta", "est_beta", color="hap"))
+            + lp.facet_grid(x="model")
+            + lp.geom_point()
+            + lp.coord_fixed()
+            + lp.geom_abline(slope=1, intercept=0)
+            + lp.scale_color_manual(
+                values=HAPLOTYPE_COLORS,
+                breaks=HAPLOTYPES,
+            )
+        )
+        return plt
+    _()
     return
 
 
