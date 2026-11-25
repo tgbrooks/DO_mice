@@ -401,15 +401,17 @@ rule combine_allele_unique_reads:
         "../scripts/combine_allele_unique_reads.py"
 
 rule gather_class_counts:
-    """ Combine all compressed.h5 files into unified compat and count matrices """
+    """ Combine the non-outlier mice's compressed.h5 files into unified compat and count matrices """
     input:
-        h5 = lambda w: expand("processed/{{tissue}}/gbrs/{mouse}.compressed.h5", mouse = MICE[w.tissue]),
+        h5 = lambda w: expand(
+            "processed/{tissue}/gbrs/{mouse}.compressed.h5",
+            tissue = w.tissue,
+            mouse = [m for m in MICE[w.tissue] if m not in config['outlier_ids'].get(w.tissue, [])],
+        ),
         gtf = "gbrs_ref/v116/reference.gtf.gz",
     output:
         "processed/{tissue}/class_counts.parquet"
-    params:
-        outlier_ids = lambda w: ','.join(config['outlier_ids'][w.tissue]),
     resources:
         mem_mb = 36_000
     shell:
-        "python scripts/gather_class_counts.py --gtf {input.gtf} --input_dir processed/{wildcards.tissue}/gbrs/ --skip_ids \"{params.outlier_ids}\" --outfile {output}"
+        "python scripts/gather_class_counts.py --gtf {input.gtf} --outfile {output} {input.h5}"

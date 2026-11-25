@@ -137,15 +137,35 @@ def get_all_gene_class_counts(
     tx_annot: pl.DataFrame, all_compatibility_classes: dict[str, Emase]
 ) -> pl.DataFrame:
     """
-    Get class counts for all genes at once as a polars DataFrame with columns:
-    gene_id, count (n_classes x n_samples), compat (n_haps x n_classes), mouse_ids (n_samples)
+    Get class counts for all genes at once, the same as get_gene_class_counts gives
+    gene by gene, as a polars DataFrame with one row per gene and columns:
+        gene_id
+        mouse_ids            (n_samples) mouse ids, sorted; the order of all per-sample lists
+        count                (n_classes x n_samples) reads of each class in each sample
+        compat               (n_classes x n_haplotypes) compatibility of each class with
+                             each haplotype, haplotypes in the order of the EMASE files
+        multimapping_counts  (n_classes) per class, a list of {multimapping_gene_id,
+                             counts (n_samples)}: reads of the class that are also
+                             compatible with another gene
+
+    A read class belongs to a gene if it is compatible with any of the gene's
+    transcripts, and is compatible with a haplotype of the gene if it is with any of the
+    gene's transcripts in that haplotype. Each class is counted once per gene, however
+    many of the gene's transcripts it hits. Classes with the same gene-level
+    compatibility are combined, and every sample gets every class of the gene (0 where
+    it has no reads).
 
     params:
         tx_annot: polars DataFrame with gene_id and transcript_id columns
         all_compatibility_classes: dictionary mapping mouse ids to Emase
     """
-
-    _haps = pl.Enum(list("ABCDEFGH"))
+    haplotypes = list(next(iter(all_compatibility_classes.values())).hname)
+    for mouse_id, emase in all_compatibility_classes.items():
+        if list(emase.hname) != haplotypes:
+            raise ValueError(
+                f"{mouse_id} has haplotypes {emase.hname}, expected {haplotypes}"
+            )
+    _haps = pl.Enum(haplotypes)
     mouse_ids = list(sorted(all_compatibility_classes.keys()))
     _mouse_ids = pl.Enum(mouse_ids)
     mouse_ids_df = pl.DataFrame({"mouse_id": mouse_ids}).select(
@@ -156,49 +176,41 @@ def get_all_gene_class_counts(
     data = []
     for mouse_id, emase in all_compatibility_classes.items():
         mouse_data = []
+        transcript_names = emase.lname.astype(str)
         for hap, compat in zip(emase.hname, emase.haps.values()):
-            indptr_df = pl.DataFrame(
-                {
-                    "transcript_id": emase.lname,
-                    "indptr_start": compat.indptr[:-1],
-                    # "indptr_end": compat.indptr[1:],
-                }
+            # compat is CSR (transcripts x classes): row i's classes are
+            # indices[indptr[i]:indptr[i + 1]], so this gives each entry's transcript
+            row = np.repeat(np.arange(len(transcript_names)), np.diff(compat.indptr))
+            mouse_data.append(
+                pl.DataFrame(
+                    {
+                        "haplotype": pl.Series([hap] * len(row), dtype=_haps),
+                        "class_num": compat.indices,
+                        "transcript_id": pl.Series(transcript_names[row]).cast(_tx_ids),
+                    }
+                )
             )
-            indices_df = pl.DataFrame(
-                {
-                    "indptr": np.arange(len(compat.indices)),
-                    "class_num": compat.indices,
-                }
-            )
-            df = indices_df.join_asof(
-                indptr_df,
-                left_on="indptr",
-                right_on="indptr_start",
-                strategy="backward",
-            )
-            df = df.select(
-                pl.lit(hap).alias("haplotype").cast(_haps),
-                "class_num",
-                pl.col("transcript_id").cast(str).cast(_tx_ids),
-                count=emase.count[df["class_num"]].astype("int32"),
-            )
-            mouse_data.append(df)
-        mouse_df = (
+        # Gene-level classes: compatible with a haplotype if any of the gene's
+        # transcripts is (as extract_gene); one row per (gene, class), so each class is
+        # counted once per gene however many of its transcripts it hits
+        gene_classes = (
             pl.concat(mouse_data)
-            .group_by("transcript_id", "class_num", "count")
-            .agg(hap_list="haplotype")
-        ).join(tx_to_gene, "transcript_id")
-        # combine transcripts and classes that are the same for this gene
-        mouse_gene_df = mouse_df.group_by(
-            "gene_id",
-            "hap_list",
-        ).agg(
+            .join(tx_to_gene, "transcript_id")
+            .group_by("gene_id", "class_num")
+            .agg(hap_list=pl.col("haplotype").unique().sort())
+        )
+        gene_classes = gene_classes.with_columns(
+            count=emase.count[gene_classes["class_num"].to_numpy()].astype("int32")
+        )
+        # combine classes with the same gene-level compatibility
+        mouse_gene_df = gene_classes.group_by("gene_id", "hap_list").agg(
             pl.col("count").sum(),
         )
-        # Record gene-level multimapping
+        # Record gene-level multimapping: reads of a gene's class (hap_list) that are
+        # also compatible with another gene
         multimap = (
-            mouse_df.join_where(
-                mouse_df,
+            gene_classes.join_where(
+                gene_classes,
                 pl.col("gene_id") != pl.col("gene_id_right"),
                 pl.col("class_num") == pl.col("class_num_right"),
             )
@@ -277,28 +289,29 @@ def get_all_gene_class_counts(
             )
             .agg(
                 counts=pl.col("count"),
-                # mouse_id=pl.col("mouse_id"),
-            )
-            .group_by("hap_list")
-            .agg(
-                multimapping_counts=pl.struct(
-                    pl.col("multimapping_gene_id"),
-                    pl.col("counts"),
-                    # pl.col("mouse_id"),
-                ).implode()
+                mouse_ids=pl.col("mouse_id"),
             )
         )
-        _df2 = _df.join(_multimap, "hap_list")
-        # Check consistency
-        for _ids in _df["mouse_ids"]:
+        # Check consistency: every per-sample list is in mouse_ids order
+        for _ids in [*_df["mouse_ids"], *_multimap["mouse_ids"]]:
             assert (_ids == mouse_ids_df["mouse_id"]).all()
+        _multimap = _multimap.group_by("hap_list").agg(
+            multimapping_counts=pl.struct(
+                pl.col("multimapping_gene_id"),
+                pl.col("counts"),
+            ).implode()
+        )
+        # left join: genes with no multimapping reads have no _multimap rows
+        _df2 = _df.join(_multimap, "hap_list", how="left").with_columns(
+            pl.col("multimapping_counts").fill_null([])
+        )
         temp.append(
             _df2.select(
                 pl.lit(gene_id).alias("gene_id"),
                 pl.col("mouse_ids").first(),
                 pl.col("count").implode(),
                 compat=pl.concat_list(
-                    [pl.lit(h).is_in(pl.col("hap_list")) for h in "ABCDEFGH"]
+                    [pl.lit(h).is_in(pl.col("hap_list")) for h in haplotypes]
                 ).implode(),
                 multimapping_counts=pl.col("multimapping_counts").implode(),
             )

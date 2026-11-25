@@ -17,15 +17,12 @@ def main(args):
         .collect()
     )
 
-    SKIP_IDS = args.skip_ids.strip().split(",")
-
     print("Loading data")
     all_compatibility_classes = {}
-    input_dir = pathlib.Path(args.input_dir)
-    for path in input_dir.glob("*.compressed.h5"):
-        mouse_id, _, _ = path.name.split(".")
-        if mouse_id in SKIP_IDS:
-            continue
+    for path in map(pathlib.Path, args.h5):
+        mouse_id = path.name.removesuffix(".compressed.h5")
+        if mouse_id in all_compatibility_classes:
+            raise ValueError(f"Mouse {mouse_id} given more than once")
         all_compatibility_classes[mouse_id] = load_compressed_emase(str(path))
 
     print("Processing data")
@@ -42,14 +39,12 @@ if __name__ == "__main__":
         "gather gene-level data per compatibility class uniformized across all samples"
     )
     parser.add_argument("--gtf", help="gtf file path of annotation")
-    parser.add_argument(
-        "--input_dir",
-        help="directory containing {mouse_id}.compressed.h5 files to gather",
-    )
-    parser.add_argument(
-        "--skip_ids", help="comma-delimited list of mouse ids to skip (e.g., outliers)"
-    )
     parser.add_argument("--outfile", help="path to write output parquet file")
+    parser.add_argument(
+        "h5",
+        nargs="+",
+        help="{mouse_id}.compressed.h5 files to gather (exactly the mice to include)",
+    )
 
     args = parser.parse_args()
 

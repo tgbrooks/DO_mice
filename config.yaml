@@ -26,7 +26,7 @@ outlier_ids:
   ]
   Liver: [
     # High incompatible reads - possible genotyping mistake or sample swap
-    "DO309", "DO310", "D0152",
+    "DO309", "DO310", "DO152",
     # Expression outliers on PCA
     "DO098", "DO060", "DO094", "DO036", "DO276", "DO337", "DO409",
     # Apparent sex-swapped samples

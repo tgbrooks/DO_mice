@@ -43,5 +43,10 @@ dev = [
     "ruff>=0.16.3",
     "ty>=0.0.92",
     "pynvim>=0.6.0",
+    "pytest>=8.4",
     "websockets>=17.0.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
