@@ -217,7 +217,6 @@ def _(HAPLOTYPES, buffering_all2, extract_field, gene_annot, pl):
         )
     )
     buffering2
-
     return (buffering2,)
 
 
@@ -619,7 +618,6 @@ def _(buffering_all2, extract_field, lp, mo, pl, results, scipy):
         ase_success=True,
         total_success=True,
     ).select('gene_id'), how="right", on="gene_id")
-    _plt = lp.ggplot(lrt, lp.aes("chi2_p", "lrt_p")) + lp.geom_point(tooltips=lp.layer_tooltips(['gene_id'])) + lp.scale_x_log10() + lp.scale_y_log10() + lp.geom_abline(slope=1, intercept=1)
 
     _null_ps = (
         lrt
@@ -635,6 +633,7 @@ def _(buffering_all2, extract_field, lp, mo, pl, results, scipy):
                 expected_p = (pl.row_index() + 0.5)/(pl.len()+1),
             )
     )
+    _plt = lp.ggplot(_null_ps, lp.aes("chi2_p", "lrt_p")) + lp.geom_point(tooltips=lp.layer_tooltips(['gene_id'])) + lp.scale_x_log10() + lp.scale_y_log10() + lp.geom_abline(slope=1, intercept=1)
     _qq_plt = (
         lp.ggplot(_null_ps, lp.aes("expected_p", "lrt_p"))
             + lp.geom_point(tooltips=lp.layer_tooltips(['gene_id']))
@@ -644,11 +643,37 @@ def _(buffering_all2, extract_field, lp, mo, pl, results, scipy):
     )
 
     mo.vstack([
-        "Compare LRT p-values to Chi2 test p-values",
+        "Compare LRT p-values to Chi2 test p-values on null genes (no buffering)",
         lp.gggrid([
             _plt,
             _qq_plt,
         ]) + lp.ggsize(800,300)
+    ])
+    return
+
+
+@app.cell
+def _(lp, mo, pl, results):
+    _df = (
+        results
+        .filter(
+            pl.col("sigma_u") < 0.25,
+            pl.col('sigma_gamma') < 0.25,
+            #has_buffering=False,
+            ase_success=True,
+            total_success=True,
+        )
+        .sort('deming_p_gof')
+        .with_columns(
+            expected_p = (pl.row_index()+1/2)/(pl.len() + 1),
+        )
+    )
+    _plt = lp.ggplot(_df, lp.aes("expected_p", "deming_p_gof")) + lp.geom_point(tooltips=lp.layer_tooltips(['gene_id'])) + lp.scale_x_log10() + lp.scale_y_log10() + lp.geom_abline(slope=1, intercept=1)
+    mo.vstack([
+        "Compare the goodness of fit test p-values",
+        lp.gggrid([
+            _plt,
+        ]) + lp.ggsize(500,300)
     ])
     return
 
