@@ -141,3 +141,22 @@ def test_mismatched_haplotypes_rejected(emases):
     other.hname = list("HGFEDCBA")
     with pytest.raises(ValueError, match="haplotypes"):
         get_all_gene_class_counts(TX_ANNOT, {**emases, "DO003": other})
+
+
+def test_unique_counts(all_genes):
+    """unique_count keeps only reads compatible with no other gene."""
+    expected = {
+        # g1: classes 0, 1, 2 are g1-only (class 0 hits two g1 transcripts, still one
+        # gene); classes 3 and 5 are shared with g3
+        "g1": {"ABCDEFGH": [0], "AB": [1, 2], "C": []},
+        "g2": {"C": [4]},
+        "g3": {"ABCDEFGH": [], "CD": []},
+    }
+    for gene_id, classes in expected.items():
+        row = gene_row(all_genes, gene_id)
+        assert np.shape(row["unique_count"]) == np.shape(row["count"])
+        table = as_table(row["compat"], row["unique_count"], row["mouse_ids"])
+        assert table == {
+            key: {m: sum(COUNTS[m][c] for c in cls) for m in COUNTS}
+            for key, cls in classes.items()
+        }

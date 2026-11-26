@@ -155,3 +155,21 @@ gbrs:
 
 simulated_classes:
   n_chunks: 10
+
+## Paralog compensation analysis (steps/paralogs.smk, util/paralogs.py)
+paralogs:
+  ## Ensembl Compara homologies, same release as the reference (v116)
+  compara_url: "https://ftp.ensembl.org/pub/release-116/tsv/ensembl-compara/homologies/mus_musculus/Compara.116.protein_default.homologies.tsv.gz"
+  ## Minimum percent identity of a pair, in both directions
+  min_identity: 40
+  ## Families (groups of paralogs linked by pairs passing min_identity) larger than
+  ## this are excluded: large, mostly old families (olfactory receptors, zinc fingers...)
+  max_family_size: 10
+  ## Both genes need at least this median (over mice) of unique reads
+  min_median_unique_reads: 20
+  ## Null pairs per ordered paralog pair, each gene drawn from this many genes closest
+  ## in expression to A and to B
+  n_null_per_pair: 1
+  null_match_window: 100
+  seed: 1
+  pairs_per_chunk: 20

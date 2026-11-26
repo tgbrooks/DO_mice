@@ -142,6 +142,8 @@ def get_all_gene_class_counts(
         gene_id
         mouse_ids            (n_samples) mouse ids, sorted; the order of all per-sample lists
         count                (n_classes x n_samples) reads of each class in each sample
+        unique_count         (n_classes x n_samples) those of the reads that are not
+                             compatible with any other gene (in tx_annot)
         compat               (n_classes x n_haplotypes) compatibility of each class with
                              each haplotype, haplotypes in the order of the EMASE files
         multimapping_counts  (n_classes) per class, a list of {multimapping_gene_id,
@@ -201,10 +203,17 @@ def get_all_gene_class_counts(
         )
         gene_classes = gene_classes.with_columns(
             count=emase.count[gene_classes["class_num"].to_numpy()].astype("int32")
+        ).with_columns(
+            # reads of classes that no other gene shares
+            unique_count=pl.when(pl.len().over("class_num") == 1)
+            .then(pl.col("count"))
+            .otherwise(0)
+            .cast(pl.Int32)
         )
         # combine classes with the same gene-level compatibility
         mouse_gene_df = gene_classes.group_by("gene_id", "hap_list").agg(
             pl.col("count").sum(),
+            pl.col("unique_count").sum(),
         )
         # Record gene-level multimapping: reads of a gene's class (hap_list) that are
         # also compatible with another gene
@@ -247,15 +256,16 @@ def get_all_gene_class_counts(
         )
         _df = (
             grid.join(
-                data.select("mouse_id", "hap_list", "count"),
+                data.select("mouse_id", "hap_list", "count", "unique_count"),
                 ["mouse_id", "hap_list"],
                 how="left",
                 maintain_order="left",
             )
-            .with_columns(pl.col("count").fill_null(0))
+            .with_columns(pl.col("count", "unique_count").fill_null(0))
             .group_by("hap_list")
             .agg(
                 pl.col("count"),
+                pl.col("unique_count"),
                 mouse_ids=pl.col("mouse_id"),
             )
         )
@@ -310,6 +320,7 @@ def get_all_gene_class_counts(
                 pl.lit(gene_id).alias("gene_id"),
                 pl.col("mouse_ids").first(),
                 pl.col("count").implode(),
+                pl.col("unique_count").implode(),
                 compat=pl.concat_list(
                     [pl.lit(h).is_in(pl.col("hap_list")) for h in haplotypes]
                 ).implode(),

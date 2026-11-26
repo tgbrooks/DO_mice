@@ -31,6 +31,8 @@ include: "steps/simulate_classes.smk"
 include: "steps/simulate_reads.smk"
 # Transcriptomes from liftoff and latest Ensembl (v116) strain-specific releases
 include: "steps/prepare_reference.smk"
+# Paralog compensation analysis
+include: "steps/paralogs.smk"
 
 # These are quick bookkeeping steps, not worth submitting as cluster jobs:
 localrules: genotyped_mice, combine_tpm
