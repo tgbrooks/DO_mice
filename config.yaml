@@ -64,6 +64,7 @@ ensembl_haplotypes_full: {
 run:
   - Adipose
   - Liver
+  - Heart
 
 tissues:
   Adipose:
