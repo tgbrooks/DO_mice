@@ -412,6 +412,6 @@ rule gather_class_counts:
     output:
         "processed/{tissue}/class_counts.parquet"
     resources:
-        mem_mb = 36_000
+        mem_mb = 48_000
     shell:
         "python scripts/gather_class_counts.py --gtf {input.gtf} --outfile {output} {input.h5}"
