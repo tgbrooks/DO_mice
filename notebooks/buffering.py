@@ -531,7 +531,7 @@ def _(genotypes, lp, mo, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(OUTLIER_MOUSE_IDS, allele_unique, gene_annot, mo, pl):
     # Check for tissue consistency
     # If all from the same tissue, then we expect the top expressed genes to be consistently high
@@ -559,11 +559,6 @@ def _(OUTLIER_MOUSE_IDS, allele_unique, gene_annot, mo, pl):
         "If not, that would indicate a likely sample swap.",
         top_expr_genes
     ])
-    return
-
-
-@app.cell
-def _():
     return
 
 
