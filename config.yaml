@@ -23,6 +23,8 @@ outlier_ids:
    "DO048",  "DO100", "DO122", "DO267",  "DO473", "DO310", "DO309", "DO407", "DO308", "DO467", "DO514", "DO556", "DO322", "DO098",
     # Expression outlier
     "DO345", "DO191", "DO158", "DO237", 
+    # Genotyping outlier
+    "DO401", "DO113", "DO085",
   ]
   Liver: [
     # High incompatible reads - possible genotyping mistake or sample swap
@@ -32,6 +34,12 @@ outlier_ids:
     # Apparent sex-swapped samples
     # NOTE: these all look OK in Adipose and genotype, TODO: check in other tissues
     "DO123", "DO234", "DO111", "DO182",
+    # Genotyping outlier
+    "DO401", "DO113", "DO085",
+  ]
+  Heart: [
+    # High incompatible reads - possible genotyping mistake or sample swap
+    "DO309", "DO310",
     # Genotyping outlier
     "DO401", "DO113", "DO085",
   ]
